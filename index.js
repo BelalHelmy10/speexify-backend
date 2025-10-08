@@ -2092,6 +2092,10 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
   }
 });
 
+//a health route (nice for checks):
+
+app.get("/health", (_req, res) => res.send("ok"));
+
 /* ========================================================================== */
 /*                                  SERVER                                    */
 /* ========================================================================== */

@@ -8,7 +8,8 @@
     "start": "node index.js",
     "postinstall": "prisma generate",
     "send:reminders24h": "node scripts/sendReminders24h.js",
-    "send:reminders1h": "node scripts/sendReminders1h.js"
+    "send:reminders1h": "node scripts/sendReminders1h.js",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
