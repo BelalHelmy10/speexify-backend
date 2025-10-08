@@ -1,0 +1,30 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon index.js",
+    "start": "node index.js",
+    "postinstall": "prisma generate",
+    "send:reminders24h": "node scripts/sendReminders24h.js",
+    "send:reminders1h": "node scripts/sendReminders1h.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "@prisma/client": "^6.15.0",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "google-auth-library": "^10.3.0",
+    "nodemailer": "^7.0.6",
+    "prisma": "^6.15.0"
+  }
+}

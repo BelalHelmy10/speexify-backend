@@ -1,0 +1,156 @@
+// prisma/schema.prisma
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // useful for Neon
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Enums
+   ──────────────────────────────────────────────────────────────────────────── */
+
+enum Audience {
+  INDIVIDUAL
+  CORPORATE
+}
+
+enum PriceType {
+  PER_SESSION
+  BUNDLE
+  CUSTOM
+}
+
+/* For session lifecycle + dashboard actions */
+enum SessionStatus {
+  scheduled   // default; can be rescheduled freely
+  completed   // set after the session ends / attendance confirmed
+  canceled    // user/teacher cancels
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Models
+   ──────────────────────────────────────────────────────────────────────────── */
+
+model Package {
+  id              Int        @id @default(autoincrement())
+  title           String
+  description     String?
+
+  // Pricing (nullable to allow custom quotes)
+  priceUSD        Int?
+  startingAtUSD   Int?
+
+  // Meta
+  priceType       PriceType  @default(BUNDLE)
+  audience        Audience   @default(INDIVIDUAL)
+  isPopular       Boolean    @default(false)
+  active          Boolean    @default(true)
+  sortOrder       Int        @default(0)
+
+  // Format details
+  sessionsPerPack Int?
+  durationMin     Int?
+  image           String?
+
+  // Newline-separated bullet points
+  features        String?
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+model User {
+  id                   Int       @id @default(autoincrement())
+  email                String    @unique
+  name                 String?
+  hashedPassword       String
+  role                 String    @default("learner") // learner | teacher | admin
+  timezone             String?
+  isDisabled           Boolean   @default(false)
+
+  // Teacher rates (optional)
+  rateHourlyCents      Int?
+  ratePerSessionCents  Int?
+
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  // Relations
+  sessions             Session[]
+  teachingSessions     Session[] @relation("SessionTeacher")
+  audits               Audit[]   @relation("Audit_actor")
+
+  @@index([role])
+}
+
+model Audit {
+  id        Int      @id @default(autoincrement())
+  actorId   Int
+  action    String    // e.g., user_disable, role_change, impersonate_start
+  entity    String    // e.g., "User" / "Session" / "Package"
+  entityId  Int?
+  meta      Json?
+  createdAt DateTime  @default(now())
+
+  actor     User      @relation("Audit_actor", fields: [actorId], references: [id])
+
+  @@index([entity, entityId])
+}
+
+model Session {
+  id               Int           @id @default(autoincrement())
+  title            String
+  startAt          DateTime
+  endAt            DateTime?
+  meetingUrl       String?
+  notes            String?
+
+  // Learner
+  userId           Int
+  user             User          @relation(fields: [userId], references: [id])
+
+  // Assigned teacher (optional)
+  teacherId        Int?
+  teacher          User?         @relation("SessionTeacher", fields: [teacherId], references: [id])
+
+  // Status & feedback for dashboard features
+  status           SessionStatus @default(scheduled)
+  feedbackScore    Int?          // 1..5 optional rating
+
+  // Reminder bookkeeping (for cron/queues)
+  reminder24hSentAt DateTime?
+  reminder1hSentAt  DateTime?
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  // Useful indexes for queries shown on the dashboard
+  @@index([userId, startAt])
+  @@index([teacherId, startAt])
+}
+
+model VerificationCode {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PasswordResetCode {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
