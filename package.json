@@ -5,9 +5,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon index.js",
+    "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
+    "prisma:migrate": "node ./node_modules/prisma/build/index.js migrate deploy",
     "start": "node index.js",
-    "postinstall": "",
-    "prisma:generate": "npx prisma generate",
+    "postinstall": "node ./node_modules/prisma/build/index.js generate",
     "send:reminders24h": "node scripts/sendReminders24h.js",
     "send:reminders1h": "node scripts/sendReminders1h.js"
   },
@@ -25,10 +26,9 @@
     "express": "^5.1.0",
     "express-session": "^1.18.2",
     "google-auth-library": "^10.3.0",
-    "nodemailer": "^7.0.6"
-  },
-  "devDependencies": {
+    "nodemailer": "^7.0.6",
     "@prisma/client": "^6.17.1",
     "prisma": "^6.17.1"
-  }
+  },
+  "devDependencies": {}
 }
