@@ -70,13 +70,40 @@ async function sendEmail(to, subject, html) {
 app.use(express.json());
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:3000";
-app.use(cors({ origin: ALLOWED_ORIGIN, credentials: true }));
+
+app.use(express.json());
+
+// trust Render's proxy so 'secure' cookies work properly
+app.set("trust proxy", 1);
+
+// Allowlist multiple origins via env variable
+// Example: ALLOWED_ORIGINS="http://localhost:3000,https://www.speexify.com,https://speexify-frontend.vercel.app"
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000")
+  .split(",")
+  .map((s) => s.trim());
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // Allow server-to-server or Postman requests
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 
 if (!process.env.SESSION_SECRET) {
   console.warn(
     "⚠️  SESSION_SECRET is not set. Using an insecure fallback for dev."
   );
 }
+
+const isProd = process.env.NODE_ENV === "production";
+
+// In production we want cookies to work even on preview domains -> SameSite=None + Secure
+const cookieSameSite = isProd ? "none" : "lax";
+const cookieSecure = isProd ? true : false;
 
 app.use(
   session({
@@ -86,8 +113,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false, // set true in production (HTTPS)
-      sameSite: "lax",
+      secure: cookieSecure,
+      sameSite: cookieSameSite,
       maxAge: 1000 * 60 * 60 * 24, // 1 day
     },
   })
