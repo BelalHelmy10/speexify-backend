@@ -14,7 +14,7 @@ import { OAuth2Client } from "google-auth-library";
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth & DB: bcrypt for password hashing, Prisma for DB, crypto for code hashing
 // ─────────────────────────────────────────────────────────────────────────────
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
 
@@ -69,12 +69,8 @@ async function sendEmail(to, subject, html) {
 
 app.use(express.json());
 
-app.use(
-  cors({
-    origin: "http://localhost:3000", // ← adjust to your web app origin
-    credentials: true,
-  })
-);
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:3000";
+app.use(cors({ origin: ALLOWED_ORIGIN, credentials: true }));
 
 if (!process.env.SESSION_SECRET) {
   console.warn(
@@ -2096,11 +2092,23 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
 
 app.get("/health", (_req, res) => res.send("ok"));
 
+//check the dbnpm start
+
+app.get("/api/db-check", async (_req, res) => {
+  try {
+    const ok = await prisma.$queryRaw`select 1 as ok`;
+    res.json(ok);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "DB not reachable" });
+  }
+});
+
 /* ========================================================================== */
 /*                                  SERVER                                    */
 /* ========================================================================== */
 
-const PORT = 5050;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 5050;
 app.listen(PORT, () => {
   console.log(`✅ Server is running on http://localhost:${PORT}`);
 });
