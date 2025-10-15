@@ -398,30 +398,41 @@ if (ALLOW_LEGACY_REGISTER) {
 /*  - If user exists (by email): sign them in (block if disabled)              */
 /*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
-app.post("/api/auth/google", async (req, res) => {
-  try {
-    const idToken = String(req.body?.credential || "");
-    if (!idToken) return res.status(400).json({ error: "Missing credential" });
+// at top of file (once)
+const { OAuth2Client } = require("google-auth-library");
 
+// --- Google Sign-in: receives `{ credential: <idToken> }` from GIS
+app.post("/api/auth/google", express.json(), async (req, res) => {
+  try {
+    // 1) read GIS payload
+    const credential =
+      typeof req.body?.credential === "string" ? req.body.credential : "";
+    if (!credential) {
+      return res.status(400).json({ ok: false, error: "missing_credential" });
+    }
+
+    // 2) verify ID token against your client id
     const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID, // must match the frontend client id
     });
-    const payload = ticket.getPayload();
+
+    const payload = ticket.getPayload(); // sub, email, name, picture, email_verified, ...
     const email = String(payload?.email || "")
       .toLowerCase()
       .trim();
-    const emailVerified = !!payload?.email_verified;
-    const name = payload?.name || null;
+    const emailVerified = Boolean(payload?.email_verified);
+    const name = payload?.name ? String(payload.name).trim() : null;
 
     if (!email || !emailVerified) {
-      return res.status(400).json({ error: "Email not verified with Google" });
+      return res.status(400).json({ ok: false, error: "unverified_email" });
     }
 
+    // 3) find or create user by email (your current model)
     let user = await prisma.user.findUnique({ where: { email } });
 
     if (user?.isDisabled) {
-      return res.status(403).json({ error: "Account disabled" });
+      return res.status(403).json({ ok: false, error: "account_disabled" });
     }
 
     if (!user) {
@@ -437,6 +448,7 @@ app.post("/api/auth/google", async (req, res) => {
         },
       });
     } else {
+      // normalize returned shape
       user = await prisma.user.findUnique({
         where: { email },
         select: {
@@ -449,12 +461,15 @@ app.post("/api/auth/google", async (req, res) => {
       });
     }
 
-    req.session.asUserId = null; // clear view-as
+    // 4) establish session (cookie must be SameSite=None; Secure=true in session config)
+    req.session.asUserId = null; // clear any impersonation
     req.session.user = user;
+
     return res.json({ ok: true, user });
   } catch (err) {
+    // Common causes: wrong GOOGLE_CLIENT_ID, expired/invalid token
     console.error("google auth error:", err?.message || err);
-    return res.status(401).json({ error: "Invalid Google credential" });
+    return res.status(401).json({ ok: false, error: "invalid_google_token" });
   }
 });
 
