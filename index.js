@@ -23,6 +23,23 @@ const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
 /* ========================================================================== */
+/*                         GOOGLE CLIENT ID (Unified)                         */
+/*  Use the SAME env var name as the frontend for consistency.                */
+/* ========================================================================== */
+const GOOGLE_CLIENT_ID =
+  process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
+  process.env.GOOGLE_CLIENT_ID ||
+  "";
+
+if (!GOOGLE_CLIENT_ID) {
+  console.warn(
+    "⚠️  GOOGLE_CLIENT_ID missing. Set NEXT_PUBLIC_GOOGLE_CLIENT_ID (or GOOGLE_CLIENT_ID) in the backend environment."
+  );
+}
+
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+/* ========================================================================== */
 /*                             MAILER (shared)                                 */
 /*  Build one Nodemailer transporter at startup. Fallback logs emails in dev.  */
 /* ========================================================================== */
@@ -68,8 +85,6 @@ async function sendEmail(to, subject, html) {
 /* ========================================================================== */
 
 app.use(express.json());
-
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:3000";
 
 // trust Render's proxy so 'secure' cookies work properly
 app.set("trust proxy", 1);
@@ -127,9 +142,6 @@ const genCode = () => String(Math.floor(100000 + Math.random() * 900000)); // 6-
 const hashCode = (raw) =>
   crypto.createHash("sha256").update(String(raw)).digest("hex");
 
-// Google OAuth verifier (uses GOOGLE_CLIENT_ID from .env)
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
 // For OAuth accounts we don't need a user-chosen password.
 // We'll store a random bcrypt hash to satisfy NOT NULL schema.
 async function randomHashedPassword() {
@@ -143,7 +155,7 @@ function centsToDollars(cents) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NEW (Step 2): unified “public user” projection + audit helper (used later)
+// Unified “public user” projection + audit helper
 // ─────────────────────────────────────────────────────────────────────────────
 const publicUserSelect = {
   id: true,
@@ -168,10 +180,7 @@ async function audit(actorId, action, entity, entityId, meta = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NEW (Step 2): tightened auth guards with “view-as” support
-// - Fetch current user from DB (so role/disable updates apply immediately)
-// - Block disabled accounts
-// - Expose req.user (the real logged-in user) and req.viewUserId (impersonation)
+// Tightened auth guards with “view-as” support
 // ─────────────────────────────────────────────────────────────────────────────
 async function requireAuth(req, res, next) {
   const sessionUser = req.session.user;
@@ -396,7 +405,6 @@ if (ALLOW_LEGACY_REGISTER) {
 /*  - If user exists (by email): sign them in (block if disabled)              */
 /*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
-// at top of file (once)
 
 // --- Google Sign-in: receives `{ credential: <idToken> }` from GIS
 app.post("/api/auth/google", express.json(), async (req, res) => {
@@ -411,7 +419,7 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
     // 2) verify ID token against your client id
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID, // must match the frontend client id
+      audience: GOOGLE_CLIENT_ID, // must match the frontend client id
     });
 
     const payload = ticket.getPayload(); // sub, email, name, picture, email_verified, ...
@@ -630,7 +638,6 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// NEW (Step 2): WHO AM I (supports impersonation state)
 // WHO AM I (session peek) — compatible shape { user: ... }
 app.get("/api/auth/me", async (req, res) => {
   // no session → always { user: null }
@@ -663,10 +670,15 @@ app.get("/api/auth/me", async (req, res) => {
   return res.json({ user: adminUser });
 });
 
-// LOGOUT
+// LOGOUT (ensure cookie flags match session config so it clears properly)
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("speexify.sid");
+    const isProd = process.env.NODE_ENV === "production";
+    res.clearCookie("speexify.sid", {
+      httpOnly: true,
+      sameSite: isProd ? "none" : "lax",
+      secure: isProd,
+    });
     res.json({ ok: true });
   });
 });
@@ -965,7 +977,8 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
 /* ========================================================================== */
 
 // GET /api/admin/packages?audience=&q=&active=
-app.get("/api/admin/packages", requireAdmin, async (req, res) => {
+// (Add requireAuth before requireAdmin so req.user is present)
+app.get("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { audience = "", q = "", active = "" } = req.query;
     const where = {};
@@ -996,7 +1009,7 @@ app.get("/api/admin/packages", requireAdmin, async (req, res) => {
 });
 
 // POST /api/admin/packages
-app.post("/api/admin/packages", requireAdmin, async (req, res) => {
+app.post("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   try {
     const {
       title,
@@ -1048,64 +1061,74 @@ app.post("/api/admin/packages", requireAdmin, async (req, res) => {
 });
 
 // PATCH /api/admin/packages/:id
-app.patch("/api/admin/packages/:id", requireAdmin, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const data = {};
-    const fields = [
-      "title",
-      "description",
-      "audience",
-      "priceType",
-      "image",
-      "features",
-      "isPopular",
-      "active",
-      "sortOrder",
-      "sessionsPerPack",
-      "durationMin",
-      "priceUSD",
-      "startingAtUSD",
-    ];
-    for (const k of fields) {
-      if (req.body[k] !== undefined) data[k] = req.body[k];
+app.patch(
+  "/api/admin/packages/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const data = {};
+      const fields = [
+        "title",
+        "description",
+        "audience",
+        "priceType",
+        "image",
+        "features",
+        "isPopular",
+        "active",
+        "sortOrder",
+        "sessionsPerPack",
+        "durationMin",
+        "priceUSD",
+        "startingAtUSD",
+      ];
+      for (const k of fields) {
+        if (req.body[k] !== undefined) data[k] = req.body[k];
+      }
+
+      // normalize types
+      if (data.priceUSD !== undefined)
+        data.priceUSD = data.priceUSD === null ? null : Number(data.priceUSD);
+      if (data.startingAtUSD !== undefined)
+        data.startingAtUSD =
+          data.startingAtUSD === null ? null : Number(data.startingAtUSD);
+      if (data.sessionsPerPack !== undefined)
+        data.sessionsPerPack =
+          data.sessionsPerPack === null ? null : Number(data.sessionsPerPack);
+      if (data.durationMin !== undefined)
+        data.durationMin =
+          data.durationMin === null ? null : Number(data.durationMin);
+      if (data.sortOrder !== undefined) data.sortOrder = Number(data.sortOrder);
+      if (data.isPopular !== undefined) data.isPopular = !!data.isPopular;
+      if (data.active !== undefined) data.active = !!data.active;
+
+      const updated = await prisma.package.update({ where: { id }, data });
+      res.json(updated);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to update package" });
     }
-
-    // normalize types
-    if (data.priceUSD !== undefined)
-      data.priceUSD = data.priceUSD === null ? null : Number(data.priceUSD);
-    if (data.startingAtUSD !== undefined)
-      data.startingAtUSD =
-        data.startingAtUSD === null ? null : Number(data.startingAtUSD);
-    if (data.sessionsPerPack !== undefined)
-      data.sessionsPerPack =
-        data.sessionsPerPack === null ? null : Number(data.sessionsPerPack);
-    if (data.durationMin !== undefined)
-      data.durationMin =
-        data.durationMin === null ? null : Number(data.durationMin);
-    if (data.sortOrder !== undefined) data.sortOrder = Number(data.sortOrder);
-    if (data.isPopular !== undefined) data.isPopular = !!data.isPopular;
-    if (data.active !== undefined) data.active = !!data.active;
-
-    const updated = await prisma.package.update({ where: { id }, data });
-    res.json(updated);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to update package" });
   }
-});
+);
 
 // DELETE /api/admin/packages/:id
-app.delete("/api/admin/packages/:id", requireAdmin, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    await prisma.package.delete({ where: { id } });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to delete package" });
+app.delete(
+  "/api/admin/packages/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await prisma.package.delete({ where: { id } });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to delete package" });
+    }
   }
-});
+);
 
 // PATCH user: role / enable-disable / name / timezone
 app.patch(
@@ -1380,19 +1403,15 @@ app.get("/api/teacher/sessions", requireAuth, async (req, res) => {
 /*  GET /api/teacher/summary                                                  */
 /*  Returns the next upcoming session this teacher will teach, plus counts.   */
 /* ========================================================================== */
-// GET /api/me/summary
-app.get("/api/me/summary", async (req, res) => {
+app.get("/api/teacher/summary", requireAuth, async (req, res) => {
   try {
-    const u = req.session?.user;
-    if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-
-    const userId = u.id;
+    const userId = req.viewUserId;
     const now = new Date();
 
     // counts (exclude canceled)
     const upcomingCount = await prisma.session.count({
       where: {
-        userId,
+        teacherId: userId,
         status: { not: "canceled" },
         startAt: { gte: now },
       },
@@ -1400,7 +1419,7 @@ app.get("/api/me/summary", async (req, res) => {
 
     const completedCount = await prisma.session.count({
       where: {
-        userId,
+        teacherId: userId,
         status: "completed",
       },
     });
@@ -1408,7 +1427,7 @@ app.get("/api/me/summary", async (req, res) => {
     // next session should be future OR currently live, and not canceled
     const nextSession = await prisma.session.findFirst({
       where: {
-        userId,
+        teacherId: userId,
         status: { not: "canceled" },
         OR: [
           { startAt: { gte: now } }, // future
@@ -1444,339 +1463,8 @@ app.get("/api/me/summary", async (req, res) => {
       timezone: user?.timezone || null,
     });
   } catch (e) {
-    console.error("GET /api/me/summary failed:", e);
+    console.error("GET /api/teacher/summary failed:", e);
     res.status(500).json({ error: "Failed to load summary" });
-  }
-});
-
-// Admin: list all sessions (with learner info + filters)
-// Admin: list all sessions (with learner + teacher info)
-// GET /api/admin/sessions?q=&userId=&teacherId=&from=&to=&limit=&offset=
-app.get("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const {
-      q = "",
-      userId = "",
-      teacherId = "",
-      from = "", // YYYY-MM-DD
-      to = "", // YYYY-MM-DD
-      limit = "50",
-      offset = "0",
-    } = req.query;
-
-    const where = {};
-
-    if (userId) where.userId = Number(userId);
-    if (teacherId) where.teacherId = Number(teacherId);
-
-    if (q) {
-      where.OR = [
-        { title: { contains: q, mode: "insensitive" } },
-        { user: { email: { contains: q, mode: "insensitive" } } },
-        { user: { name: { contains: q, mode: "insensitive" } } },
-        { teacher: { email: { contains: q, mode: "insensitive" } } },
-        { teacher: { name: { contains: q, mode: "insensitive" } } },
-      ];
-    }
-
-    if (from || to) {
-      where.startAt = {};
-      if (from) where.startAt.gte = new Date(from);
-      if (to) {
-        const end = new Date(to);
-        end.setDate(end.getDate() + 1); // inclusive end date
-        where.startAt.lt = end;
-      }
-    }
-
-    const take = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
-    const skip = Math.max(parseInt(offset, 10) || 0, 0);
-
-    const [items, total] = await prisma.$transaction([
-      prisma.session.findMany({
-        where,
-        include: {
-          user: { select: { id: true, email: true, name: true } },
-          teacher: { select: { id: true, email: true, name: true } },
-        },
-        orderBy: { startAt: "desc" },
-        take,
-        skip,
-      }),
-      prisma.session.count({ where }),
-    ]);
-
-    res.json({
-      items,
-      total,
-      limit: take,
-      offset: skip,
-      hasMore: skip + items.length < total,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to load sessions" });
-  }
-});
-
-// Admin: teacher workload summary
-// GET /api/admin/teachers/workload?from=&to=&teacherId=
-app.get(
-  "/api/admin/teachers/workload",
-  requireAuth,
-  requireAdmin,
-  async (req, res) => {
-    const { from = "", to = "", teacherId = "" } = req.query;
-
-    const where = {};
-    if (teacherId) where.teacherId = Number(teacherId);
-    if (from || to) {
-      where.startAt = {};
-      if (from) where.startAt.gte = new Date(from);
-      if (to) {
-        const end = new Date(to);
-        end.setDate(end.getDate() + 1);
-        where.startAt.lt = end;
-      }
-    }
-
-    const rows = await prisma.session.findMany({
-      where: { ...where, teacherId: { not: null } },
-      include: {
-        teacher: {
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            rateHourlyCents: true,
-            ratePerSessionCents: true,
-          },
-        },
-      },
-      orderBy: { startAt: "asc" },
-    });
-
-    // group in JS (simpler than Prisma groupBy preview)
-    const map = new Map(); // teacherId -> { teacher, sessions, minutes }
-    for (const s of rows) {
-      const t = s.teacher;
-      const key = t.id;
-      const end = s.endAt ? new Date(s.endAt) : null;
-      const start = new Date(s.startAt);
-      const minutes = end ? Math.max(0, Math.round((end - start) / 60000)) : 60; // default 60 if missing
-      if (!map.has(key)) map.set(key, { teacher: t, sessions: 0, minutes: 0 });
-      const agg = map.get(key);
-      agg.sessions += 1;
-      agg.minutes += minutes;
-    }
-
-    const result = Array.from(map.values()).map(
-      ({ teacher, sessions, minutes }) => {
-        const hourly = teacher.rateHourlyCents || 0;
-        const perSess = teacher.ratePerSessionCents || 0;
-        const hourlyCost = (minutes / 60) * hourly;
-        const perSessCost = sessions * perSess;
-        const method = hourly ? "hourly" : perSess ? "per_session" : "none";
-        const applied =
-          method === "hourly"
-            ? hourlyCost
-            : method === "per_session"
-            ? perSessCost
-            : 0;
-        return {
-          teacher: { id: teacher.id, name: teacher.name, email: teacher.email },
-          sessions,
-          minutes,
-          hours: +(minutes / 60).toFixed(2),
-          rateHourlyCents: hourly,
-          ratePerSessionCents: perSess,
-          payrollHourlyUSD: centsToDollars(hourlyCost),
-          payrollPerSessionUSD: centsToDollars(perSessCost),
-          payrollAppliedUSD: centsToDollars(applied),
-          method,
-        };
-      }
-    );
-
-    res.json(result);
-  }
-);
-
-// Admin: create session
-app.post("/api/sessions", requireAuth, requireAdmin, async (req, res) => {
-  const {
-    userId,
-    title,
-    date,
-    startTime,
-    duration,
-    endTime,
-    meetingUrl,
-    notes,
-  } = req.body;
-
-  if (!userId || !title || !date || !startTime) {
-    return res
-      .status(400)
-      .json({ error: "userId, title, date, startTime are required" });
-  }
-
-  const startAt = new Date(`${date}T${startTime}:00`);
-  if (Number.isNaN(startAt.getTime()))
-    return res.status(400).json({ error: "Invalid date/time" });
-
-  let endAt = null;
-  if (endTime) {
-    const e = new Date(`${date}T${endTime}:00`);
-    if (Number.isNaN(e.getTime()))
-      return res.status(400).json({ error: "Invalid endTime" });
-    endAt = e;
-  } else if (duration) {
-    endAt = new Date(startAt.getTime() + Number(duration) * 60 * 1000);
-  }
-
-  // --- conflict check (authoritative) ---
-  const proposedTeacherId = req.body.teacherId
-    ? Number(req.body.teacherId)
-    : null;
-  const conflicts = await findSessionConflicts({
-    startAt,
-    endAt,
-    userId: Number(userId),
-    teacherId: proposedTeacherId,
-  });
-  if (conflicts.length) {
-    return res.status(409).json({ error: "Time conflict", conflicts });
-  }
-  // --- end conflict check ---
-
-  try {
-    const session = await prisma.session.create({
-      data: {
-        title,
-        startAt,
-        endAt,
-        meetingUrl: meetingUrl || null,
-        notes: notes || null,
-        user: { connect: { id: Number(userId) } },
-        ...(req.body.teacherId
-          ? { teacher: { connect: { id: Number(req.body.teacherId) } } }
-          : {}),
-      },
-      include: {
-        user: { select: { id: true, email: true, name: true } },
-        teacher: { select: { id: true, email: true, name: true } },
-      },
-    });
-    res.status(201).json(session);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to create session" });
-  }
-});
-
-// Admin: update session
-app.patch("/api/sessions/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
-  const {
-    title,
-    date,
-    startTime,
-    endTime,
-    duration,
-    meetingUrl,
-    notes,
-    userId,
-  } = req.body;
-  const data = {};
-
-  if (title !== undefined) data.title = title;
-  if (meetingUrl !== undefined) data.meetingUrl = meetingUrl || null;
-  if (notes !== undefined) data.notes = notes || null;
-  if (userId) data.user = { connect: { id: Number(userId) } };
-
-  // teacherId can be set, changed, or cleared
-  if (req.body.teacherId !== undefined) {
-    const t = Number(req.body.teacherId);
-    if (t) data.teacher = { connect: { id: t } };
-    else data.teacher = { disconnect: true }; // when "" or 0 is sent
-  }
-
-  if (date && startTime) {
-    const startAt = new Date(`${date}T${startTime}:00`);
-    if (Number.isNaN(startAt.getTime()))
-      return res.status(400).json({ error: "Invalid date/time" });
-    data.startAt = startAt;
-
-    if (endTime) {
-      const e = new Date(`${date}T${endTime}:00`);
-      if (Number.isNaN(e.getTime()))
-        return res.status(400).json({ error: "Invalid endTime" });
-      data.endAt = e;
-    } else if (duration) {
-      data.endAt = new Date(startAt.getTime() + Number(duration) * 60 * 1000);
-    } else {
-      data.endAt = null;
-    }
-  }
-
-  // Fetch existing to know current associations and fallback times
-  const existing = await prisma.session.findUnique({
-    where: { id },
-    select: {
-      userId: true,
-      teacherId: true,
-      startAt: true,
-      endAt: true,
-      status: true,
-    },
-  });
-  if (!existing) return res.status(404).json({ error: "Not found" });
-
-  // Determine final proposed times (new values or keep existing)
-  const finalStart = data.startAt ?? existing.startAt;
-  const finalEnd = data.endAt === undefined ? existing.endAt : data.endAt;
-
-  // Determine final associations (new values or keep existing)
-  const finalUserId = req.body.userId
-    ? Number(req.body.userId)
-    : existing.userId;
-  const finalTeacherId =
-    req.body.teacherId !== undefined
-      ? Number(req.body.teacherId) || null
-      : existing.teacherId;
-
-  // --- conflict check ---
-  const conflicts = await findSessionConflicts({
-    startAt: finalStart,
-    endAt: finalEnd,
-    userId: finalUserId,
-    teacherId: finalTeacherId,
-    excludeId: id,
-  });
-  if (conflicts.length) {
-    return res.status(409).json({ error: "Time conflict", conflicts });
-  }
-  // --- end conflict check ---
-
-  try {
-    const updated = await prisma.session.update({ where: { id }, data });
-    res.json(updated);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to update session" });
-  }
-});
-
-// Admin: delete session
-app.delete("/api/sessions/:id", requireAuth, requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
-  try {
-    await prisma.session.delete({ where: { id } });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to delete session" });
   }
 });
 
@@ -1826,18 +1514,11 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 // Sessions (Learner)
 // ============================================================================
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sessions (learner): GET /api/me/sessions
-// ?range=upcoming|past&limit=10
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/me/sessions?range=upcoming|past&limit=10
-app.get("/api/me/sessions", async (req, res) => {
+app.get("/api/me/sessions", requireAuth, async (req, res) => {
   try {
-    const u = req.session?.user;
-    if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-
-    const userId = u.id;
-    const role = u.role || "learner";
+    const userId = req.viewUserId;
+    const role = req.user.role || "learner";
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
@@ -1850,12 +1531,6 @@ app.get("/api/me/sessions", async (req, res) => {
     // Don’t hide pre-migration NULL statuses; just exclude explicit canceled
     const notCanceled = { NOT: { status: "canceled" } };
 
-    // Upcoming should include:
-    //   - future sessions (startAt >= now), and
-    //   - in-progress sessions (startAt <= now && endAt >= now OR endAt is NULL but started within last 2h)
-    // Past should include:
-    //   - strictly ended sessions (endAt < now), OR
-    //   - sessions that started < now and have no endAt but started >2h ago (considered done)
     const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
     const where =
@@ -1901,8 +1576,8 @@ app.get("/api/me/sessions", async (req, res) => {
         startAt: true,
         endAt: true,
         meetingUrl: true,
-        status: true, // OK if you ran migrations; if not, comment out
-        feedbackScore: true, // "
+        status: true,
+        feedbackScore: true,
       },
     });
 
@@ -1915,13 +1590,10 @@ app.get("/api/me/sessions", async (req, res) => {
 
 // GET /api/me/sessions-between?start=ISO&end=ISO
 // Returns sessions overlapping the visible calendar range, excluding canceled.
-app.get("/api/me/sessions-between", async (req, res) => {
+app.get("/api/me/sessions-between", requireAuth, async (req, res) => {
   try {
-    const u = req.session?.user;
-    if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-
-    const userId = u.id;
-    const role = u.role || "learner";
+    const userId = req.viewUserId;
+    const role = req.user.role || "learner";
     const { start, end } = req.query;
     const includeCanceled = String(req.query.includeCanceled) === "true";
 
@@ -1939,7 +1611,7 @@ app.get("/api/me/sessions-between", async (req, res) => {
       where: {
         AND: [
           whereBase,
-          includeCanceled ? {} : { status: { not: "canceled" } }, // <-- changed
+          includeCanceled ? {} : { status: { not: "canceled" } },
           { startAt: { lte: endAt } },
           { OR: [{ endAt: { gte: startAt } }, { endAt: null }] },
         ],
@@ -1962,28 +1634,19 @@ app.get("/api/me/sessions-between", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Sessions: POST /api/sessions/:id/cancel
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// Sessions: POST /api/sessions/:id/cancel
-// Learner can cancel their own, teacher can cancel theirs, admin can cancel any
-// ─────────────────────────────────────────────────────────────────────────────
-app.post("/api/sessions/:id/cancel", async (req, res) => {
+app.post("/api/sessions/:id/cancel", requireAuth, async (req, res) => {
   try {
-    const u = req.session?.user;
-    if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-
     const id = Number(req.params.id);
 
     // Fetch the session first
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) return res.status(404).json({ error: "Session not found" });
 
-    // Authorization:
-    const isOwner = session.userId === u.id;
-    const isTeacher = session.teacherId === u.id;
-    const isAdmin = u.role === "admin";
+    // Authorization (owner/teacher/admin):
+    const isOwner = session.userId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
 
     if (!(isOwner || isTeacher || isAdmin)) {
       return res.status(403).json({ error: "Forbidden" });
@@ -2001,14 +1664,9 @@ app.post("/api/sessions/:id/cancel", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Sessions: POST /api/sessions/:id/reschedule  { startAt, endAt }
-// ─────────────────────────────────────────────────────────────────────────────
-app.post("/api/sessions/:id/reschedule", async (req, res) => {
+app.post("/api/sessions/:id/reschedule", requireAuth, async (req, res) => {
   try {
-    const u = req.session?.user;
-    if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-
     const id = Number(req.params.id);
     const { startAt, endAt } = req.body;
 
@@ -2021,9 +1679,9 @@ app.post("/api/sessions/:id/reschedule", async (req, res) => {
     if (!s) return res.status(404).json({ error: "Not found" });
 
     // Authorization: owner, assigned teacher, or admin
-    const isOwner = s.userId === u.id;
-    const isTeacher = s.teacherId === u.id;
-    const isAdmin = u.role === "admin";
+    const isOwner = s.userId === req.user.id;
+    const isTeacher = s.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
     if (!(isOwner || isTeacher || isAdmin)) {
       return res.status(403).json({ error: "Forbidden" });
     }
@@ -2055,6 +1713,7 @@ app.post("/api/sessions/:id/reschedule", async (req, res) => {
     res.status(400).json({ error: "Failed to reschedule session" });
   }
 });
+
 /* ========================================================================== */
 /*                                  USERS                                     */
 /* ========================================================================== */
@@ -2127,12 +1786,10 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
   }
 });
 
-//a health route (nice for checks):
-
+// a health route (nice for checks):
 app.get("/health", (_req, res) => res.send("ok"));
 
-//check the dbnpm start
-
+// check the db
 app.get("/api/db-check", async (_req, res) => {
   try {
     const ok = await prisma.$queryRaw`select 1 as ok`;
