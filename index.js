@@ -406,9 +406,23 @@ if (ALLOW_LEGACY_REGISTER) {
 /*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
 
-// --- Google Sign-in: receives `{ credential: <idToken> }` from GIS
+// /api/auth/google
+// Requires:
+//   - const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || "";
+//   - const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+//   - async function randomHashedPassword() { ... }
+//   - const prisma = new PrismaClient();
+
 app.post("/api/auth/google", express.json(), async (req, res) => {
   try {
+    // Basic config sanity
+    if (!GOOGLE_CLIENT_ID) {
+      console.error(
+        "[google] Missing GOOGLE_CLIENT_ID env; cannot verify token."
+      );
+      return res.status(500).json({ ok: false, error: "config_error" });
+    }
+
     // 1) read GIS payload
     const credential =
       typeof req.body?.credential === "string" ? req.body.credential : "";
@@ -416,10 +430,17 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       return res.status(400).json({ ok: false, error: "missing_credential" });
     }
 
+    // Helpful diagnostics
+    const origin = req.get("origin") || "unknown-origin";
+    console.log("[google] verify start", {
+      origin,
+      audience: GOOGLE_CLIENT_ID.slice(0, 10) + "...",
+    });
+
     // 2) verify ID token against your client id
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
-      audience: GOOGLE_CLIENT_ID, // must match the frontend client id
+      audience: GOOGLE_CLIENT_ID, // must match the frontend client id used by @react-oauth/google
     });
 
     const payload = ticket.getPayload(); // sub, email, name, picture, email_verified, ...
@@ -433,7 +454,7 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       return res.status(400).json({ ok: false, error: "unverified_email" });
     }
 
-    // 3) find or create user by email (your current model)
+    // 3) find or create user by email
     let user = await prisma.user.findUnique({ where: { email } });
 
     if (user?.isDisabled) {
@@ -450,6 +471,7 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
           name: true,
           role: true,
           timezone: true,
+          isDisabled: true,
         },
       });
     } else {
@@ -462,19 +484,52 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
           name: true,
           role: true,
           timezone: true,
+          isDisabled: true,
         },
       });
     }
 
-    // 4) establish session (cookie must be SameSite=None; Secure=true in session config)
+    // 4) establish session (cookie must be SameSite=None; Secure=true in prod session config)
     req.session.asUserId = null; // clear any impersonation
-    req.session.user = user;
+    req.session.user = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      timezone: user.timezone ?? null,
+    };
 
-    return res.json({ ok: true, user });
+    // Ensure session is persisted before responding
+    req.session.save((saveErr) => {
+      if (saveErr) {
+        console.error("[google] session.save error:", saveErr);
+        return res.status(500).json({ ok: false, error: "session_error" });
+      }
+      console.log("[google] verify ok → session established for", email);
+      return res.json({ ok: true, user: req.session.user });
+    });
   } catch (err) {
-    // Common causes: wrong GOOGLE_CLIENT_ID, expired/invalid token
-    console.error("google auth error:", err?.message || err);
-    return res.status(401).json({ ok: false, error: "invalid_google_token" });
+    // Distinguish token/audience problems from other errors
+    const msg = (err && (err.message || err.toString())) || "unknown_error";
+    console.error("[google] verify error:", msg);
+
+    // Common token issues → 401
+    const tokenErr = [
+      "Wrong number of segments",
+      "invalid_token",
+      "Token used too late",
+      "audience mismatch",
+      "Invalid token signature",
+      "malformed",
+      "expired",
+    ].some((s) => msg.toLowerCase().includes(s.toLowerCase()));
+
+    if (tokenErr) {
+      return res.status(401).json({ ok: false, error: "invalid_google_token" });
+    }
+
+    // Everything else → 500
+    return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
@@ -1798,6 +1853,16 @@ app.get("/api/db-check", async (_req, res) => {
     console.error(e);
     res.status(500).json({ error: "DB not reachable" });
   }
+});
+
+// Friendly error handler (turns CORS errors into 403 instead of 500)
+app.use((err, req, res, next) => {
+  if (err && err.message === "Not allowed by CORS") {
+    console.warn("CORS blocked:", req.headers.origin);
+    return res.status(403).json({ error: "Origin not allowed" });
+  }
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal Server Error" });
 });
 
 /* ========================================================================== */
