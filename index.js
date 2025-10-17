@@ -71,8 +71,6 @@ app.use(express.json());
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:3000";
 
-app.use(express.json());
-
 // trust Render's proxy so 'secure' cookies work properly
 app.set("trust proxy", 1);
 
@@ -399,7 +397,6 @@ if (ALLOW_LEGACY_REGISTER) {
 /*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
 // at top of file (once)
-const { OAuth2Client } = require("google-auth-library");
 
 // --- Google Sign-in: receives `{ credential: <idToken> }` from GIS
 app.post("/api/auth/google", express.json(), async (req, res) => {
