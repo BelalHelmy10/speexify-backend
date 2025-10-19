@@ -95,16 +95,23 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000")
   .split(",")
   .map((s) => s.trim());
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // Allow server-to-server or Postman requests
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    // No Origin header → server-to-server, SSR fetches, curl/Postman, etc.
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true, // <-- required for cookies
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204, // some browsers expect 204 for preflight
+};
+
+// Must be before your routes
+app.use(cors(corsOptions));
+// Ensure OPTIONS preflight is handled for all routes
+app.options("*", cors(corsOptions));
 
 if (!process.env.SESSION_SECRET) {
   console.warn(
@@ -112,11 +119,18 @@ if (!process.env.SESSION_SECRET) {
   );
 }
 
-const isProd = process.env.NODE_ENV === "production";
-
 // In production we want cookies to work even on preview domains -> SameSite=None + Secure
 const cookieSameSite = isProd ? "none" : "lax";
 const cookieSecure = isProd ? true : false;
+
+// VERY IMPORTANT behind Render/Heroku/NGINX etc.
+app.set("trust proxy", 1); // so secure cookies work over HTTPS through the proxy
+
+const isProd = process.env.NODE_ENV === "production";
+
+// If your frontend is speexify.com, use the parent domain so the cookie
+// is valid across subdomains (optional but recommended).
+const cookieDomain = isProd ? ".speexify.com" : undefined;
 
 app.use(
   session({
@@ -126,8 +140,10 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: cookieSecure,
-      sameSite: cookieSameSite,
+      secure: isProd, // ✅ secure in prod
+      sameSite: isProd ? "none" : "lax", // ✅ "none" for cross-site in prod
+      domain: cookieDomain, // ✅ optional but recommended
+      path: "/", // ✅ be explicit
       maxAge: 1000 * 60 * 60 * 24, // 1 day
     },
   })
@@ -729,11 +745,16 @@ app.get("/api/auth/me", async (req, res) => {
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     const isProd = process.env.NODE_ENV === "production";
+    const cookieDomain = isProd ? ".speexify.com" : undefined;
+
     res.clearCookie("speexify.sid", {
       httpOnly: true,
-      sameSite: isProd ? "none" : "lax",
       secure: isProd,
+      sameSite: isProd ? "none" : "lax",
+      domain: cookieDomain,
+      path: "/", // must match
     });
+
     res.json({ ok: true });
   });
 });
