@@ -12,8 +12,6 @@ import nodemailer from "nodemailer";
 import { OAuth2Client } from "google-auth-library";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auth & DB: bcrypt for password hashing, Prisma for DB, crypto for code hashing
-// ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
@@ -22,12 +20,10 @@ const app = express();
 const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
-// define early so it’s safe to use everywhere below
 const isProd = process.env.NODE_ENV === "production";
 
 /* ========================================================================== */
 /*                         GOOGLE CLIENT ID (Unified)                         */
-/*  Use the SAME env var name as the frontend for consistency.                */
 /* ========================================================================== */
 const GOOGLE_CLIENT_ID =
   process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
@@ -44,7 +40,6 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 /* ========================================================================== */
 /*                             MAILER (shared)                                 */
-/*  Build one Nodemailer transporter at startup. Fallback logs emails in dev.  */
 /* ========================================================================== */
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Speexify <no-reply@speexify.local>";
@@ -55,13 +50,12 @@ const hasSMTP =
 let transporter = null;
 if (hasSMTP) {
   transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST, // e.g. smtp.sendgrid.net
-    port: Number(process.env.SMTP_PORT || 587), // 587 (STARTTLS)
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
     secure: false,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
   });
 
-  // Optional: verify connection once at boot
   transporter
     .verify()
     .then(() => console.log("📧 SMTP transporter ready"))
@@ -70,11 +64,10 @@ if (hasSMTP) {
         "⚠️  SMTP verify failed. Falling back to console email.",
         err?.message || err
       );
-      transporter = null; // ensure we fall back to console logs
+      transporter = null;
     });
 }
 
-/** Send an email (uses transporter if available; else logs to console in dev) */
 async function sendEmail(to, subject, html) {
   if (!transporter) {
     console.log(`\n[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${html}\n`);
@@ -88,32 +81,26 @@ async function sendEmail(to, subject, html) {
 /* ========================================================================== */
 
 app.use(express.json());
-
-// trust Render's proxy so 'secure' cookies work properly
 app.set("trust proxy", 1);
 
-// Allowlist multiple origins via env variable
-// Example: ALLOWED_ORIGINS="http://localhost:3000,https://www.speexify.com,https://speexify-frontend.vercel.app"
+// ALLOWED_ORIGINS="http://localhost:3000,https://www.speexify.com,https://speexify-frontend.vercel.app"
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:3000")
   .split(",")
   .map((s) => s.trim());
 
 const corsOptions = {
   origin(origin, cb) {
-    // No Origin header → server-to-server, SSR fetches, curl/Postman, etc.
     if (!origin) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
   },
-  credentials: true, // <-- required for cookies
+  credentials: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  optionsSuccessStatus: 204, // some browsers expect 204 for preflight
+  optionsSuccessStatus: 204,
 };
 
-// Must be before your routes
 app.use(cors(corsOptions));
-// Ensure OPTIONS preflight is handled for all routes (use RegExp, not string)
 app.options(/.*/, cors(corsOptions));
 
 if (!process.env.SESSION_SECRET) {
@@ -122,8 +109,6 @@ if (!process.env.SESSION_SECRET) {
   );
 }
 
-// If your frontend is speexify.com, use the parent domain so the cookie
-// is valid across subdomains (optional but recommended).
 const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
 console.log("Session cookie domain:", cookieDomain ?? "(host-only)");
 
@@ -135,11 +120,11 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: isProd, // ✅ secure in prod
-      sameSite: isProd ? "none" : "lax", // ✅ "none" for cross-site in prod
-      domain: cookieDomain, // ✅ optional but recommended
-      path: "/", // ✅ be explicit
-      maxAge: 1000 * 60 * 60 * 24, // 1 day
+      secure: isProd,
+      sameSite: isProd ? "none" : "lax",
+      domain: cookieDomain,
+      path: "/",
+      maxAge: 1000 * 60 * 60 * 24,
     },
   })
 );
@@ -148,26 +133,19 @@ app.use(
 /*                                  HELPERS                                   */
 /* ========================================================================== */
 
-// Small utilities for the verification / codes flow
-const genCode = () => String(Math.floor(100000 + Math.random() * 900000)); // 6-digit numeric
+const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
 const hashCode = (raw) =>
   crypto.createHash("sha256").update(String(raw)).digest("hex");
 
-// For OAuth accounts we don't need a user-chosen password.
-// We'll store a random bcrypt hash to satisfy NOT NULL schema.
 async function randomHashedPassword() {
   const rand = crypto.randomBytes(32).toString("hex");
   return await bcrypt.hash(rand, 10);
 }
 
-// Cents → number of dollars (float) for quick display (admin only UIs)
 function centsToDollars(cents) {
   return typeof cents === "number" ? Math.round(cents) / 100 : 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Unified “public user” projection + audit helper
-// ─────────────────────────────────────────────────────────────────────────────
 const publicUserSelect = {
   id: true,
   email: true,
@@ -179,20 +157,14 @@ const publicUserSelect = {
   ratePerSessionCents: true,
 };
 
-/** Minimal audit helper (no-op if Audit model not added yet). */
 async function audit(actorId, action, entity, entityId, meta = {}) {
   try {
     await prisma.audit.create({
       data: { actorId, action, entity, entityId, meta },
     });
-  } catch {
-    /* ignore if table not present yet */
-  }
+  } catch {}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tightened auth guards with “view-as” support
-// ─────────────────────────────────────────────────────────────────────────────
 async function requireAuth(req, res, next) {
   const sessionUser = req.session.user;
   if (!sessionUser) return res.status(401).json({ error: "Not authenticated" });
@@ -208,8 +180,8 @@ async function requireAuth(req, res, next) {
       return res.status(403).json({ error: "Account disabled" });
     }
 
-    req.user = dbUser; // the admin (or normal) user actually logged in
-    req.viewUserId = req.session.asUserId || dbUser.id; // who we’re “viewing as”
+    req.user = dbUser;
+    req.viewUserId = req.session.asUserId || dbUser.id;
     next();
   } catch (e) {
     console.error("requireAuth error:", e);
@@ -224,11 +196,7 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Session overlap helpers (server-side authoritative validation)
-// ─────────────────────────────────────────────────────────────────────────────
 function overlapsFilter(startAt, endAt) {
-  // If no endAt, treat as open-ended to the far future (or clamp if you prefer)
   const end = endAt ? new Date(endAt) : new Date("2999-12-31");
   return {
     startAt: { lt: end },
@@ -236,10 +204,6 @@ function overlapsFilter(startAt, endAt) {
   };
 }
 
-/**
- * Check for conflicts for a learner and/or a teacher.
- * Excludes "canceled" sessions and can exclude a specific sessionId (for edits).
- */
 async function findSessionConflicts({
   startAt,
   endAt,
@@ -256,7 +220,6 @@ async function findSessionConflicts({
   const clauses = [];
   if (userId) clauses.push({ ...whereCommon, userId });
   if (teacherId) clauses.push({ ...whereCommon, teacherId });
-
   if (!clauses.length) return [];
 
   return prisma.session.findMany({
@@ -287,7 +250,6 @@ app.get("/api/message", (_req, res) =>
 /*                             PUBLIC: PACKAGES                                */
 /* ========================================================================== */
 
-// Keep the section header comment you already have
 app.get("/api/packages", async (req, res) => {
   try {
     const aud = String(req.query?.audience || "").toUpperCase();
@@ -297,7 +259,6 @@ app.get("/api/packages", async (req, res) => {
     const packages = await prisma.package.findMany({
       where,
       orderBy: [{ sortOrder: "asc" }, { priceUSD: "asc" }],
-      // return everything the frontend might need
       select: {
         id: true,
         title: true,
@@ -316,7 +277,6 @@ app.get("/api/packages", async (req, res) => {
       },
     });
 
-    // harmonize naming with frontend (it expects "featuresRaw")
     const mapped = packages.map((p) => ({ ...p, featuresRaw: p.features }));
     res.json(mapped);
   } catch (error) {
@@ -325,7 +285,6 @@ app.get("/api/packages", async (req, res) => {
   }
 });
 
-// POST /api/contact  -> emails the team (replace addresses as needed)
 app.post("/api/contact", async (req, res) => {
   const { name, email, company, phone, role, topic, budget, message } =
     req.body || {};
@@ -356,16 +315,12 @@ app.post("/api/contact", async (req, res) => {
 
 /* ========================================================================== */
 /*                       AUTH: EMAIL/PASSWORD (LEGACY)                        */
-/*  NOTE: We now *guard* the old one-step register endpoint.                   */
-/*        By default, it is DISABLED and returns 410 Gone.                     */
-/*        Set ALLOW_LEGACY_REGISTER=true in .env to temporarily re-enable.     */
 /* ========================================================================== */
 
 const ALLOW_LEGACY_REGISTER =
   String(process.env.ALLOW_LEGACY_REGISTER || "").toLowerCase() === "true";
 
 if (ALLOW_LEGACY_REGISTER) {
-  // ── Legacy register (optional, not recommended) ───────────────────────────
   app.post("/api/auth/register", async (req, res) => {
     try {
       let { email, password, name } = req.body;
@@ -391,8 +346,8 @@ if (ALLOW_LEGACY_REGISTER) {
         },
       });
 
-      req.session.asUserId = null; // clear view-as
-      req.session.user = user; // start session
+      req.session.asUserId = null;
+      req.session.user = user;
       res.json({ user });
     } catch (err) {
       console.error("Register error:", err);
@@ -400,7 +355,6 @@ if (ALLOW_LEGACY_REGISTER) {
     }
   });
 } else {
-  // ── Hard stop: force the new verified flow ────────────────────────────────
   app.post("/api/auth/register", (_req, res) => {
     return res.status(410).json({
       error:
@@ -411,15 +365,10 @@ if (ALLOW_LEGACY_REGISTER) {
 
 /* ========================================================================== */
 /*                           GOOGLE OAUTH (ID TOKEN)                           */
-/*  POST /api/auth/google  { credential }                                      */
-/*  - Verify Google ID token (aud=GOOGLE_CLIENT_ID)                            */
-/*  - If user exists (by email): sign them in (block if disabled)              */
-/*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
 
 app.post("/api/auth/google", express.json(), async (req, res) => {
   try {
-    // Basic config sanity
     if (!GOOGLE_CLIENT_ID) {
       console.error(
         "[google] Missing GOOGLE_CLIENT_ID env; cannot verify token."
@@ -427,27 +376,24 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       return res.status(500).json({ ok: false, error: "config_error" });
     }
 
-    // 1) read GIS payload
     const credential =
       typeof req.body?.credential === "string" ? req.body.credential : "";
     if (!credential) {
       return res.status(400).json({ ok: false, error: "missing_credential" });
     }
 
-    // Helpful diagnostics
     const origin = req.get("origin") || "unknown-origin";
     console.log("[google] verify start", {
       origin,
       audience: GOOGLE_CLIENT_ID.slice(0, 10) + "...",
     });
 
-    // 2) verify ID token against your client id
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
-      audience: GOOGLE_CLIENT_ID, // must match the frontend client id used by @react-oauth/google
+      audience: GOOGLE_CLIENT_ID,
     });
 
-    const payload = ticket.getPayload(); // sub, email, name, picture, email_verified, ...
+    const payload = ticket.getPayload();
     const email = String(payload?.email || "")
       .toLowerCase()
       .trim();
@@ -458,9 +404,7 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       return res.status(400).json({ ok: false, error: "unverified_email" });
     }
 
-    // 3) find or create user by email
     let user = await prisma.user.findUnique({ where: { email } });
-
     if (user?.isDisabled) {
       return res.status(403).json({ ok: false, error: "account_disabled" });
     }
@@ -479,7 +423,6 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
         },
       });
     } else {
-      // normalize returned shape
       user = await prisma.user.findUnique({
         where: { email },
         select: {
@@ -493,8 +436,7 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       });
     }
 
-    // 4) establish session (cookie must be SameSite=None; Secure=true in prod session config)
-    req.session.asUserId = null; // clear any impersonation
+    req.session.asUserId = null;
     req.session.user = {
       id: user.id,
       email: user.email,
@@ -503,14 +445,11 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
       timezone: user.timezone ?? null,
     };
 
-    // Ensure session is persisted before responding
     req.session.save((saveErr) => {
       if (saveErr) {
         console.error("[google] session.save error:", saveErr);
         return res.status(500).json({ ok: false, error: "session_error" });
       }
-
-      // Never cache the login response; vary by Cookie
       res.set({
         "Cache-Control":
           "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -519,16 +458,13 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
         "Surrogate-Control": "no-store",
         Vary: "Cookie",
       });
-
       console.log("[google] verify ok → session established for", email);
       return res.json({ ok: true, user: req.session.user });
     });
   } catch (err) {
-    // Distinguish token/audience problems from other errors
     const msg = (err && (err.message || err.toString())) || "unknown_error";
     console.error("[google] verify error:", msg);
 
-    // Common token issues → 401
     const tokenErr = [
       "Wrong number of segments",
       "invalid_token",
@@ -542,19 +478,14 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
     if (tokenErr) {
       return res.status(401).json({ ok: false, error: "invalid_google_token" });
     }
-
-    // Everything else → 500
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
 /* ========================================================================== */
 /*                          PASSWORD RESET (2-step)                            */
-/*  Step 1: /api/auth/password/reset/start     → send 6-digit code            */
-/*  Step 2: /api/auth/password/reset/complete  → verify & set new password    */
 /* ========================================================================== */
 
-// START: always respond {ok:true} (don’t leak whether an email exists)
 app.post("/api/auth/password/reset/start", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
@@ -571,7 +502,7 @@ app.post("/api/auth/password/reset/start", async (req, res) => {
     if (prev) {
       const last = new Date(prev.updatedAt).getTime();
       const elapsed = Date.now() - last;
-      if (elapsed < 60_000) return res.json({ ok: true }); // silent throttle
+      if (elapsed < 60_000) return res.json({ ok: true });
     }
 
     const code = genCode();
@@ -607,7 +538,6 @@ app.post("/api/auth/password/reset/start", async (req, res) => {
   }
 });
 
-// COMPLETE: verify code & set new password
 app.post("/api/auth/password/reset/complete", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
@@ -626,7 +556,7 @@ app.post("/api/auth/password/reset/complete", async (req, res) => {
         .json({ error: "New password must be at least 8 characters" });
 
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(400).json({ error: "Invalid code" }); // generic
+    if (!user) return res.status(400).json({ error: "Invalid code" });
 
     const pr = await prisma.passwordResetCode.findUnique({ where: { email } });
     if (!pr) return res.status(400).json({ error: "Invalid or expired code" });
@@ -699,7 +629,7 @@ app.post("/api/auth/login", async (req, res) => {
       role: user.role,
       timezone: user.timezone ?? null,
     };
-    req.session.asUserId = null; // clear view-as
+    req.session.asUserId = null;
     req.session.user = sessionUser;
     res.json({ user: sessionUser });
   } catch (err) {
@@ -708,9 +638,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// WHO AM I (session peek) — compatible shape { user: ... }
 app.get("/api/auth/me", async (req, res) => {
-  // ❌ never cache auth state
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
     Pragma: "no-cache",
@@ -719,7 +647,6 @@ app.get("/api/auth/me", async (req, res) => {
     Vary: "Cookie",
   });
 
-  // no session → always { user: null }
   if (!req.session.user) return res.json({ user: null });
 
   const adminUser = await prisma.user.findUnique({
@@ -727,13 +654,11 @@ app.get("/api/auth/me", async (req, res) => {
     select: publicUserSelect,
   });
 
-  // disabled / missing → clear and return { user: null }
   if (!adminUser || adminUser.isDisabled) {
     req.session.destroy(() => {});
     return res.json({ user: null });
   }
 
-  // if impersonating, return viewed user + extra flags (but still under `user`)
   if (req.session.asUserId) {
     const asUser = await prisma.user.findUnique({
       where: { id: req.session.asUserId },
@@ -741,36 +666,29 @@ app.get("/api/auth/me", async (req, res) => {
     });
     return res.json({
       user: asUser ? { ...asUser, _impersonating: true } : null,
-      admin: adminUser, // optional, for banners like “viewing as”
+      admin: adminUser,
     });
   }
 
-  // normal case
   return res.json({ user: adminUser });
 });
 
-// LOGOUT (ensure cookie flags match session config so it clears properly)
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
-    const cookieDomain = isProd ? ".speexify.com" : undefined;
-
+    // ✅ use the same domain value as session config
     res.clearCookie("speexify.sid", {
       httpOnly: true,
       secure: isProd,
       sameSite: isProd ? "none" : "lax",
       domain: cookieDomain,
-      path: "/", // must match
+      path: "/",
     });
-
     res.json({ ok: true });
   });
 });
 
 /* ========================================================================== */
 /*                   NEW AUTH: EMAIL VERIFICATION (RECOMMENDED)               */
-/*  Step 1: /api/auth/register/start     → send 6-digit code                  */
-/*  Step 2: /api/auth/register/complete  → verify code & create account       */
-/*  Requires Prisma model: VerificationCode.                                  */
 /* ========================================================================== */
 
 app.post("/api/auth/register/start", async (req, res) => {
@@ -903,14 +821,12 @@ app.post("/api/auth/register/complete", async (req, res) => {
 
 /* ========================================================================== */
 /*                              PROFILE (Step 2)                               */
-/*  User profile read/update for name/timezone; keeps session in sync.         */
-/*  NOTE (Step 2): read/write uses req.viewUserId → works with "view-as".      */
 /* ========================================================================== */
 
 app.get("/api/me", requireAuth, async (req, res) => {
   try {
     const me = await prisma.user.findUnique({
-      where: { id: req.viewUserId }, // ← view-as aware
+      where: { id: req.viewUserId },
       select: {
         id: true,
         email: true,
@@ -932,7 +848,7 @@ app.patch("/api/me", requireAuth, async (req, res) => {
   try {
     const { name, timezone } = req.body;
     const updated = await prisma.user.update({
-      where: { id: req.viewUserId }, // ← view-as aware
+      where: { id: req.viewUserId },
       data: { name: name?.trim() || null, timezone: timezone || null },
       select: { id: true, email: true, name: true, role: true, timezone: true },
     });
@@ -953,13 +869,7 @@ app.patch("/api/me", requireAuth, async (req, res) => {
 });
 
 /* ========================================================================== */
-/*                                 ADMIN: USERS (Step 3)                      */
-/*  Endpoints for:                                                            */
-/*   - List users with search                                                 */
-/*   - Create user                                                            */
-/*   - Change role / enable-disable                                           */
-/*   - Send reset-password code                                               */
-/*   - Impersonate (start/stop) with audit                                    */
+/*                                 ADMIN: USERS                                */
 /* ========================================================================== */
 
 app.get(
@@ -998,7 +908,6 @@ app.get(
   }
 );
 
-// CREATE user (admin invite)
 app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
   try {
     let { email, name = "", role = "learner", timezone = null } = req.body;
@@ -1010,7 +919,6 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) return res.status(409).json({ error: "User already exists" });
 
-    // Create with a random password; they’ll reset via email.
     const rand = crypto.randomBytes(16).toString("hex");
     const hashedPassword = await bcrypt.hash(rand, 10);
 
@@ -1026,7 +934,6 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
       },
     });
 
-    // Immediately send a reset code so they can set their password
     const code = genCode();
     const codeHash = hashCode(code);
     const expiresAt = new Date(Date.now() + 10 * 60_000);
@@ -1047,7 +954,6 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
     );
 
     await audit(req.user.id, "user_create", "User", user.id, { email, role });
-
     res.status(201).json({ user });
   } catch (err) {
     console.error("admin.createUser error:", err);
@@ -1059,8 +965,6 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
 /*                               ADMIN: PACKAGES                              */
 /* ========================================================================== */
 
-// GET /api/admin/packages?audience=&q=&active=
-// (Add requireAuth before requireAdmin so req.user is present)
 app.get("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { audience = "", q = "", active = "" } = req.query;
@@ -1091,7 +995,6 @@ app.get("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/admin/packages
 app.post("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   try {
     const {
@@ -1143,7 +1046,6 @@ app.post("/api/admin/packages", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// PATCH /api/admin/packages/:id
 app.patch(
   "/api/admin/packages/:id",
   requireAuth,
@@ -1171,7 +1073,6 @@ app.patch(
         if (req.body[k] !== undefined) data[k] = req.body[k];
       }
 
-      // normalize types
       if (data.priceUSD !== undefined)
         data.priceUSD = data.priceUSD === null ? null : Number(data.priceUSD);
       if (data.startingAtUSD !== undefined)
@@ -1196,7 +1097,6 @@ app.patch(
   }
 );
 
-// DELETE /api/admin/packages/:id
 app.delete(
   "/api/admin/packages/:id",
   requireAuth,
@@ -1213,7 +1113,6 @@ app.delete(
   }
 );
 
-// PATCH user: role / enable-disable / name / timezone
 app.patch(
   "/api/admin/users/:id",
   requireAuth,
@@ -1270,7 +1169,6 @@ app.patch(
   }
 );
 
-// Send password-reset code to a user (admin-triggered)
 app.post(
   "/api/admin/users/:id/reset-password",
   requireAuth,
@@ -1309,7 +1207,6 @@ app.post(
   }
 );
 
-// IMPERSONATE (start/stop)
 app.post(
   "/api/admin/impersonate/:id",
   requireAuth,
@@ -1327,7 +1224,7 @@ app.post(
       if (!target || target.isDisabled)
         return res.status(404).json({ error: "Target not available" });
 
-      req.session.asUserId = targetId; // mark “view as”
+      req.session.asUserId = targetId;
       await audit(req.user.id, "impersonate_start", "User", targetId);
       res.json({ ok: true });
     } catch (err) {
@@ -1360,49 +1257,235 @@ app.post(
   }
 );
 
-// PATCH teacher rates (cents). Body: { rateHourlyCents?, ratePerSessionCents? }
+/* ========================================================================== */
+/*                               ADMIN: SESSIONS                               */
+/*  ✅ New block powering the Admin dashboard                                 */
+/* ========================================================================== */
+
+// GET /api/admin/sessions   (?q=&userId=&teacherId=&range=upcoming|past&limit=&offset=)
+app.get("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const {
+      q = "",
+      userId = "",
+      teacherId = "",
+      range = "",
+      limit = "100",
+      offset = "0",
+    } = req.query;
+
+    const now = new Date();
+    const where = {
+      ...(userId ? { userId: Number(userId) } : {}),
+      ...(teacherId ? { teacherId: Number(teacherId) } : {}),
+      ...(q
+        ? {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { meetingUrl: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    if (range === "upcoming") {
+      where.AND = [
+        ...(where.AND || []),
+        { startAt: { gte: now } },
+        { status: { not: "canceled" } },
+      ];
+    } else if (range === "past") {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { endAt: { lt: now } },
+            { AND: [{ endAt: null }, { startAt: { lt: now } }] },
+          ],
+        },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      prisma.session.findMany({
+        where,
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          teacher: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: [{ startAt: "desc" }, { id: "desc" }],
+        take: Number(limit),
+        skip: Number(offset),
+      }),
+      prisma.session.count({ where }),
+    ]);
+
+    res.json({ items, total });
+  } catch (err) {
+    console.error("admin.sessions.list error:", err);
+    res.status(500).json({ error: "Failed to load sessions" });
+  }
+});
+
+// POST /api/admin/sessions
+app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    let {
+      title = "",
+      userId,
+      teacherId,
+      startAt,
+      endAt = null,
+      meetingUrl = null,
+      status = "scheduled",
+    } = req.body || {};
+
+    if (!userId || !teacherId || !startAt) {
+      return res
+        .status(400)
+        .json({ error: "userId, teacherId and startAt are required" });
+    }
+
+    userId = Number(userId);
+    teacherId = Number(teacherId);
+
+    const [u, t] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+      prisma.user.findUnique({
+        where: { id: teacherId },
+        select: { id: true },
+      }),
+    ]);
+    if (!u) return res.status(404).json({ error: "Learner not found" });
+    if (!t) return res.status(404).json({ error: "Teacher not found" });
+
+    const start = new Date(startAt);
+    const end = endAt ? new Date(endAt) : null;
+
+    const conflicts = await findSessionConflicts({
+      startAt: start,
+      endAt: end,
+      userId,
+      teacherId,
+    });
+    if (conflicts.length) {
+      return res.status(409).json({ error: "Time conflict", conflicts });
+    }
+
+    const created = await prisma.session.create({
+      data: {
+        title: title || "Session",
+        userId,
+        teacherId,
+        startAt: start,
+        endAt: end,
+        meetingUrl,
+        status,
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        teacher: { select: { id: true, name: true, email: true } },
+      },
+    });
+
+    await audit(req.user.id, "session_create", "Session", created.id, {
+      userId,
+      teacherId,
+      startAt: start,
+      endAt: end,
+    });
+    res.status(201).json(created);
+  } catch (err) {
+    console.error("admin.sessions.create error:", err);
+    res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+// PATCH /api/admin/sessions/:id
 app.patch(
-  "/api/admin/teachers/:id/rates",
+  "/api/admin/sessions/:id",
   requireAuth,
   requireAdmin,
   async (req, res) => {
-    const id = Number(req.params.id);
-    const { rateHourlyCents, ratePerSessionCents } = req.body;
+    try {
+      const id = Number(req.params.id);
+      const existing = await prisma.session.findUnique({ where: { id } });
+      if (!existing) return res.status(404).json({ error: "Not found" });
 
-    const teacher = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true, role: true },
-    });
-    if (!teacher) return res.status(404).json({ error: "Not found" });
-    if (teacher.role !== "teacher")
-      return res.status(400).json({ error: "User is not a teacher" });
+      const patch = {};
+      const allowed = [
+        "title",
+        "meetingUrl",
+        "status",
+        "startAt",
+        "endAt",
+        "userId",
+        "teacherId",
+      ];
+      for (const k of allowed) {
+        if (req.body[k] !== undefined) patch[k] = req.body[k];
+      }
 
-    const updated = await prisma.user.update({
-      where: { id },
-      data: {
-        ...(rateHourlyCents !== undefined
-          ? { rateHourlyCents: Number(rateHourlyCents) || 0 }
-          : {}),
-        ...(ratePerSessionCents !== undefined
-          ? { ratePerSessionCents: Number(ratePerSessionCents) || 0 }
-          : {}),
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        rateHourlyCents: true,
-        ratePerSessionCents: true,
-      },
-    });
+      const start = patch.startAt ? new Date(patch.startAt) : existing.startAt;
+      const end = patch.endAt ? new Date(patch.endAt) : existing.endAt;
+      const userId = patch.userId ? Number(patch.userId) : existing.userId;
+      const teacherId = patch.teacherId
+        ? Number(patch.teacherId)
+        : existing.teacherId;
 
-    await audit(req.user.id, "teacher_rates_update", "User", id, {
-      rateHourlyCents: updated.rateHourlyCents,
-      ratePerSessionCents: updated.ratePerSessionCents,
-    });
+      if (patch.startAt || patch.endAt || patch.userId || patch.teacherId) {
+        const conflicts = await findSessionConflicts({
+          startAt: start,
+          endAt: end,
+          userId,
+          teacherId,
+          excludeId: id,
+        });
+        if (conflicts.length) {
+          return res.status(409).json({ error: "Time conflict", conflicts });
+        }
+      }
 
-    res.json(updated);
+      if (patch.userId !== undefined) patch.userId = Number(patch.userId);
+      if (patch.teacherId !== undefined)
+        patch.teacherId = Number(patch.teacherId);
+      if (patch.startAt !== undefined) patch.startAt = new Date(patch.startAt);
+      if (patch.endAt !== undefined)
+        patch.endAt = patch.endAt ? new Date(patch.endAt) : null;
+
+      const updated = await prisma.session.update({
+        where: { id },
+        data: patch,
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          teacher: { select: { id: true, name: true, email: true } },
+        },
+      });
+
+      await audit(req.user.id, "session_update", "Session", id, patch);
+      res.json(updated);
+    } catch (err) {
+      console.error("admin.sessions.patch error:", err);
+      res.status(500).json({ error: "Failed to update session" });
+    }
+  }
+);
+
+// DELETE /api/admin/sessions/:id
+app.delete(
+  "/api/admin/sessions/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      await prisma.session.delete({ where: { id } });
+      await audit(req.user.id, "session_delete", "Session", id);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("admin.sessions.delete error:", err);
+      res.status(500).json({ error: "Failed to delete session" });
+    }
   }
 );
 
@@ -1410,8 +1493,6 @@ app.patch(
 /*                             SESSIONS (LESSONS)                              */
 /* ========================================================================== */
 
-// Check conflicts for a proposed time range
-// GET /api/sessions/conflicts?start=ISO&end=ISO&userId=&teacherId=&excludeId=
 app.get("/api/sessions/conflicts", requireAuth, async (req, res) => {
   const startParam = String(req.query.start || "");
   const endParam = req.query.end ? String(req.query.end) : null;
@@ -1447,13 +1528,12 @@ app.get("/api/sessions/conflicts", requireAuth, async (req, res) => {
   }
 });
 
-// List sessions for the *viewed* user (admin can “view as”)
 app.get("/api/sessions", requireAuth, async (req, res) => {
   try {
     const sessions = await prisma.session.findMany({
-      where: { userId: req.viewUserId }, // ← view-as aware
+      where: { userId: req.viewUserId },
       include: {
-        teacher: { select: { id: true, name: true, email: true } }, // 👈 include teacher
+        teacher: { select: { id: true, name: true, email: true } },
       },
       orderBy: { startAt: "asc" },
     });
@@ -1464,13 +1544,12 @@ app.get("/api/sessions", requireAuth, async (req, res) => {
   }
 });
 
-// Teacher: sessions assigned to me (view-as aware)
 app.get("/api/teacher/sessions", requireAuth, async (req, res) => {
   try {
     const sessions = await prisma.session.findMany({
       where: { teacherId: req.viewUserId },
       include: {
-        user: { select: { id: true, email: true, name: true } }, // learner
+        user: { select: { id: true, email: true, name: true } },
       },
       orderBy: { startAt: "asc" },
     });
@@ -1483,15 +1562,12 @@ app.get("/api/teacher/sessions", requireAuth, async (req, res) => {
 
 /* ========================================================================== */
 /*                          TEACHER SUMMARY (next)                            */
-/*  GET /api/teacher/summary                                                  */
-/*  Returns the next upcoming session this teacher will teach, plus counts.   */
 /* ========================================================================== */
 app.get("/api/teacher/summary", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId;
     const now = new Date();
 
-    // counts (exclude canceled)
     const upcomingCount = await prisma.session.count({
       where: {
         teacherId: userId,
@@ -1507,17 +1583,16 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
       },
     });
 
-    // next session should be future OR currently live, and not canceled
     const nextSession = await prisma.session.findFirst({
       where: {
         teacherId: userId,
         status: { not: "canceled" },
         OR: [
-          { startAt: { gte: now } }, // future
+          { startAt: { gte: now } },
           {
             AND: [
-              { startAt: { lte: now } }, // started
-              { OR: [{ endAt: { gte: now } }, { endAt: null }] }, // still live
+              { startAt: { lte: now } },
+              { OR: [{ endAt: { gte: now } }, { endAt: null }] },
             ],
           },
         ],
@@ -1533,7 +1608,6 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
       },
     });
 
-    // include timezone if you store it on user
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { timezone: true },
@@ -1553,7 +1627,6 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
 
 /* ========================================================================== */
 /*                              LEARNER SUMMARY                                */
-/*  NOTE (Step 2): uses req.viewUserId so it works while “viewing as”.         */
 /* ========================================================================== */
 
 app.get("/api/me/summary", requireAuth, async (req, res) => {
@@ -1561,7 +1634,7 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 
   try {
     const nextSession = await prisma.session.findFirst({
-      where: { userId: req.viewUserId, startAt: { gt: now } }, // ← view-as aware
+      where: { userId: req.viewUserId, startAt: { gt: now } },
       orderBy: { startAt: "asc" },
       select: {
         id: true,
@@ -1597,7 +1670,6 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 // Sessions (Learner)
 // ============================================================================
 
-// GET /api/me/sessions?range=upcoming|past&limit=10
 app.get("/api/me/sessions", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId;
@@ -1605,15 +1677,12 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
-    // Include sessions the user attends (userId) and, if teacher, sessions they teach (teacherId)
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
         : { userId };
 
-    // Don’t hide pre-migration NULL statuses; just exclude explicit canceled
     const notCanceled = { NOT: { status: "canceled" } };
-
     const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
     const where =
@@ -1635,11 +1704,11 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
               notCanceled,
               {
                 OR: [
-                  { startAt: { gte: now } }, // future
+                  { startAt: { gte: now } },
                   {
                     AND: [
-                      { startAt: { lte: now } }, // started already
-                      { OR: [{ endAt: { gte: now } }, { endAt: null }] }, // still ongoing (or no end yet)
+                      { startAt: { lte: now } },
+                      { OR: [{ endAt: { gte: now } }, { endAt: null }] },
                     ],
                   },
                 ],
@@ -1671,8 +1740,6 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/me/sessions-between?start=ISO&end=ISO
-// Returns sessions overlapping the visible calendar range, excluding canceled.
 app.get("/api/me/sessions-between", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId;
@@ -1680,11 +1747,9 @@ app.get("/api/me/sessions-between", requireAuth, async (req, res) => {
     const { start, end } = req.query;
     const includeCanceled = String(req.query.includeCanceled) === "true";
 
-    // visible window (calendar range)
     const startAt = start ? new Date(start) : new Date("1970-01-01");
     const endAt = end ? new Date(end) : new Date("2999-12-31");
 
-    // learner sees their sessions; teacher also sees ones they teach
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
@@ -1717,18 +1782,15 @@ app.get("/api/me/sessions-between", requireAuth, async (req, res) => {
   }
 });
 
-// Sessions: POST /api/sessions/:id/cancel
 app.post("/api/sessions/:id/cancel", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const sessionRow = await prisma.session.findUnique({ where: { id } });
+    if (!sessionRow)
+      return res.status(404).json({ error: "Session not found" });
 
-    // Fetch the session first
-    const session = await prisma.session.findUnique({ where: { id } });
-    if (!session) return res.status(404).json({ error: "Session not found" });
-
-    // Authorization (owner/teacher/admin):
-    const isOwner = session.userId === req.user.id;
-    const isTeacher = session.teacherId === req.user.id;
+    const isOwner = sessionRow.userId === req.user.id;
+    const isTeacher = sessionRow.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
 
     if (!(isOwner || isTeacher || isAdmin)) {
@@ -1747,7 +1809,6 @@ app.post("/api/sessions/:id/cancel", requireAuth, async (req, res) => {
   }
 });
 
-// Sessions: POST /api/sessions/:id/reschedule  { startAt, endAt }
 app.post("/api/sessions/:id/reschedule", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -1761,7 +1822,6 @@ app.post("/api/sessions/:id/reschedule", requireAuth, async (req, res) => {
     });
     if (!s) return res.status(404).json({ error: "Not found" });
 
-    // Authorization: owner, assigned teacher, or admin
     const isOwner = s.userId === req.user.id;
     const isTeacher = s.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
@@ -1769,7 +1829,6 @@ app.post("/api/sessions/:id/reschedule", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // Conflict check (exclude the same session)
     const conflicts = await findSessionConflicts({
       startAt: new Date(startAt),
       endAt: endAt ? new Date(endAt) : null,
@@ -1811,8 +1870,6 @@ app.get("/api/users", requireAuth, async (req, res) => {
   res.json(users);
 });
 
-// Teachers list (active + disabled, filterable by ?active=1)
-// GET /api/teachers?active=1
 app.get("/api/teachers", requireAuth, async (req, res) => {
   const onlyActive = String(req.query.active || "") === "1";
   const where = { role: "teacher" };
@@ -1833,7 +1890,6 @@ app.get("/api/teachers", requireAuth, async (req, res) => {
   res.json(teachers);
 });
 
-// Change password (logged-in user ONLY; not affected by view-as)
 app.post("/api/me/password", requireAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -1847,7 +1903,7 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: req.user.id }, // ← always your own password
+      where: { id: req.user.id },
       select: { id: true, hashedPassword: true },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -1869,10 +1925,8 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
   }
 });
 
-// a health route (nice for checks):
 app.get("/health", (_req, res) => res.send("ok"));
 
-// check the db
 app.get("/api/db-check", async (_req, res) => {
   try {
     const ok = await prisma.$queryRaw`select 1 as ok`;
@@ -1883,7 +1937,6 @@ app.get("/api/db-check", async (_req, res) => {
   }
 });
 
-// Friendly error handler (turns CORS errors into 403 instead of 500)
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     console.warn("CORS blocked:", req.headers.origin);
