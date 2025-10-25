@@ -1329,124 +1329,131 @@ app.get("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
 // POST /api/admin/sessions
 // POST /api/admin/sessions  (flexible field names)
+// CREATE (admin only)
+// POST /api/admin/sessions
+// Accepts aliases to be forgiving with the current UI:
+//   learnerId | userId         -> required, must be a learner
+//   tutorId   | teacherId      -> required, must be a teacher
+//   start     | startAt (ISO)  -> required
+//   durationMin OR endAt       -> one of them required
+//   title?, meetingUrl?
 app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
-    // Accept multiple possible keys from the frontend
-    const b = req.body || {};
+    // ---- normalize & basic validation ---------------------------------------
+    const learnerId = Number(req.body.learnerId ?? req.body.userId);
+    const teacherId = Number(req.body.tutorId ?? req.body.teacherId);
 
-    // user/learner
-    let userId =
-      b.userId ??
-      b.learnerId ??
-      b.learner_id ??
-      b.user_id ??
-      b.studentId ??
-      b.student_id;
+    const startStr = String(req.body.start ?? req.body.startAt ?? "");
+    const startAt = new Date(startStr);
 
-    // teacher/tutor
-    let teacherId =
-      b.teacherId ?? b.tutorId ?? b.teacher_id ?? b.tutor_id ?? b.instructorId;
-
-    // start/end or duration
-    const startAtRaw = b.startAt ?? b.start ?? b.startsAt ?? b.start_time;
-    const endAtRaw = b.endAt ?? b.end ?? b.endsAt ?? b.end_time ?? null;
     const durationMin =
-      b.durationMin ?? b.duration ?? b.duration_minutes ?? null;
+      req.body.durationMin !== undefined && req.body.durationMin !== null
+        ? Number(req.body.durationMin)
+        : null;
 
-    // optional fields
-    const title = (typeof b.title === "string" && b.title.trim()) || "Session";
-    const meetingUrl = b.meetingUrl ?? b.meeting_url ?? b.url ?? b.link ?? null;
-    const status = b.status || "scheduled";
+    const endAtStr =
+      req.body.endAt !== undefined && req.body.endAt !== null
+        ? String(req.body.endAt)
+        : null;
+    const endAt = endAtStr ? new Date(endAtStr) : null;
 
-    // Validate presence
-    if (!userId || !teacherId || !startAtRaw) {
+    const title = (req.body.title ?? "").toString().trim() || "Lesson";
+    const meetingUrl = (req.body.meetingUrl ?? "").toString().trim() || null;
+
+    if (!learnerId || !teacherId)
       return res.status(400).json({
-        error:
-          "userId/learnerId, teacherId/tutorId and start/startAt are required",
+        error: "learnerId/userId and tutorId/teacherId are required",
       });
-    }
 
-    // Normalize types
-    userId = Number(userId);
-    teacherId = Number(teacherId);
-    const startAt = new Date(String(startAtRaw));
-    if (Number.isNaN(startAt.getTime()))
-      return res.status(400).json({ error: "Invalid startAt/start datetime" });
+    if (!startStr || Number.isNaN(startAt.getTime()))
+      return res
+        .status(400)
+        .json({ error: "start/startAt must be a valid ISO datetime" });
 
-    let endAt = null;
-    if (endAtRaw) {
-      endAt = new Date(String(endAtRaw));
-      if (Number.isNaN(endAt.getTime()))
-        return res.status(400).json({ error: "Invalid endAt/end datetime" });
-    } else if (durationMin) {
-      const mins = Number(durationMin);
-      if (!Number.isFinite(mins) || mins <= 0)
-        return res.status(400).json({ error: "durationMin must be > 0" });
-      endAt = new Date(startAt.getTime() + mins * 60 * 1000);
-    }
+    if (!durationMin && !endAt)
+      return res.status(400).json({ error: "Provide durationMin OR endAt" });
 
-    // Ensure learner/teacher exist
-    const [u, t] = await Promise.all([
-      prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+    // Compute endAt if only duration provided
+    const finalEndAt =
+      endAt || new Date(startAt.getTime() + Number(durationMin) * 60 * 1000);
+
+    // ---- check users & roles -------------------------------------------------
+    const [learner, teacher] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: learnerId },
+        select: { id: true, role: true, isDisabled: true },
+      }),
       prisma.user.findUnique({
         where: { id: teacherId },
-        select: { id: true, role: true },
+        select: { id: true, role: true, isDisabled: true },
       }),
     ]);
-    if (!u) return res.status(404).json({ error: "Learner not found" });
-    if (!t) return res.status(404).json({ error: "Teacher not found" });
 
-    // Optional: enforce teacher role (comment out if you allow any role)
-    // if (t.role !== "teacher") {
-    //   return res.status(400).json({ error: "Selected user is not a teacher" });
-    // }
+    if (!learner) return res.status(404).json({ error: "Learner not found" });
+    if (!teacher) return res.status(404).json({ error: "Teacher not found" });
+    if (learner.isDisabled)
+      return res.status(400).json({ error: "Learner is disabled" });
+    if (teacher.isDisabled)
+      return res.status(400).json({ error: "Teacher is disabled" });
 
-    // Conflict check
+    if (learner.role !== "learner" && learner.role !== "admin") {
+      // allow admin to be scheduled as a learner if you want; otherwise enforce learner only
+      return res
+        .status(400)
+        .json({ error: "learnerId must refer to a learner" });
+    }
+    if (teacher.role !== "teacher") {
+      return res
+        .status(400)
+        .json({ error: "tutorId/teacherId must refer to a teacher" });
+    }
+
+    // ---- conflict check (excludeId: none on create) -------------------------
     const conflicts = await findSessionConflicts({
       startAt,
-      endAt,
-      userId,
+      endAt: finalEndAt,
+      userId: learnerId,
       teacherId,
     });
     if (conflicts.length) {
-      return res.status(409).json({
-        error: "Time conflict",
-        conflicts,
-      });
+      return res.status(409).json({ error: "Time conflict", conflicts });
     }
 
-    // Create
+    // ---- create --------------------------------------------------------------
     const created = await prisma.session.create({
       data: {
-        title,
-        userId,
+        userId: learnerId,
         teacherId,
+        title,
         startAt,
-        endAt,
+        endAt: finalEndAt,
         meetingUrl,
-        status,
+        status: "scheduled",
       },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        teacher: { select: { id: true, name: true, email: true } },
+      select: {
+        id: true,
+        title: true,
+        userId: true,
+        teacherId: true,
+        startAt: true,
+        endAt: true,
+        meetingUrl: true,
+        status: true,
       },
     });
 
+    // optional audit
     await audit(req.user.id, "session_create", "Session", created.id, {
-      userId,
+      learnerId,
       teacherId,
       startAt,
-      endAt,
+      endAt: finalEndAt,
     });
 
-    return res.status(201).json(created);
-  } catch (err) {
-    console.error("admin.sessions.create error:", err);
-    // Bubble up a readable message if your frontend shows it
-    return res.status(500).json({
-      error: "Failed to create session",
-      detail: String(err.message || err),
-    });
+    return res.status(201).json({ ok: true, session: created });
+  } catch (e) {
+    console.error("admin.createSession error:", e);
+    return res.status(500).json({ error: "Failed to create session" });
   }
 });
 
