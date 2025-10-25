@@ -22,6 +22,9 @@ const app = express();
 const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
+// define early so it’s safe to use everywhere below
+const isProd = process.env.NODE_ENV === "production";
+
 /* ========================================================================== */
 /*                         GOOGLE CLIENT ID (Unified)                         */
 /*  Use the SAME env var name as the frontend for consistency.                */
@@ -110,23 +113,14 @@ const corsOptions = {
 
 // Must be before your routes
 app.use(cors(corsOptions));
-// Ensure OPTIONS preflight is handled for all routes
-app.options("(.*)", cors(corsOptions));
+// Ensure OPTIONS preflight is handled for all routes (use RegExp, not string)
+app.options(/.*/, cors(corsOptions));
 
 if (!process.env.SESSION_SECRET) {
   console.warn(
     "⚠️  SESSION_SECRET is not set. Using an insecure fallback for dev."
   );
 }
-
-// In production we want cookies to work even on preview domains -> SameSite=None + Secure
-const cookieSameSite = isProd ? "none" : "lax";
-const cookieSecure = isProd ? true : false;
-
-// VERY IMPORTANT behind Render/Heroku/NGINX etc.
-app.set("trust proxy", 1); // so secure cookies work over HTTPS through the proxy
-
-const isProd = process.env.NODE_ENV === "production";
 
 // If your frontend is speexify.com, use the parent domain so the cookie
 // is valid across subdomains (optional but recommended).
@@ -421,13 +415,6 @@ if (ALLOW_LEGACY_REGISTER) {
 /*  - If user exists (by email): sign them in (block if disabled)              */
 /*  - Else: create user with random hashed password                            */
 /* ========================================================================== */
-
-// /api/auth/google
-// Requires:
-//   - const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || "";
-//   - const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
-//   - async function randomHashedPassword() { ... }
-//   - const prisma = new PrismaClient();
 
 app.post("/api/auth/google", express.json(), async (req, res) => {
   try {
@@ -744,7 +731,6 @@ app.get("/api/auth/me", async (req, res) => {
 // LOGOUT (ensure cookie flags match session config so it clears properly)
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
-    const isProd = process.env.NODE_ENV === "production";
     const cookieDomain = isProd ? ".speexify.com" : undefined;
 
     res.clearCookie("speexify.sid", {
