@@ -1328,57 +1328,101 @@ app.get("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 });
 
 // POST /api/admin/sessions
+// POST /api/admin/sessions  (flexible field names)
 app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
-    let {
-      title = "",
-      userId,
-      teacherId,
-      startAt,
-      endAt = null,
-      meetingUrl = null,
-      status = "scheduled",
-    } = req.body || {};
+    // Accept multiple possible keys from the frontend
+    const b = req.body || {};
 
-    if (!userId || !teacherId || !startAt) {
-      return res
-        .status(400)
-        .json({ error: "userId, teacherId and startAt are required" });
+    // user/learner
+    let userId =
+      b.userId ??
+      b.learnerId ??
+      b.learner_id ??
+      b.user_id ??
+      b.studentId ??
+      b.student_id;
+
+    // teacher/tutor
+    let teacherId =
+      b.teacherId ?? b.tutorId ?? b.teacher_id ?? b.tutor_id ?? b.instructorId;
+
+    // start/end or duration
+    const startAtRaw = b.startAt ?? b.start ?? b.startsAt ?? b.start_time;
+    const endAtRaw = b.endAt ?? b.end ?? b.endsAt ?? b.end_time ?? null;
+    const durationMin =
+      b.durationMin ?? b.duration ?? b.duration_minutes ?? null;
+
+    // optional fields
+    const title = (typeof b.title === "string" && b.title.trim()) || "Session";
+    const meetingUrl = b.meetingUrl ?? b.meeting_url ?? b.url ?? b.link ?? null;
+    const status = b.status || "scheduled";
+
+    // Validate presence
+    if (!userId || !teacherId || !startAtRaw) {
+      return res.status(400).json({
+        error:
+          "userId/learnerId, teacherId/tutorId and start/startAt are required",
+      });
     }
 
+    // Normalize types
     userId = Number(userId);
     teacherId = Number(teacherId);
+    const startAt = new Date(String(startAtRaw));
+    if (Number.isNaN(startAt.getTime()))
+      return res.status(400).json({ error: "Invalid startAt/start datetime" });
 
+    let endAt = null;
+    if (endAtRaw) {
+      endAt = new Date(String(endAtRaw));
+      if (Number.isNaN(endAt.getTime()))
+        return res.status(400).json({ error: "Invalid endAt/end datetime" });
+    } else if (durationMin) {
+      const mins = Number(durationMin);
+      if (!Number.isFinite(mins) || mins <= 0)
+        return res.status(400).json({ error: "durationMin must be > 0" });
+      endAt = new Date(startAt.getTime() + mins * 60 * 1000);
+    }
+
+    // Ensure learner/teacher exist
     const [u, t] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
       prisma.user.findUnique({
         where: { id: teacherId },
-        select: { id: true },
+        select: { id: true, role: true },
       }),
     ]);
     if (!u) return res.status(404).json({ error: "Learner not found" });
     if (!t) return res.status(404).json({ error: "Teacher not found" });
 
-    const start = new Date(startAt);
-    const end = endAt ? new Date(endAt) : null;
+    // Optional: enforce teacher role (comment out if you allow any role)
+    // if (t.role !== "teacher") {
+    //   return res.status(400).json({ error: "Selected user is not a teacher" });
+    // }
 
+    // Conflict check
     const conflicts = await findSessionConflicts({
-      startAt: start,
-      endAt: end,
+      startAt,
+      endAt,
       userId,
       teacherId,
     });
     if (conflicts.length) {
-      return res.status(409).json({ error: "Time conflict", conflicts });
+      return res.status(409).json({
+        error: "Time conflict",
+        conflicts,
+      });
     }
 
+    // Create
     const created = await prisma.session.create({
       data: {
-        title: title || "Session",
+        title,
         userId,
         teacherId,
-        startAt: start,
-        endAt: end,
+        startAt,
+        endAt,
         meetingUrl,
         status,
       },
@@ -1391,13 +1435,18 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     await audit(req.user.id, "session_create", "Session", created.id, {
       userId,
       teacherId,
-      startAt: start,
-      endAt: end,
+      startAt,
+      endAt,
     });
-    res.status(201).json(created);
+
+    return res.status(201).json(created);
   } catch (err) {
     console.error("admin.sessions.create error:", err);
-    res.status(500).json({ error: "Failed to create session" });
+    // Bubble up a readable message if your frontend shows it
+    return res.status(500).json({
+      error: "Failed to create session",
+      detail: String(err.message || err),
+    });
   }
 });
 
