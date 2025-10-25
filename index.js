@@ -111,7 +111,7 @@ const corsOptions = {
 // Must be before your routes
 app.use(cors(corsOptions));
 // Ensure OPTIONS preflight is handled for all routes
-app.options("*", cors(corsOptions));
+app.options("(.*)", cors(corsOptions));
 
 if (!process.env.SESSION_SECRET) {
   console.warn(
