@@ -124,7 +124,8 @@ if (!process.env.SESSION_SECRET) {
 
 // If your frontend is speexify.com, use the parent domain so the cookie
 // is valid across subdomains (optional but recommended).
-const cookieDomain = isProd ? ".speexify.com" : undefined;
+const cookieDomain = process.env.COOKIE_DOMAIN || undefined;
+console.log("Session cookie domain:", cookieDomain ?? "(host-only)");
 
 app.use(
   session({
@@ -508,6 +509,17 @@ app.post("/api/auth/google", express.json(), async (req, res) => {
         console.error("[google] session.save error:", saveErr);
         return res.status(500).json({ ok: false, error: "session_error" });
       }
+
+      // Never cache the login response; vary by Cookie
+      res.set({
+        "Cache-Control":
+          "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+        "Surrogate-Control": "no-store",
+        Vary: "Cookie",
+      });
+
       console.log("[google] verify ok → session established for", email);
       return res.json({ ok: true, user: req.session.user });
     });
@@ -698,6 +710,15 @@ app.post("/api/auth/login", async (req, res) => {
 
 // WHO AM I (session peek) — compatible shape { user: ... }
 app.get("/api/auth/me", async (req, res) => {
+  // ❌ never cache auth state
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+    Vary: "Cookie",
+  });
+
   // no session → always { user: null }
   if (!req.session.user) return res.json({ user: null });
 
