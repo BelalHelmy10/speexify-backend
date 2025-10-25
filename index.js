@@ -1360,10 +1360,8 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     const title = (req.body.title ?? "").toString().trim() || "Lesson";
     const meetingUrl = (req.body.meetingUrl ?? "").toString().trim() || null;
 
-    if (!learnerId || !teacherId)
-      return res.status(400).json({
-        error: "learnerId/userId and tutorId/teacherId are required",
-      });
+    if (!learnerId)
+      return res.status(400).json({ error: "learnerId/userId is required" });
 
     if (!startStr || Number.isNaN(startAt.getTime()))
       return res
@@ -1402,10 +1400,14 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         .status(400)
         .json({ error: "learnerId must refer to a learner" });
     }
-    if (teacher.role !== "teacher") {
-      return res
-        .status(400)
-        .json({ error: "tutorId/teacherId must refer to a teacher" });
+    if (teacherId) {
+      if (!teacher) return res.status(404).json({ error: "Teacher not found" });
+      if (teacher.isDisabled)
+        return res.status(400).json({ error: "Teacher is disabled" });
+      if (teacher.role !== "teacher")
+        return res
+          .status(400)
+          .json({ error: "tutorId/teacherId must refer to a teacher" });
     }
 
     // ---- conflict check (excludeId: none on create) -------------------------
@@ -1413,7 +1415,7 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       startAt,
       endAt: finalEndAt,
       userId: learnerId,
-      teacherId,
+      teacherId: teacherId || undefined,
     });
     if (conflicts.length) {
       return res.status(409).json({ error: "Time conflict", conflicts });
@@ -1438,6 +1440,7 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         startAt: true,
         endAt: true,
         meetingUrl: true,
+        notes,
         status: true,
       },
     });
