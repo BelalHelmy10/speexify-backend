@@ -1440,7 +1440,7 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         startAt: true,
         endAt: true,
         meetingUrl: true,
-        notes,
+        notes: true,
         status: true,
       },
     });
