@@ -1695,8 +1695,18 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
   const now = new Date();
 
   try {
+    const role = req.user.role || "learner";
+    const whereBase =
+      role === "teacher"
+        ? { OR: [{ userId: req.viewUserId }, { teacherId: req.viewUserId }] }
+        : { userId: req.viewUserId };
+
     const nextSession = await prisma.session.findFirst({
-      where: { userId: req.viewUserId, startAt: { gt: now } },
+      where: {
+        ...whereBase,
+        startAt: { gt: now },
+        status: { not: "canceled" },
+      },
       orderBy: { startAt: "asc" },
       select: {
         id: true,
@@ -1708,12 +1718,16 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
     });
 
     const upcomingCount = await prisma.session.count({
-      where: { userId: req.viewUserId, startAt: { gt: now } },
+      where: {
+        ...whereBase,
+        startAt: { gt: now },
+        status: { not: "canceled" },
+      },
     });
 
     const completedCount = await prisma.session.count({
       where: {
-        userId: req.viewUserId,
+        ...whereBase,
         OR: [
           { endAt: { lt: now } },
           { AND: [{ endAt: null }, { startAt: { lt: now } }] },
@@ -1727,7 +1741,6 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to load summary" });
   }
 });
-
 // ============================================================================
 // Sessions (Learner)
 // ============================================================================
