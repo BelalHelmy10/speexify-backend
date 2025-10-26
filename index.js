@@ -1676,9 +1676,9 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     });
 
     res.json({
-      nextSession,
-      upcomingCount,
-      completedCount,
+      nextTeach: nextSession,
+      upcomingTeachCount: upcomingCount,
+      taughtCount: completedCount,
       timezone: user?.timezone || null,
     });
   } catch (e) {
