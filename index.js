@@ -1638,7 +1638,10 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     const completedCount = await prisma.session.count({
       where: {
         teacherId: userId,
-        status: "completed",
+        OR: [
+          { endAt: { lt: now } },
+          { AND: [{ endAt: null }, { startAt: { lt: now } }] },
+        ],
       },
     });
 
