@@ -321,7 +321,7 @@ const ALLOW_LEGACY_REGISTER =
   String(process.env.ALLOW_LEGACY_REGISTER || "").toLowerCase() === "true";
 
 if (ALLOW_LEGACY_REGISTER) {
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/auth/register", async (req, res) => {
     try {
       let { email, password, name } = req.body;
       email = (email || "").toLowerCase().trim();
