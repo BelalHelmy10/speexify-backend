@@ -15,12 +15,36 @@ import { OAuth2Client } from "google-auth-library";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
+import paymobRouter from "./routes/payments.paymob.js";
 
 const app = express();
 const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
 const isProd = process.env.NODE_ENV === "production";
+
+/* ========================================================================== */
+/*                               PAYMOB CONFIG                                */
+/*   Step 1: env vars you already grabbed from the Paymob portal              */
+/* ========================================================================== */
+const PAYMOB_API_KEY = process.env.PAYMOB_API_KEY || "";
+const PAYMOB_INTEGRATION_ID = process.env.PAYMOB_INTEGRATION_ID || "";
+const PAYMOB_IFRAME_ID = process.env.PAYMOB_IFRAME_ID || "";
+const PAYMOB_HMAC_SECRET = process.env.PAYMOB_HMAC_SECRET || "";
+
+// Base URL for Paymob APIs
+const PAYMOB_BASE = "https://accept.paymob.com/api";
+
+if (
+  !PAYMOB_API_KEY ||
+  !PAYMOB_INTEGRATION_ID ||
+  !PAYMOB_IFRAME_ID ||
+  !PAYMOB_HMAC_SECRET
+) {
+  console.warn(
+    "⚠️  Missing one or more Paymob env vars (PAYMOB_API_KEY, PAYMOB_INTEGRATION_ID, PAYMOB_IFRAME_ID, PAYMOB_HMAC_SECRET). Test mode will fail until set."
+  );
+}
 
 /* ========================================================================== */
 /*                         GOOGLE CLIENT ID (Unified)                         */
@@ -128,6 +152,8 @@ app.use(
     },
   })
 );
+
+app.use("/api/payments", paymobRouter);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */
@@ -312,6 +338,179 @@ app.post("/api/contact", async (req, res) => {
     res.status(500).json({ error: "Failed to send" });
   }
 });
+
+/* ========================================================================== */
+/*                             PAYMENTS: PAYMOB                               */
+/*   Step 1: hosted checkout (iframe) flow                                    */
+/*   Routes:                                                                   */
+/*     POST /api/payments/create-intent  -> returns iframeUrl                  */
+/*     POST /api/payments/webhook/paymob -> Paymob webhook (verify HMAC)       */
+/* ========================================================================== */
+
+import crypto from "node:crypto"; // already imported above; safe if duplicated by bundler
+import axios from "axios"; // already imported above; safe if duplicated by bundler
+
+// -- helper: get Paymob auth token
+async function paymobAuthToken() {
+  const { data } = await axios.post(`${PAYMOB_BASE}/auth/tokens`, {
+    api_key: PAYMOB_API_KEY,
+  });
+  return data.token;
+}
+
+// -- helper: build iframe URL
+function paymobIframeUrl(paymentToken) {
+  return `${PAYMOB_BASE}/acceptance/iframes/${PAYMOB_IFRAME_ID}?payment_token=${paymentToken}`;
+}
+
+// -- helper: verify HMAC from Paymob webhook
+function verifyPaymobHmac(payloadObj, hmacFromPaymob) {
+  // Concatenate these fields in this exact order (missing ones become empty string)
+  const FIELDS = [
+    "amount_cents",
+    "created_at",
+    "currency",
+    "error_occured",
+    "has_parent_transaction",
+    "id",
+    "integration_id",
+    "is_3d_secure",
+    "is_auth",
+    "is_capture",
+    "is_refunded",
+    "is_standalone_payment",
+    "is_voided",
+    "order.id",
+    "owner",
+    "pending",
+    "source_data.pan",
+    "source_data.sub_type",
+    "source_data.type",
+    "success",
+  ];
+  const get = (obj, path) =>
+    path
+      .split(".")
+      .reduce((o, k) => (o && o[k] !== undefined ? o[k] : ""), obj);
+  const concatenated = FIELDS.map((f) => String(get(payloadObj, f))).join("");
+  const computed = crypto
+    .createHmac("sha512", PAYMOB_HMAC_SECRET)
+    .update(concatenated)
+    .digest("hex");
+  return computed === hmacFromPaymob;
+}
+
+/**
+ * POST /api/payments/create-intent
+ * body: {
+ *   amountCents: number,          // 100 EGP => 10000
+ *   orderId: string | number,     // your internal order id
+ *   currency?: "EGP" | "USD",     // default EGP
+ *   customer?: { firstName, lastName, email, phone }
+ * }
+ * returns: { ok: true, iframeUrl, paymobOrderId }
+ */
+app.post("/api/payments/create-intent", async (req, res) => {
+  try {
+    const { amountCents, orderId, customer, currency = "EGP" } = req.body || {};
+    if (!amountCents || !orderId) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "amountCents & orderId are required" });
+    }
+
+    // 1) auth
+    const token = await paymobAuthToken();
+
+    // 2) create order in Paymob
+    const { data: order } = await axios.post(
+      `${PAYMOB_BASE}/ecommerce/orders`,
+      {
+        auth_token: token,
+        delivery_needed: false,
+        amount_cents: Number(amountCents),
+        currency,
+        merchant_order_id: String(orderId),
+        items: [],
+      }
+    );
+
+    // 3) get payment key (for iframe)
+    const { data: paymentKey } = await axios.post(
+      `${PAYMOB_BASE}/acceptance/payment_keys`,
+      {
+        auth_token: token,
+        amount_cents: Number(amountCents),
+        currency,
+        order_id: order.id,
+        billing_data: {
+          first_name: customer?.firstName || "NA",
+          last_name: customer?.lastName || "NA",
+          email: customer?.email || "na@example.com",
+          phone_number: customer?.phone || "01000000000",
+          apartment: "NA",
+          floor: "NA",
+          street: "NA",
+          building: "NA",
+          shipping_method: "NA",
+          postal_code: "NA",
+          city: "Cairo",
+          country: "EG",
+          state: "EG",
+        },
+        expiration: 3600,
+        integration_id: Number(PAYMOB_INTEGRATION_ID),
+      }
+    );
+
+    const iframeUrl = paymobIframeUrl(paymentKey.token);
+
+    // OPTIONAL: save a pending order in your DB here (status='pending')
+    // await prisma.order.create({ data: { id: String(orderId), amountCents, currency, status: 'pending', psp: 'paymob', pspOrderId: order.id } });
+
+    return res.json({ ok: true, iframeUrl, paymobOrderId: order.id });
+  } catch (err) {
+    console.error("create-intent error:", err?.response?.data || err.message);
+    return res.status(500).json({ ok: false, message: "payment init failed" });
+  }
+});
+
+/**
+ * POST /api/payments/webhook/paymob
+ * Configure this URL in Paymob Portal → Developers → Webhooks.
+ * Verifies HMAC; if success==true, mark your order paid.
+ */
+app.post(
+  "/api/payments/webhook/paymob",
+  express.json({ type: "*/*" }),
+  async (req, res) => {
+    try {
+      // Paymob may send hmac in query or body depending on configuration
+      const hmac = req.query?.hmac || req.body?.hmac;
+      const payload = req.body?.obj || req.body;
+
+      if (!hmac || !payload) return res.sendStatus(400);
+
+      const valid = verifyPaymobHmac(payload, hmac);
+      if (!valid) return res.sendStatus(400);
+
+      const success = payload?.success === true;
+      const merchantOrderId = payload?.order?.merchant_order_id;
+      const paymobOrderId = payload?.order?.id;
+
+      // Example DB update (uncomment when you add an orders table)
+      // await prisma.order.update({
+      //   where: { id: String(merchantOrderId) },
+      //   data: { status: success ? "paid" : "failed", pspOrderId: paymobOrderId }
+      // });
+
+      return res.sendStatus(200);
+    } catch (e) {
+      console.error("webhook error:", e);
+      return res.sendStatus(500);
+    }
+  }
+);
 
 /* ========================================================================== */
 /*                       AUTH: EMAIL/PASSWORD (LEGACY)                        */
