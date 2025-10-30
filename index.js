@@ -347,9 +347,6 @@ app.post("/api/contact", async (req, res) => {
 /*     POST /api/payments/webhook/paymob -> Paymob webhook (verify HMAC)       */
 /* ========================================================================== */
 
-import crypto from "node:crypto"; // already imported above; safe if duplicated by bundler
-import axios from "axios"; // already imported above; safe if duplicated by bundler
-
 // -- helper: get Paymob auth token
 async function paymobAuthToken() {
   const { data } = await axios.post(`${PAYMOB_BASE}/auth/tokens`, {
