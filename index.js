@@ -460,7 +460,16 @@ app.post("/api/payments/create-intent", async (req, res) => {
     const iframeUrl = paymobIframeUrl(paymentKey.token);
 
     // OPTIONAL: save a pending order in your DB here (status='pending')
-    // await prisma.order.create({ data: { id: String(orderId), amountCents, currency, status: 'pending', psp: 'paymob', pspOrderId: order.id } });
+    await prisma.order.create({
+      data: {
+        id: String(orderId),
+        amountCents,
+        currency,
+        status: "pending",
+        psp: "paymob",
+        pspOrderId: order.id,
+      },
+    });
 
     return res.json({ ok: true, iframeUrl, paymobOrderId: order.id });
   } catch (err) {
@@ -493,10 +502,13 @@ app.post(
       const paymobOrderId = payload?.order?.id;
 
       // Example DB update (uncomment when you add an orders table)
-      // await prisma.order.update({
-      //   where: { id: String(merchantOrderId) },
-      //   data: { status: success ? "paid" : "failed", pspOrderId: paymobOrderId }
-      // });
+      await prisma.order.update({
+        where: { id: String(merchantOrderId) },
+        data: {
+          status: success ? "paid" : "failed",
+          pspOrderId: paymobOrderId,
+        },
+      });
 
       return res.sendStatus(200);
     } catch (e) {
