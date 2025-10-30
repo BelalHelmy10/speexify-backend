@@ -15,7 +15,6 @@ import { OAuth2Client } from "google-auth-library";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
-import paymobRouter from "./routes/payments.paymob.js";
 
 const app = express();
 const prisma = new PrismaClient();
@@ -152,8 +151,6 @@ app.use(
     },
   })
 );
-
-app.use("/api/payments", paymobRouter);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */
