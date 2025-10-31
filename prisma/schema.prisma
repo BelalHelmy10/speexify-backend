@@ -11,9 +11,11 @@ datasource db {
   directUrl = env("DIRECT_URL") // useful for Neon
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   Enums
-   ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * Enums
+ * ────────────────────────────────────────────────────────────────────────────
+ */
 
 enum Audience {
   INDIVIDUAL
@@ -26,32 +28,36 @@ enum PriceType {
   CUSTOM
 }
 
-/* For session lifecycle + dashboard actions */
+/**
+ * For session lifecycle + dashboard actions
+ */
 enum SessionStatus {
-  scheduled   // default; can be rescheduled freely
-  completed   // set after the session ends / attendance confirmed
-  canceled    // user/teacher cancels
+  scheduled // default; can be rescheduled freely
+  completed // set after the session ends / attendance confirmed
+  canceled // user/teacher cancels
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   Models
-   ──────────────────────────────────────────────────────────────────────────── */
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * Models
+ * ────────────────────────────────────────────────────────────────────────────
+ */
 
 model Package {
-  id              Int        @id @default(autoincrement())
-  title           String
-  description     String?
+  id          Int     @id @default(autoincrement())
+  title       String
+  description String?
 
   // Pricing (nullable to allow custom quotes)
-  priceUSD        Int?
-  startingAtUSD   Int?
+  priceUSD      Int?
+  startingAtUSD Int?
 
   // Meta
-  priceType       PriceType  @default(BUNDLE)
-  audience        Audience   @default(INDIVIDUAL)
-  isPopular       Boolean    @default(false)
-  active          Boolean    @default(true)
-  sortOrder       Int        @default(0)
+  priceType PriceType @default(BUNDLE)
+  audience  Audience  @default(INDIVIDUAL)
+  isPopular Boolean   @default(false)
+  active    Boolean   @default(true)
+  sortOrder Int       @default(0)
 
   // Format details
   sessionsPerPack Int?
@@ -59,32 +65,33 @@ model Package {
   image           String?
 
   // Newline-separated bullet points
-  features        String?
+  features String?
 
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model User {
-  id                   Int       @id @default(autoincrement())
-  email                String    @unique
-  name                 String?
-  hashedPassword       String
-  role                 String    @default("learner") // learner | teacher | admin
-  timezone             String?
-  isDisabled           Boolean   @default(false)
+  id             Int     @id @default(autoincrement())
+  email          String  @unique
+  name           String?
+  hashedPassword String
+  role           String  @default("learner") // learner | teacher | admin
+  timezone       String?
+  isDisabled     Boolean @default(false)
 
   // Teacher rates (optional)
-  rateHourlyCents      Int?
-  ratePerSessionCents  Int?
+  rateHourlyCents     Int?
+  ratePerSessionCents Int?
 
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  sessions             Session[]
-  teachingSessions     Session[] @relation("SessionTeacher")
-  audits               Audit[]   @relation("Audit_actor")
+  sessions         Session[]
+  teachingSessions Session[]     @relation("SessionTeacher")
+  audits           Audit[]       @relation("Audit_actor")
+  userPackages     UserPackage[] // ← back-relation added
 
   @@index([role])
 }
@@ -92,43 +99,43 @@ model User {
 model Audit {
   id        Int      @id @default(autoincrement())
   actorId   Int
-  action    String    // e.g., user_disable, role_change, impersonate_start
-  entity    String    // e.g., "User" / "Session" / "Package"
+  action    String // e.g., user_disable, role_change, impersonate_start
+  entity    String // e.g., "User" / "Session" / "Package"
   entityId  Int?
   meta      Json?
-  createdAt DateTime  @default(now())
+  createdAt DateTime @default(now())
 
-  actor     User      @relation("Audit_actor", fields: [actorId], references: [id])
+  actor User @relation("Audit_actor", fields: [actorId], references: [id])
 
   @@index([entity, entityId])
 }
 
 model Session {
-  id               Int           @id @default(autoincrement())
-  title            String
-  startAt          DateTime
-  endAt            DateTime?
-  meetingUrl       String?
-  notes            String?
+  id         Int       @id @default(autoincrement())
+  title      String
+  startAt    DateTime
+  endAt      DateTime?
+  meetingUrl String?
+  notes      String?
 
   // Learner
-  userId           Int
-  user             User          @relation(fields: [userId], references: [id])
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
 
   // Assigned teacher (optional)
-  teacherId        Int?
-  teacher          User?         @relation("SessionTeacher", fields: [teacherId], references: [id])
+  teacherId Int?
+  teacher   User? @relation("SessionTeacher", fields: [teacherId], references: [id])
 
   // Status & feedback for dashboard features
-  status           SessionStatus @default(scheduled)
-  feedbackScore    Int?          // 1..5 optional rating
+  status        SessionStatus @default(scheduled)
+  feedbackScore Int? // 1..5 optional rating
 
   // Reminder bookkeeping (for cron/queues)
   reminder24hSentAt DateTime?
   reminder1hSentAt  DateTime?
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Useful indexes for queries shown on the dashboard
   @@index([userId, startAt])
@@ -156,14 +163,43 @@ model PasswordResetCode {
 }
 
 model Order {
-  id             String  @id
-  amountCents    Int
-  currency       String  @default("EGP")
-  status         String  @default("pending") // pending | paid | failed | canceled
-  psp            String  @default("paymob")
-  pspOrderId     Int?
-  customerEmail  String?
-  customerPhone  String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id
+  amountCents   Int
+  currency      String   @default("EGP")
+  status        String   @default("pending") // pending | paid | failed | canceled
+  psp           String   @default("paymob")
+  pspOrderId    Int?
+  customerEmail String?
+  customerPhone String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Link the order to the buyer and the package (scalar links; no relation required)
+  userId      Int?
+  packageId   Int?
+  paymobTxnId Int? // last transaction id (optional)
+
+  @@index([userId])
+  @@index([packageId])
+}
+
+model UserPackage {
+  id                Int       @id @default(autoincrement())
+  userId            Int
+  packageId         Int
+  // The package is “materialized” here at purchase time, so later price changes don’t affect old purchases
+  title             String
+  minutesPerSession Int?
+  sessionsTotal     Int // how many credits were granted
+  sessionsUsed      Int       @default(0)
+  expiresAt         DateTime? // e.g., 90 days from purchase
+  status            String    @default("active") // active | expired | canceled
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+  // (no relation to Package on purpose; we snapshot core fields above)
+
+  @@index([userId, status])
 }

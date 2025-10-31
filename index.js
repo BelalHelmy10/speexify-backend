@@ -260,6 +260,80 @@ async function findSessionConflicts({
   });
 }
 
+// How many total remaining credits does a user have right now?
+async function getRemainingCredits(userId) {
+  const packs = await prisma.userPackage.findMany({
+    where: {
+      userId: Number(userId),
+      status: "active",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { sessionsTotal: true, sessionsUsed: true },
+  });
+  return packs.reduce(
+    (sum, p) =>
+      sum + Math.max(0, Number(p.sessionsTotal) - Number(p.sessionsUsed || 0)),
+    0
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Credits helpers (UserPackage)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Take 1 credit from the newest active pack that still has remaining credits.
+// Returns { ok: boolean, packId?: number, remaining?: number }
+async function consumeOneCredit(userId) {
+  const pack = await prisma.userPackage.findFirst({
+    where: {
+      userId: Number(userId),
+      status: "active",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      sessionsUsed: { lt: prisma.userPackage.fields.sessionsTotal },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+
+  if (!pack) return { ok: false };
+
+  const updated = await prisma.userPackage.update({
+    where: { id: pack.id },
+    data: { sessionsUsed: { increment: 1 } },
+  });
+
+  return {
+    ok: true,
+    packId: pack.id,
+    remaining: updated.sessionsTotal - updated.sessionsUsed,
+  };
+}
+
+// Give back 1 credit to the newest pack that has at least 1 used.
+// Returns { ok: boolean, packId?: number, remaining?: number }
+async function refundOneCredit(userId) {
+  const pack = await prisma.userPackage.findFirst({
+    where: {
+      userId: Number(userId),
+      status: "active",
+      sessionsUsed: { gt: 0 },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+
+  if (!pack) return { ok: false };
+
+  const updated = await prisma.userPackage.update({
+    where: { id: pack.id },
+    data: { sessionsUsed: { decrement: 1 } },
+  });
+
+  return {
+    ok: true,
+    packId: pack.id,
+    remaining: updated.sessionsTotal - updated.sessionsUsed,
+  };
+}
+
 /* ========================================================================== */
 /*                              HEALTH / HELLO                                */
 /* ========================================================================== */
@@ -407,6 +481,17 @@ function verifyPaymobHmac(payloadObj, hmacFromPaymob) {
 app.post("/api/payments/create-intent", async (req, res) => {
   try {
     const { amountCents, orderId, customer, currency = "EGP" } = req.body || {};
+    // Attach buyer and package when possible
+    const buyerId = req.session?.user?.id || null;
+    // Prefer explicit packageId from client; otherwise try to parse from orderId like "order_..._<pkgId>_user<userId>"
+    const packageId =
+      typeof req.body?.packageId === "number"
+        ? req.body.packageId
+        : (() => {
+            const m = String(orderId).match(/_(\d+)_user/i);
+            return m ? Number(m[1]) : null;
+          })();
+
     if (!amountCents || !orderId) {
       return res
         .status(400)
@@ -463,11 +548,15 @@ app.post("/api/payments/create-intent", async (req, res) => {
     await prisma.order.create({
       data: {
         id: String(orderId),
-        amountCents,
+        amountCents: Number(amountCents),
         currency,
         status: "pending",
         psp: "paymob",
         pspOrderId: order.id,
+        userId: buyerId,
+        packageId: packageId,
+        customerEmail: customer?.email || null,
+        customerPhone: customer?.phone || null,
       },
     });
 
@@ -509,6 +598,55 @@ app.post(
           pspOrderId: paymobOrderId,
         },
       });
+
+      // If paid, grant sessions to the buyer (idempotent-ish)
+      if (success) {
+        // Load the order with user & package
+        const ord = await prisma.order.findUnique({
+          where: { id: String(merchantOrderId) },
+          select: {
+            id: true,
+            userId: true,
+            packageId: true,
+          },
+        });
+
+        if (ord?.userId && ord?.packageId) {
+          // Snapshot the package at time of purchase
+          const pkg = await prisma.package.findUnique({
+            where: { id: Number(ord.packageId) },
+            select: {
+              id: true,
+              title: true,
+              sessionsPerPack: true,
+              durationMin: true,
+            },
+          });
+
+          if (pkg) {
+            const sessionsTotal = Number(pkg.sessionsPerPack || 0);
+            // Only create an entitlement if the package actually carries sessions
+            if (sessionsTotal > 0) {
+              // Basic expiry policy: 90 days from now (adjust later if you want)
+              const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+              // Create a new UserPackage (one new entitlement per paid order)
+              await prisma.userPackage.create({
+                data: {
+                  userId: ord.userId,
+                  packageId: pkg.id,
+                  title: pkg.title,
+                  minutesPerSession: pkg.durationMin || null,
+                  sessionsTotal,
+                  sessionsUsed: 0,
+                  expiresAt,
+                  status: "active",
+                },
+              });
+            }
+          }
+        }
+      }
 
       return res.sendStatus(200);
     } catch (e) {
@@ -1626,6 +1764,19 @@ app.post("/api/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       return res.status(409).json({ error: "Time conflict", conflicts });
     }
 
+    // ---- credit guard (soft enforcement with admin override) ---------------
+    const allowNoCredit = req.body.allowNoCredit === true;
+    const remainingCredits = await getRemainingCredits(learnerId);
+
+    if (!allowNoCredit && remainingCredits <= 0) {
+      return res.status(422).json({
+        error: "no_credits",
+        message:
+          "Learner has 0 remaining credits. Add a package or pass allowNoCredit: true to override.",
+        remaining: 0,
+      });
+    }
+
     // ---- create --------------------------------------------------------------
     const created = await prisma.session.create({
       data: {
@@ -1717,6 +1868,22 @@ app.patch(
       if (patch.endAt !== undefined)
         patch.endAt = patch.endAt ? new Date(patch.endAt) : null;
 
+      // Detect status transition for credit accounting
+      const prevStatus = existing.status;
+      const nextStatus = patch.status ?? existing.status;
+
+      // We handle credits *after* the session is actually updated (below),
+      // but we need the intent here to apply rules post-update.
+      let shouldConsume = false;
+      let shouldRefund = false;
+
+      if (prevStatus !== "completed" && nextStatus === "completed") {
+        shouldConsume = true;
+      } else if (prevStatus === "completed" && nextStatus !== "completed") {
+        // If an admin reopens or cancels a completed session, return a credit.
+        shouldRefund = true;
+      }
+
       const updated = await prisma.session.update({
         where: { id },
         data: patch,
@@ -1725,6 +1892,30 @@ app.patch(
           teacher: { select: { id: true, name: true, email: true } },
         },
       });
+
+      try {
+        if (shouldConsume) {
+          const resUse = await consumeOneCredit(updated.userId);
+          if (!resUse.ok) {
+            console.warn(
+              "[credits] No active credits to consume for user",
+              updated.userId
+            );
+            // Optional: revert status if you want hard enforcement
+            // await prisma.session.update({ where: { id }, data: { status: prevStatus } });
+          }
+        } else if (shouldRefund) {
+          const resRef = await refundOneCredit(updated.userId);
+          if (!resRef.ok) {
+            console.warn(
+              "[credits] Nothing to refund for user",
+              updated.userId
+            );
+          }
+        }
+      } catch (e) {
+        console.error("[credits] accounting failure:", e?.message || e);
+      }
 
       await audit(req.user.id, "session_update", "Session", id, patch);
       res.json(updated);
@@ -1946,6 +2137,53 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to load summary" });
   }
 });
+
+// --------------------------------------------------------------------------
+// Learner: My packages (entitlements)
+// GET /api/me/packages
+// Returns an array of entitlements with a computed `remaining` field.
+// --------------------------------------------------------------------------
+app.get("/api/me/packages", requireAuth, async (req, res) => {
+  try {
+    const rows = await prisma.userPackage.findMany({
+      where: { userId: req.viewUserId },
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        title: true,
+        minutesPerSession: true,
+        sessionsTotal: true,
+        sessionsUsed: true,
+        expiresAt: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    const now = Date.now();
+    const items = rows.map((r) => {
+      const remaining = Math.max(
+        0,
+        Number(r.sessionsTotal) - Number(r.sessionsUsed || 0)
+      );
+      const expired = r.expiresAt
+        ? new Date(r.expiresAt).getTime() < now
+        : false;
+      return {
+        ...r,
+        remaining,
+        expired,
+      };
+    });
+
+    res.json(items);
+  } catch (e) {
+    console.error("GET /api/me/packages failed:", e);
+    res.status(500).json({ error: "Failed to load packages" });
+  }
+});
+
 // ============================================================================
 // Sessions (Learner)
 // ============================================================================
@@ -2077,10 +2315,26 @@ app.post("/api/sessions/:id/cancel", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    // Simple policy: refund if user cancels >= 12h before start
+    const startsAt = new Date(sessionRow.startAt);
+    const twelveHoursMs = 12 * 60 * 60 * 1000;
+    const eligibleForRefund =
+      isOwner && startsAt.getTime() - Date.now() >= twelveHoursMs;
+
     const updated = await prisma.session.update({
       where: { id },
       data: { status: "canceled" },
     });
+
+    try {
+      if (eligibleForRefund) {
+        const r = await refundOneCredit(sessionRow.userId);
+        if (!r.ok)
+          console.warn("[credits] cancel refund not applied (none to refund)");
+      }
+    } catch (e) {
+      console.error("[credits] cancel refund failed:", e?.message || e);
+    }
 
     res.json({ ok: true, session: updated });
   } catch (e) {
