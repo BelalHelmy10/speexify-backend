@@ -2184,6 +2184,77 @@ app.get("/api/me/packages", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// Onboarding form: create/update and get latest
+// --------------------------------------------------------------------------
+app.get("/api/me/onboarding", requireAuth, async (req, res) => {
+  try {
+    const row = await prisma.onboardingForm.findFirst({
+      where: { userId: req.viewUserId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(row || null);
+  } catch (e) {
+    console.error("GET /api/me/onboarding failed:", e);
+    res.status(500).json({ error: "Failed to load onboarding form" });
+  }
+});
+
+app.post("/api/me/onboarding", requireAuth, async (req, res) => {
+  try {
+    const { answers = {}, packageId = null } = req.body || {};
+    const created = await prisma.onboardingForm.create({
+      data: {
+        userId: req.viewUserId,
+        packageId: packageId ? Number(packageId) : null,
+        answers,
+        status: "submitted",
+      },
+    });
+    res.status(201).json({ ok: true, form: created });
+  } catch (e) {
+    console.error("POST /api/me/onboarding failed:", e);
+    res.status(500).json({ error: "Failed to save onboarding form" });
+  }
+});
+
+// --------------------------------------------------------------------------
+// Written assessment: create and get latest
+// --------------------------------------------------------------------------
+app.get("/api/me/assessment", requireAuth, async (req, res) => {
+  try {
+    const row = await prisma.assessmentSubmission.findFirst({
+      where: { userId: req.viewUserId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(row || null);
+  } catch (e) {
+    console.error("GET /api/me/assessment failed:", e);
+    res.status(500).json({ error: "Failed to load assessment" });
+  }
+});
+
+app.post("/api/me/assessment", requireAuth, async (req, res) => {
+  try {
+    const { text = "", packageId = null } = req.body || {};
+    const wordCount = String(text).trim().split(/\s+/).filter(Boolean).length;
+
+    const created = await prisma.assessmentSubmission.create({
+      data: {
+        userId: req.viewUserId,
+        packageId: packageId ? Number(packageId) : null,
+        text,
+        wordCount,
+        status: "submitted",
+      },
+    });
+    res.status(201).json({ ok: true, submission: created });
+  } catch (e) {
+    console.error("POST /api/me/assessment failed:", e);
+    res.status(500).json({ error: "Failed to submit assessment" });
+  }
+});
+
 // ============================================================================
 // Sessions (Learner)
 // ============================================================================
