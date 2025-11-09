@@ -2002,7 +2002,6 @@ app.post("/api/sessions/:id/complete", requireAuth, async (req, res) => {
         console.error(e);
       }
     }
-
     res.json({ ok: true });
   } catch (e) {
     console.error("complete error:", e);
@@ -2217,16 +2216,13 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     const userId = req.viewUserId;
     const now = new Date();
 
-    // All queries for the teacher anchor on this
     const whereBase = { teacherId: userId };
-
-    // Shared fragments
     const notCanceled = { status: { not: "canceled" } };
+
     const inProgressOrFuture = {
       OR: [
-        { startAt: { gte: now } }, // future
+        { startAt: { gte: now } },
         {
-          // in progress: started already and not yet ended (or no end)
           AND: [
             { startAt: { lte: now } },
             { OR: [{ endAt: { gte: now } }, { endAt: null }] },
@@ -2235,44 +2231,41 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
       ],
     };
 
-    // Run all in parallel
-    const [nextSession, upcomingTeachCount, taughtCount, user] =
-      await Promise.all([
-        prisma.session.findFirst({
-          where: { ...whereBase, ...notCanceled, ...inProgressOrFuture },
-          orderBy: { startAt: "asc" },
-          select: {
-            id: true,
-            title: true,
-            startAt: true,
-            endAt: true,
-            meetingUrl: true,
-            status: true,
-          },
-        }),
-        prisma.session.count({
-          // Upcoming includes in-progress + future, excluding canceled
-          where: { ...whereBase, ...notCanceled, ...inProgressOrFuture },
-        }),
-        prisma.session.count({
-          // Completed is explicit state, not just time-passed
-          where: { ...whereBase, status: "completed" },
-        }),
-        prisma.user.findUnique({
-          where: { id: userId },
-          select: { timezone: true },
-        }),
-      ]);
+    const upcomingTeachCount = await prisma.session.count({
+      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
+    });
 
-    return res.json({
-      nextTeach: nextSession,
+    const taughtCount = await prisma.session.count({
+      where: { AND: [whereBase, { status: "completed" }] },
+    });
+
+    const nextTeach = await prisma.session.findFirst({
+      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
+      orderBy: { startAt: "asc" },
+      select: {
+        id: true,
+        title: true,
+        startAt: true,
+        endAt: true,
+        meetingUrl: true,
+        status: true,
+      },
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { timezone: true },
+    });
+
+    res.json({
+      nextTeach,
       upcomingTeachCount,
       taughtCount,
       timezone: user?.timezone || null,
     });
   } catch (e) {
     console.error("GET /api/teacher/summary failed:", e);
-    return res.status(500).json({ error: "Failed to load summary" });
+    res.status(500).json({ error: "Failed to load summary" });
   }
 });
 
@@ -2290,12 +2283,39 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
         ? { OR: [{ userId: req.viewUserId }, { teacherId: req.viewUserId }] }
         : { userId: req.viewUserId };
 
+    // in-progress OR future
+    const inProgressOrFuture = {
+      OR: [
+        { startAt: { gte: now } }, // future
+        {
+          AND: [
+            { startAt: { lte: now } }, // in-progress
+            { OR: [{ endAt: { gte: now } }, { endAt: null }] },
+          ],
+        },
+      ],
+    };
+
+    const notCanceled = { status: { not: "canceled" } };
+
+    // Upcoming should include in-progress + future, excluding canceled
+    const upcomingCount = await prisma.session.count({
+      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
+    });
+
+    // Completed should be based on explicit status only
+    const completedCount = await prisma.session.count({
+      where: { AND: [whereBase, { status: "completed" }] },
+    });
+
+    // Total should reflect there is/was a session regardless of time
+    const totalCount = await prisma.session.count({
+      where: { AND: [whereBase, notCanceled] },
+    });
+
+    // Next session = the soonest future OR currently running
     const nextSession = await prisma.session.findFirst({
-      where: {
-        ...whereBase,
-        startAt: { gt: now },
-        status: { not: "canceled" },
-      },
+      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
       orderBy: { startAt: "asc" },
       select: {
         id: true,
@@ -2303,30 +2323,13 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
         startAt: true,
         endAt: true,
         meetingUrl: true,
+        status: true,
       },
     });
 
-    const upcomingCount = await prisma.session.count({
-      where: {
-        ...whereBase,
-        startAt: { gt: now },
-        status: { not: "canceled" },
-      },
-    });
-
-    const completedCount = await prisma.session.count({
-      where: {
-        ...whereBase,
-        OR: [
-          { endAt: { lt: now } },
-          { AND: [{ endAt: null }, { startAt: { lt: now } }] },
-        ],
-      },
-    });
-
-    res.json({ nextSession, upcomingCount, completedCount });
+    res.json({ nextSession, upcomingCount, completedCount, totalCount });
   } catch (err) {
-    console.error(err);
+    console.error("GET /api/me/summary failed:", err);
     res.status(500).json({ error: "Failed to load summary" });
   }
 });
@@ -2517,31 +2520,24 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
         ? { OR: [{ userId }, { teacherId: userId }] }
         : { userId };
 
-    const notCanceled = { NOT: { status: "canceled" } };
-    const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    const notCanceled = { status: { not: "canceled" } };
+
+    const inProgressOrFuture = {
+      OR: [
+        { startAt: { gte: now } },
+        {
+          AND: [
+            { startAt: { lte: now } },
+            { OR: [{ endAt: { gte: now } }, { endAt: null }] },
+          ],
+        },
+      ],
+    };
 
     const where =
       range === "past"
-        ? {
-            AND: [whereBase, { status: "completed" }],
-          }
-        : {
-            AND: [
-              whereBase,
-              notCanceled,
-              {
-                OR: [
-                  { startAt: { gte: now } },
-                  {
-                    AND: [
-                      { startAt: { lte: now } },
-                      { OR: [{ endAt: { gte: now } }, { endAt: null }] },
-                    ],
-                  },
-                ],
-              },
-            ],
-          };
+        ? { AND: [whereBase, { status: "completed" }] } // only completed
+        : { AND: [whereBase, notCanceled, inProgressOrFuture] }; // future + in-progress
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
 
