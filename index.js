@@ -335,6 +335,93 @@ async function refundOneCredit(userId) {
   };
 }
 
+// Auto-mark ended sessions as completed (lazy finalization)
+// and consume a credit. Uses a small grace period so we don't flip
+// exactly at the scheduled end time.
+const COMPLETION_GRACE_MIN = 2;
+
+async function finalizeExpiredSessionsForUser(userId) {
+  const cutoff = new Date(Date.now() - COMPLETION_GRACE_MIN * 60 * 1000);
+
+  // sessions that belong to the user, are not canceled, not yet completed,
+  // and have definitely ended (or have no endAt but started long ago)
+  const toFinalize = await prisma.session.findMany({
+    where: {
+      userId: Number(userId),
+      status: { not: "canceled" },
+      NOT: { status: "completed" },
+      OR: [
+        { endAt: { lt: cutoff } },
+        { AND: [{ endAt: null }, { startAt: { lt: cutoff } }] },
+      ],
+    },
+    select: { id: true, userId: true },
+    orderBy: { startAt: "asc" },
+  });
+
+  for (const s of toFinalize) {
+    try {
+      await prisma.session.update({
+        where: { id: s.id },
+        data: { status: "completed" },
+      });
+      try {
+        await consumeOneCredit(s.userId);
+      } catch (e) {
+        console.error(
+          "[finalize] credit consume failed for session",
+          s.id,
+          e?.message || e
+        );
+      }
+    } catch (e) {
+      console.error(
+        "[finalize] update failed for session",
+        s.id,
+        e?.message || e
+      );
+    }
+  }
+}
+
+async function finalizeExpiredSessionsForTeacher(teacherId) {
+  const cutoff = new Date(Date.now() - COMPLETION_GRACE_MIN * 60 * 1000);
+
+  const toFinalize = await prisma.session.findMany({
+    where: {
+      teacherId: Number(teacherId),
+      status: { not: "canceled" },
+      NOT: { status: "completed" },
+      OR: [
+        { endAt: { lt: cutoff } },
+        { AND: [{ endAt: null }, { startAt: { lt: cutoff } }] },
+      ],
+    },
+    select: { id: true, userId: true },
+    orderBy: { startAt: "asc" },
+  });
+
+  for (const s of toFinalize) {
+    try {
+      await prisma.session.update({
+        where: { id: s.id },
+        data: { status: "completed" },
+      });
+      try {
+        await consumeOneCredit(s.userId);
+      } catch (e) {
+        console.error(
+          "[finalize-teacher] credit consume failed",
+          s.id,
+          e?.message || e
+        );
+      }
+    } catch (e) {
+      console.error("[finalize-teacher] update failed", s.id, e?.message || e);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Validation / constants for onboarding & assessment
 // ---------------------------------------------------------------------------
@@ -2213,6 +2300,7 @@ app.get("/api/teacher/sessions", requireAuth, async (req, res) => {
 /* ========================================================================== */
 app.get("/api/teacher/summary", requireAuth, async (req, res) => {
   try {
+    await finalizeExpiredSessionsForTeacher(req.viewUserId);
     const userId = req.viewUserId;
     const now = new Date();
 
@@ -2277,57 +2365,44 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
   const now = new Date();
 
   try {
+    // Make sure any ended sessions are marked completed and credits consumed
+    await finalizeExpiredSessionsForUser(req.viewUserId);
+
     const role = req.user.role || "learner";
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId: req.viewUserId }, { teacherId: req.viewUserId }] }
         : { userId: req.viewUserId };
 
-    // in-progress OR future
+    // "Upcoming" should include FUTURE and IN-PROGRESS, exclude canceled
     const inProgressOrFuture = {
       OR: [
         { startAt: { gte: now } }, // future
         {
           AND: [
-            { startAt: { lte: now } }, // in-progress
-            { OR: [{ endAt: { gte: now } }, { endAt: null }] },
+            { startAt: { lte: now } }, // started
+            { OR: [{ endAt: { gte: now } }, { endAt: null }] }, // not ended
           ],
         },
       ],
     };
 
-    const notCanceled = { status: { not: "canceled" } };
-
-    // Upcoming should include in-progress + future, excluding canceled
     const upcomingCount = await prisma.session.count({
-      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
-    });
-
-    // Completed should be based on explicit status only
-    const completedCount = await prisma.session.count({
-      where: { AND: [whereBase, { status: "completed" }] },
-    });
-
-    // Total should reflect there is/was a session regardless of time
-    const totalCount = await prisma.session.count({
-      where: { AND: [whereBase, notCanceled] },
-    });
-
-    // Next session = the soonest future OR currently running
-    const nextSession = await prisma.session.findFirst({
-      where: { AND: [whereBase, notCanceled, inProgressOrFuture] },
-      orderBy: { startAt: "asc" },
-      select: {
-        id: true,
-        title: true,
-        startAt: true,
-        endAt: true,
-        meetingUrl: true,
-        status: true,
+      where: {
+        ...whereBase,
+        status: { not: "canceled" },
+        ...inProgressOrFuture,
       },
     });
 
-    res.json({ nextSession, upcomingCount, completedCount, totalCount });
+    // "Completed" strictly by status
+    const completedCount = await prisma.session.count({
+      where: { ...whereBase, status: "completed" },
+    });
+
+    // The UI can compute total = upcoming + completed
+    // (or you can return it here as well)
+    res.json({ nextSession: null, upcomingCount, completedCount });
   } catch (err) {
     console.error("GET /api/me/summary failed:", err);
     res.status(500).json({ error: "Failed to load summary" });
@@ -2510,6 +2585,7 @@ app.post("/api/me/assessment", requireAuth, async (req, res) => {
 
 app.get("/api/me/sessions", requireAuth, async (req, res) => {
   try {
+    await finalizeExpiredSessionsForUser(req.viewUserId); // 👈 add this
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { range = "upcoming", limit = 10 } = req.query;
@@ -2565,6 +2641,7 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
 
 app.get("/api/me/sessions-between", requireAuth, async (req, res) => {
   try {
+    await finalizeExpiredSessionsForUser(req.viewUserId); // 👈 add this
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { start, end } = req.query;
