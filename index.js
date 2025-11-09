@@ -1978,6 +1978,38 @@ app.patch(
   }
 );
 
+app.post("/api/sessions/:id/complete", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const s = await prisma.session.findUnique({ where: { id } });
+    if (!s) return res.status(404).json({ error: "Not found" });
+
+    const canComplete =
+      req.user.role === "admin" ||
+      req.user.id === s.teacherId ||
+      req.user.id === s.userId;
+
+    if (!canComplete) return res.status(403).json({ error: "Forbidden" });
+
+    if (s.status !== "completed") {
+      await prisma.session.update({
+        where: { id },
+        data: { status: "completed" },
+      });
+      try {
+        await consumeOneCredit(s.userId);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("complete error:", e);
+    res.status(500).json({ error: "Failed to complete session" });
+  }
+});
+
 // DELETE /api/admin/sessions/:id
 app.delete(
   "/api/admin/sessions/:id",
@@ -2185,63 +2217,62 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     const userId = req.viewUserId;
     const now = new Date();
 
-    const upcomingCount = await prisma.session.count({
-      where: {
-        teacherId: userId,
-        status: { not: "canceled" },
-        startAt: { gte: now },
-      },
-    });
+    // All queries for the teacher anchor on this
+    const whereBase = { teacherId: userId };
 
-    const completedCount = await prisma.session.count({
-      where: {
-        teacherId: userId,
-        OR: [
-          { endAt: { lt: now } },
-          { AND: [{ endAt: null }, { startAt: { lt: now } }] },
-        ],
-      },
-    });
+    // Shared fragments
+    const notCanceled = { status: { not: "canceled" } };
+    const inProgressOrFuture = {
+      OR: [
+        { startAt: { gte: now } }, // future
+        {
+          // in progress: started already and not yet ended (or no end)
+          AND: [
+            { startAt: { lte: now } },
+            { OR: [{ endAt: { gte: now } }, { endAt: null }] },
+          ],
+        },
+      ],
+    };
 
-    const nextSession = await prisma.session.findFirst({
-      where: {
-        teacherId: userId,
-        status: { not: "canceled" },
-        OR: [
-          { startAt: { gte: now } },
-          {
-            AND: [
-              { startAt: { lte: now } },
-              { OR: [{ endAt: { gte: now } }, { endAt: null }] },
-            ],
+    // Run all in parallel
+    const [nextSession, upcomingTeachCount, taughtCount, user] =
+      await Promise.all([
+        prisma.session.findFirst({
+          where: { ...whereBase, ...notCanceled, ...inProgressOrFuture },
+          orderBy: { startAt: "asc" },
+          select: {
+            id: true,
+            title: true,
+            startAt: true,
+            endAt: true,
+            meetingUrl: true,
+            status: true,
           },
-        ],
-      },
-      orderBy: { startAt: "asc" },
-      select: {
-        id: true,
-        title: true,
-        startAt: true,
-        endAt: true,
-        meetingUrl: true,
-        status: true,
-      },
-    });
+        }),
+        prisma.session.count({
+          // Upcoming includes in-progress + future, excluding canceled
+          where: { ...whereBase, ...notCanceled, ...inProgressOrFuture },
+        }),
+        prisma.session.count({
+          // Completed is explicit state, not just time-passed
+          where: { ...whereBase, status: "completed" },
+        }),
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: { timezone: true },
+        }),
+      ]);
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { timezone: true },
-    });
-
-    res.json({
+    return res.json({
       nextTeach: nextSession,
-      upcomingTeachCount: upcomingCount,
-      taughtCount: completedCount,
+      upcomingTeachCount,
+      taughtCount,
       timezone: user?.timezone || null,
     });
   } catch (e) {
     console.error("GET /api/teacher/summary failed:", e);
-    res.status(500).json({ error: "Failed to load summary" });
+    return res.status(500).json({ error: "Failed to load summary" });
   }
 });
 
@@ -2492,15 +2523,7 @@ app.get("/api/me/sessions", requireAuth, async (req, res) => {
     const where =
       range === "past"
         ? {
-            AND: [
-              whereBase,
-              {
-                OR: [
-                  { endAt: { lt: now } },
-                  { AND: [{ endAt: null }, { startAt: { lt: twoHoursAgo } }] },
-                ],
-              },
-            ],
+            AND: [whereBase, { status: "completed" }],
           }
         : {
             AND: [
