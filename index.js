@@ -10,6 +10,7 @@ import "dotenv/config";
 import axios from "axios";
 import nodemailer from "nodemailer";
 import { OAuth2Client } from "google-auth-library";
+import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
@@ -333,6 +334,57 @@ async function refundOneCredit(userId) {
     remaining: updated.sessionsTotal - updated.sessionsUsed,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Validation / constants for onboarding & assessment
+// ---------------------------------------------------------------------------
+const ASSESS_MIN_HARD = 120; // match frontend HARD_MIN
+const ASSESS_MIN_SOFT = 150; // match frontend TARGET_MIN
+const ASSESS_MAX_SOFT = 250; // match frontend TARGET_MAX
+const ASSESS_MAX_HARD = 600; // match frontend HARD_MAX
+
+const SkillsEnum = z.enum([
+  "Speaking",
+  "Listening",
+  "Reading",
+  "Writing",
+  "Pronunciation",
+  "Grammar",
+  "Vocabulary",
+]);
+
+const OnboardingAnswersSchema = z.object({
+  // Profile / logistics
+  timezone: z.string().min(1),
+  availability: z.string().optional().default(""),
+  preferredFormat: z.string().optional().default("1:1"),
+  notes: z.string().optional().default(""),
+
+  // Goals & context
+  goals: z.string().optional().default(""),
+  context: z.string().optional().default(""),
+  levelSelfEval: z.string().optional().default(""),
+  usageFrequency: z.string().optional().default(""),
+  usageContexts: z.array(z.string()).optional().default([]),
+
+  // Needs analysis
+  motivations: z.array(z.string()).optional().default([]),
+  motivationOther: z.string().optional().default(""),
+  examDetails: z.string().optional().default(""),
+  skillPriority: z.record(SkillsEnum, z.number().min(1).max(5)).optional(),
+  challenges: z.string().optional().default(""),
+  learningStyles: z.array(z.string()).optional().default([]),
+
+  // Self-assessment
+  confidence: z
+    .record(
+      z.enum(["Speaking", "Listening", "Reading", "Writing"]),
+      z.number().min(1).max(10)
+    )
+    .optional(),
+  writingSample: z.string().optional().default(""),
+  consentRecording: z.boolean().optional().default(false),
+});
 
 /* ========================================================================== */
 /*                              HEALTH / HELLO                                */
@@ -1945,6 +1997,116 @@ app.delete(
 );
 
 /* ========================================================================== */
+/*                        ADMIN: ONBOARDING + ASSESSMENTS                      */
+/* ========================================================================== */
+
+// GET /api/admin/onboarding?userId=&limit=&offset=
+app.get(
+  "/api/admin/onboarding",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { userId = "", limit = "50", offset = "0" } = req.query;
+      const where = userId ? { userId: Number(userId) } : {};
+      const [items, total] = await Promise.all([
+        prisma.onboardingForm.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          take: Number(limit),
+          skip: Number(offset),
+          select: {
+            id: true,
+            userId: true,
+            packageId: true,
+            status: true,
+            createdAt: true,
+            answers: true,
+          },
+        }),
+        prisma.onboardingForm.count({ where }),
+      ]);
+      res.json({ items, total });
+    } catch (e) {
+      console.error("admin.onboarding.list error:", e);
+      res.status(500).json({ error: "Failed to load onboarding forms" });
+    }
+  }
+);
+
+// GET /api/admin/assessments?userId=&limit=&offset=
+app.get(
+  "/api/admin/assessments",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { userId = "", limit = "50", offset = "0" } = req.query;
+      const where = userId ? { userId: Number(userId) } : {};
+      const [items, total] = await Promise.all([
+        prisma.assessmentSubmission.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          take: Number(limit),
+          skip: Number(offset),
+          select: {
+            id: true,
+            userId: true,
+            packageId: true,
+            status: true,
+            score: true,
+            wordCount: true,
+            createdAt: true,
+          },
+        }),
+        prisma.assessmentSubmission.count({ where }),
+      ]);
+      res.json({ items, total });
+    } catch (e) {
+      console.error("admin.assessments.list error:", e);
+      res.status(500).json({ error: "Failed to load assessments" });
+    }
+  }
+);
+
+// POST /api/admin/assessments/:id/review
+app.post(
+  "/api/admin/assessments/:id/review",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const {
+        score = null,
+        cefr = null,
+        feedback = null,
+        meta = {},
+      } = req.body || {};
+      const updated = await prisma.assessmentSubmission.update({
+        where: { id },
+        data: {
+          status: "reviewed",
+          score: score !== null ? Number(score) : null,
+          meta: meta || {},
+        },
+        select: {
+          id: true,
+          status: true,
+          score: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      res.json({ ok: true, assessment: updated });
+    } catch (e) {
+      console.error("admin.assessments.review error:", e);
+      res.status(500).json({ error: "Failed to review assessment" });
+    }
+  }
+);
+
+/* ========================================================================== */
 /*                             SESSIONS (LESSONS)                              */
 /* ========================================================================== */
 
@@ -2203,15 +2365,51 @@ app.get("/api/me/onboarding", requireAuth, async (req, res) => {
 app.post("/api/me/onboarding", requireAuth, async (req, res) => {
   try {
     const { answers = {}, packageId = null } = req.body || {};
+
+    // 1) Validate
+    const parsed = OnboardingAnswersSchema.safeParse(answers);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid onboarding payload",
+        issues: parsed.error.issues,
+      });
+    }
+
+    // 2) (Optional) clamp giant text fields to avoid megabyte payloads
+    const clamp = (s, n = 5000) => (typeof s === "string" ? s.slice(0, n) : s);
+    const clean = parsed.data;
+    clean.availability = clamp(clean.availability);
+    clean.notes = clamp(clean.notes);
+    clean.goals = clamp(clean.goals);
+    clean.context = clamp(clean.context);
+    clean.motivationOther = clamp(clean.motivationOther);
+    clean.examDetails = clamp(clean.examDetails);
+    clean.challenges = clamp(clean.challenges);
+    clean.writingSample = clamp(clean.writingSample, 8000);
+
+    // 3) Create a fresh submission row (keeps history)
     const created = await prisma.onboardingForm.create({
       data: {
         userId: req.viewUserId,
         packageId: packageId ? Number(packageId) : null,
-        answers,
+        answers: clean,
         status: "submitted",
       },
     });
-    res.status(201).json({ ok: true, form: created });
+
+    // 4) (Nice) copy timezone onto User if provided
+    if (clean.timezone) {
+      await prisma.user.update({
+        where: { id: req.viewUserId },
+        data: { timezone: clean.timezone },
+      });
+      // keep session in sync if the caller is the same user
+      if (req.viewUserId === req.user.id && req.session?.user) {
+        req.session.user.timezone = clean.timezone;
+      }
+    }
+
+    return res.status(201).json({ ok: true, form: created });
   } catch (e) {
     console.error("POST /api/me/onboarding failed:", e);
     res.status(500).json({ error: "Failed to save onboarding form" });
@@ -2237,14 +2435,31 @@ app.get("/api/me/assessment", requireAuth, async (req, res) => {
 app.post("/api/me/assessment", requireAuth, async (req, res) => {
   try {
     const { text = "", packageId = null } = req.body || {};
-    const wordCount = String(text).trim().split(/\s+/).filter(Boolean).length;
+    const input = String(text || "");
+    const normalized = input.replace(/\r\n/g, "\n").trim();
+    const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+
+    // Hard safety rails (mirror frontend, but keep server authoritative)
+    if (wordCount === 0) {
+      return res.status(400).json({ error: "Submission is empty" });
+    }
+    if (wordCount > ASSESS_MAX_HARD) {
+      return res
+        .status(413)
+        .json({ error: `Submission too long (>${ASSESS_MAX_HARD} words)` });
+    }
+    // Note: we do NOT hard-reject below HARD_MIN to allow client "submit anyway".
+    // If you want to enforce, uncomment:
+    // if (wordCount < ASSESS_MIN_HARD) {
+    //   return res.status(400).json({ error: `Too short (<${ASSESS_MIN_HARD} words)` });
+    // }
 
     const created = await prisma.assessmentSubmission.create({
       data: {
         userId: req.viewUserId,
         packageId: packageId ? Number(packageId) : null,
-        text,
-        wordCount,
+        text: normalized,
+        wordCount: Number(wordCount),
         status: "submitted",
       },
     });
