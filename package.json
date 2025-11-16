@@ -5,6 +5,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon index.js",
+    "build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
     "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
     "prisma:migrate": "node ./node_modules/prisma/build/index.js migrate deploy",
     "start": "node index.js",
@@ -32,5 +33,12 @@
     "nodemailer": "^7.0.6",
     "prisma": "^6.17.1",
     "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }
