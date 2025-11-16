@@ -459,23 +459,6 @@ router.post("/register/start", async (req, res) => {
   }
 });
 
-// Add this helper somewhere above the route (top of file is fine)
-function validatePasswordStrength(password, label = "Password") {
-  if (!password || typeof password !== "string") {
-    return `${label} is required`;
-  }
-
-  if (password.length < 8) {
-    return `${label} must be at least 8 characters`;
-  }
-
-  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
-    return `${label} must contain at least one letter and one number`;
-  }
-
-  return null; // valid
-}
-
 router.post("/register/complete", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
