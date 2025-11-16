@@ -539,7 +539,9 @@ app.post("/api/me/password", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/health", (_req, res) => res.send("ok"));
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
 
 app.get("/api/db-check", async (_req, res) => {
   try {
