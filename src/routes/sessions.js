@@ -3,12 +3,15 @@ import { PrismaClient } from "@prisma/client";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js"; // I will help you create this later
 // or you temporarily paste requireAuth + requireAdmin at top as local functions
 // example inside routes/sessions.js
+// src/routes/sessions.js
 import {
   overlapsFilter,
   findSessionConflicts,
   getRemainingCredits,
   consumeOneCredit,
   refundOneCredit,
+  finalizeExpiredSessionsForUser, // 👈 add this
+  finalizeExpiredSessionsForTeacher, // 👈 (optional, if you plan to use it)
 } from "../services/sessionsService.js";
 
 const router = Router();
