@@ -7,6 +7,7 @@ import express from "express";
 import "dotenv/config";
 import axios from "axios";
 import { z } from "zod";
+import helmet from "helmet";
 
 // ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
@@ -41,6 +42,7 @@ import {
 } from "./services/sessionsService.js";
 import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
+import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 
 const app = express();
 const prisma = new PrismaClient();
@@ -66,13 +68,18 @@ if (
 
 app.use(express.json());
 app.set("trust proxy", 1);
-
-//Usung Cors from the file
+app.use(helmet());
 app.use(corsMiddleware);
 app.options(/.*/, corsMiddleware);
-
-//Using session from the file
 app.use(sessionMiddleware);
+
+// CSRF protection for all /api routes (except the ones we skip inside the middleware)
+app.use("/api", csrfMiddleware);
+
+// Endpoint to fetch a CSRF token (frontend will call this)
+app.get("/api/csrf-token", (req, res) => {
+  return res.json({ csrfToken: req.csrfToken() });
+});
 
 //mounting the auth
 app.use("/api/auth", authRoutes);
@@ -552,5 +559,7 @@ app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
+
+app.use(csrfErrorHandler);
 
 export default app;

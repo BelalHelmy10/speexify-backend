@@ -6,9 +6,28 @@ import { OAuth2Client } from "google-auth-library";
 import crypto from "node:crypto";
 import { isProd, COOKIE_DOMAIN } from "../config/env.js";
 import { sendEmail } from "../services/emailService.js";
+import { loginLimiter } from "../middleware/rateLimit.js";
 
 const prisma = new PrismaClient();
 const router = Router();
+
+//validating passwords
+
+function validatePasswordStrength(password, label = "Password") {
+  if (!password || typeof password !== "string") {
+    return `${label} is required`;
+  }
+
+  if (password.length < 8) {
+    return `${label} must be at least 8 characters`;
+  }
+
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return `${label} must contain at least one letter and one number`;
+  }
+
+  return null; // ok
+}
 
 /* ========================================================================== */
 /*                      SHARED HELPERS (copied from app.js)                  */
@@ -49,7 +68,7 @@ async function randomHashedPassword() {
 
 // ---- Email sender (same behaviour as app.js) ----
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   try {
     let { email, password } = req.body;
     email = (email || "").toLowerCase().trim();
@@ -308,27 +327,43 @@ router.post("/password/reset/complete", async (req, res) => {
     const code = String(req.body?.code || "").trim();
     const newPassword = String(req.body?.newPassword || "");
 
+    // Email format
     if (!/^\S+@\S+\.\S+$/.test(email))
       return res.status(400).json({ error: "Valid email is required" });
+
+    // Code format
     if (!/^\d{6}$/.test(code))
       return res.status(400).json({ error: "A 6-digit code is required" });
-    if (newPassword.length < 8)
+
+    // NEW PASSWORD POLICY (embedded here)
+    if (newPassword.length < 8) {
       return res
         .status(400)
         .json({ error: "New password must be at least 8 characters" });
+    }
+    if (!/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return res.status(400).json({
+        error: "New password must contain at least one letter and one number",
+      });
+    }
 
+    // User exists?
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(400).json({ error: "Invalid code" });
 
+    // Get reset entry
     const pr = await prisma.passwordResetCode.findUnique({ where: { email } });
     if (!pr) return res.status(400).json({ error: "Invalid or expired code" });
 
+    // Expired?
     if (new Date() > pr.expiresAt) {
       await prisma.passwordResetCode.delete({ where: { email } });
       return res
         .status(400)
         .json({ error: "Code expired. Request a new one." });
     }
+
+    // Too many attempts?
     if (pr.attempts >= 5) {
       await prisma.passwordResetCode.delete({ where: { email } });
       return res
@@ -336,6 +371,7 @@ router.post("/password/reset/complete", async (req, res) => {
         .json({ error: "Too many attempts. Try again later." });
     }
 
+    // Check code
     const ok = pr.codeHash === hashCode(code);
     if (!ok) {
       await prisma.passwordResetCode.update({
@@ -345,10 +381,17 @@ router.post("/password/reset/complete", async (req, res) => {
       return res.status(400).json({ error: "Invalid code" });
     }
 
+    // Update password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({ where: { email }, data: { hashedPassword } });
+    await prisma.user.update({
+      where: { email },
+      data: { hashedPassword },
+    });
+
+    // Cleanup
     await prisma.passwordResetCode.delete({ where: { email } });
 
+    // Log them in
     req.session.asUserId = null;
     req.session.user = {
       id: user.id,
@@ -416,6 +459,23 @@ router.post("/register/start", async (req, res) => {
   }
 });
 
+// Add this helper somewhere above the route (top of file is fine)
+function validatePasswordStrength(password, label = "Password") {
+  if (!password || typeof password !== "string") {
+    return `${label} is required`;
+  }
+
+  if (password.length < 8) {
+    return `${label} must be at least 8 characters`;
+  }
+
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return `${label} must contain at least one letter and one number`;
+  }
+
+  return null; // valid
+}
+
 router.post("/register/complete", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
@@ -425,33 +485,43 @@ router.post("/register/complete", async (req, res) => {
     const password = String(req.body?.password || "");
     const name = String(req.body?.name || "");
 
+    // Email format
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
     }
+
+    // 6-digit code
     if (!/^\d{6}$/.test(code)) {
       return res.status(400).json({ error: "A 6-digit code is required" });
     }
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 6 characters" });
+
+    // NEW PASSWORD POLICY
+    const passwordError = validatePasswordStrength(password, "Password");
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
     }
 
+    // User exists?
     const exists = await prisma.user.findUnique({ where: { email } });
-    if (exists)
+    if (exists) {
       return res.status(409).json({ error: "Email is already registered" });
+    }
 
+    // Find verification code entry
     const v = await prisma.verificationCode.findUnique({ where: { email } });
-    if (!v)
+    if (!v) {
       return res
         .status(400)
         .json({ error: "No verification code found for this email" });
+    }
 
+    // Expired?
     if (new Date() > v.expiresAt) {
       await prisma.verificationCode.delete({ where: { email } });
       return res.status(400).json({ error: "Verification code has expired" });
     }
 
+    // Too many attempts?
     if (v.attempts >= 5) {
       await prisma.verificationCode.delete({ where: { email } });
       return res
@@ -459,6 +529,7 @@ router.post("/register/complete", async (req, res) => {
         .json({ error: "Too many attempts. Request a new code." });
     }
 
+    // Check the code
     const isMatch = v.codeHash === hashCode(code);
     if (!isMatch) {
       await prisma.verificationCode.update({
@@ -468,6 +539,7 @@ router.post("/register/complete", async (req, res) => {
       return res.status(400).json({ error: "Invalid verification code" });
     }
 
+    // Passed → create user
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { email, name: name || null, hashedPassword, role: "learner" },
@@ -481,8 +553,10 @@ router.post("/register/complete", async (req, res) => {
       },
     });
 
+    // Cleanup
     await prisma.verificationCode.delete({ where: { email } });
 
+    // Create session
     req.session.asUserId = null;
     req.session.user = user;
 
