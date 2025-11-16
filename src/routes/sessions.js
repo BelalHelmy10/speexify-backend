@@ -1,25 +1,23 @@
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
-import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js"; // I will help you create this later
-// or you temporarily paste requireAuth + requireAdmin at top as local functions
-// example inside routes/sessions.js
-// src/routes/sessions.js
+import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import {
   overlapsFilter,
   findSessionConflicts,
   getRemainingCredits,
   consumeOneCredit,
   refundOneCredit,
-  finalizeExpiredSessionsForUser, // 👈 add this
-  finalizeExpiredSessionsForTeacher, // 👈 (optional, if you plan to use it)
+  finalizeExpiredSessionsForUser,
+  finalizeExpiredSessionsForTeacher,
 } from "../services/sessionsService.js";
 
 const router = Router();
 const prisma = new PrismaClient();
 
 /* ========================================================================== */
-/*                             SESSIONS (LESSONS)                              */
+/*                             SESSIONS (LESSONS)                             */
 /* ========================================================================== */
+
 router.get("/sessions/conflicts", requireAuth, async (req, res) => {
   const startParam = String(req.query.start || "");
   const endParam = req.query.end ? String(req.query.end) : null;
@@ -84,6 +82,75 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Failed to load teacher sessions" });
+  }
+});
+
+/**
+ * NEW: GET /api/sessions/:id
+ * Returns full details for a single session (only to learner, teacher, or admin).
+ */
+router.get("/sessions/:id", requireAuth, async (req, res) => {
+  const sessionId = Number(req.params.id);
+
+  if (!sessionId || Number.isNaN(sessionId)) {
+    return res.status(400).json({ error: "Valid session ID is required" });
+  }
+
+  try {
+    const currentUserId = req.viewUserId || req.user?.id || null;
+    const isAdmin = req.user?.role === "admin";
+
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            timezone: true,
+          },
+        },
+        teacher: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            timezone: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const isLearner = session.userId === currentUserId;
+    const isTeacher = session.teacherId === currentUserId;
+
+    if (!isLearner && !isTeacher && !isAdmin) {
+      return res
+        .status(403)
+        .json({ error: "Not allowed to view this session" });
+    }
+
+    const response = {
+      id: session.id,
+      title: session.title,
+      startAt: session.startAt,
+      endAt: session.endAt,
+      meetingUrl: session.meetingUrl,
+      notes: session.notes ?? null,
+      status: session.status,
+      user: session.user,
+      teacher: session.teacher,
+    };
+
+    return res.json({ session: response });
+  } catch (err) {
+    console.error("GET /sessions/:id failed:", err);
+    return res.status(500).json({ error: "Failed to load session details" });
   }
 });
 
@@ -210,7 +277,7 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
-    await finalizeExpiredSessionsForUser(req.viewUserId); // 👈 add this
+    await finalizeExpiredSessionsForUser(req.viewUserId);
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { range = "upcoming", limit = 10 } = req.query;
@@ -266,7 +333,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
 router.get("/me/sessions-between", requireAuth, async (req, res) => {
   try {
-    await finalizeExpiredSessionsForUser(req.viewUserId); // 👈 add this
+    await finalizeExpiredSessionsForUser(req.viewUserId);
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { start, end } = req.query;
@@ -308,7 +375,7 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 });
 
 /* ========================================================================== */
-/*                               ADMIN: SESSIONS                               */
+/*                               ADMIN: SESSIONS                              */
 /*  ✅ New block powering the Admin dashboard                                 */
 /* ========================================================================== */
 
@@ -474,7 +541,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       });
     }
 
-    // ---- create --------------------------------------------------------------
+    // ---- create -------------------------------------------------------------
     const created = await prisma.session.create({
       data: {
         userId: learnerId,

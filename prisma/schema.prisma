@@ -117,8 +117,8 @@ model Session {
   title      String
   startAt    DateTime
   endAt      DateTime?
-  meetingUrl String?
-  notes      String?
+  notes      String?   // internal notes / summary / homework
+  joinUrl    String?   // Zoom/Meet link or similar
 
   // Learner
   userId Int
