@@ -90,35 +90,22 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
  * Returns full details for a single session (only to learner, teacher, or admin).
  */
 router.get("/sessions/:id", requireAuth, async (req, res) => {
-  const sessionId = Number(req.params.id);
-
-  if (!sessionId || Number.isNaN(sessionId)) {
-    return res.status(400).json({ error: "Valid session ID is required" });
-  }
-
   try {
-    const currentUserId = req.viewUserId || req.user?.id || null;
-    const isAdmin = req.user?.role === "admin";
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
 
     const session = await prisma.session.findUnique({
-      where: { id: sessionId },
+      where: { id },
       include: {
         user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            timezone: true,
-          },
+          select: { id: true, name: true, email: true },
         },
         teacher: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            timezone: true,
-          },
+          select: { id: true, name: true, email: true },
         },
+        feedbacks: true, // 👈 NEW
       },
     });
 
@@ -126,31 +113,195 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const isLearner = session.userId === currentUserId;
-    const isTeacher = session.teacherId === currentUserId;
+    // Permission: learner, teacher or admin
+    const isLearner = session.userId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
 
-    if (!isLearner && !isTeacher && !isAdmin) {
-      return res
-        .status(403)
-        .json({ error: "Not allowed to view this session" });
+    if (!(isLearner || isTeacher || isAdmin)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    const response = {
-      id: session.id,
-      title: session.title,
-      startAt: session.startAt,
-      endAt: session.endAt,
-      meetingUrl: session.meetingUrl,
-      notes: session.notes ?? null,
-      status: session.status,
-      user: session.user,
-      teacher: session.teacher,
-    };
+    const { feedbacks, ...rest } = session;
+    const learnerFeedback = feedbacks.find((f) => f.role === "LEARNER") || null;
+    const teacherFeedback = feedbacks.find((f) => f.role === "TEACHER") || null;
 
-    return res.json({ session: response });
+    return res.json({
+      session: {
+        ...rest,
+        learnerFeedback,
+        teacherFeedback,
+      },
+    });
   } catch (err) {
     console.error("GET /sessions/:id failed:", err);
-    return res.status(500).json({ error: "Failed to load session details" });
+    return res.status(500).json({ error: "Failed to load session" });
+  }
+});
+
+// --------------------------------------------------------------------------
+// Learner feedback
+// POST /api/sessions/:id/feedback/learner
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/feedback/learner", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
+
+    const { rating, notes } = req.body;
+    const notesStr = (notes ?? "").toString().trim() || null;
+
+    let ratingNum = null;
+    if (rating !== undefined && rating !== null && rating !== "") {
+      const parsed = Number(rating);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
+        return res
+          .status(400)
+          .json({ error: "Rating must be a number between 1 and 5" });
+      }
+      ratingNum = Math.round(parsed);
+    }
+
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        userId: true,
+        startAt: true,
+        endAt: true,
+        status: true,
+      },
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    // only the learner (or admin) can submit learner feedback
+    const isLearner = session.userId === req.user.id;
+    const isAdmin = req.user.role === "admin";
+    if (!(isLearner || isAdmin)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // only allow after the session has started
+    const now = new Date();
+    if (new Date(session.startAt) > now) {
+      return res
+        .status(400)
+        .json({ error: "You can only leave feedback after the session" });
+    }
+
+    const role = "LEARNER";
+
+    const fb = await prisma.sessionFeedback.upsert({
+      where: {
+        sessionId_role: { sessionId: id, role },
+      },
+      update: {
+        rating: ratingNum,
+        notes: notesStr,
+      },
+      create: {
+        sessionId: id,
+        role,
+        rating: ratingNum,
+        notes: notesStr,
+      },
+    });
+
+    // Mirror learner rating onto Session.feedbackScore
+    if (ratingNum !== null) {
+      await prisma.session.update({
+        where: { id },
+        data: { feedbackScore: ratingNum },
+      });
+    }
+
+    return res.json({ ok: true, feedback: fb });
+  } catch (err) {
+    console.error("POST /sessions/:id/feedback/learner failed:", err);
+    return res.status(500).json({ error: "Failed to submit feedback" });
+  }
+});
+
+// --------------------------------------------------------------------------
+// Teacher feedback
+// POST /api/sessions/:id/feedback/teacher
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/feedback/teacher", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
+
+    const { rating, notes } = req.body;
+    const notesStr = (notes ?? "").toString().trim() || null;
+
+    let ratingNum = null;
+    if (rating !== undefined && rating !== null && rating !== "") {
+      const parsed = Number(rating);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
+        return res
+          .status(400)
+          .json({ error: "Rating must be a number between 1 and 5" });
+      }
+      ratingNum = Math.round(parsed);
+    }
+
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        teacherId: true,
+        startAt: true,
+        endAt: true,
+        status: true,
+      },
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const isTeacher = session.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
+    if (!(isTeacher || isAdmin)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const now = new Date();
+    if (new Date(session.startAt) > now) {
+      return res
+        .status(400)
+        .json({ error: "You can only leave feedback after the session" });
+    }
+
+    const role = "TEACHER";
+
+    const fb = await prisma.sessionFeedback.upsert({
+      where: {
+        sessionId_role: { sessionId: id, role },
+      },
+      update: {
+        rating: ratingNum,
+        notes: notesStr,
+      },
+      create: {
+        sessionId: id,
+        role,
+        rating: ratingNum,
+        notes: notesStr,
+      },
+    });
+
+    return res.json({ ok: true, feedback: fb });
+  } catch (err) {
+    console.error("POST /sessions/:id/feedback/teacher failed:", err);
+    return res.status(500).json({ error: "Failed to submit feedback" });
   }
 });
 

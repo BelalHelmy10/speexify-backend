@@ -139,8 +139,27 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  feedbacks SessionFeedback[]
+
   @@index([userId, startAt])
   @@index([teacherId, startAt])
+}
+
+
+model SessionFeedback {
+  id        String   @id @default(cuid())
+  session   Session  @relation(fields: [sessionId], references: [id])
+  sessionId Int
+
+  // "LEARNER" or "TEACHER"
+  role   String
+  rating Int?
+  notes  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([sessionId, role])
+  @@unique([sessionId, role]) // at most one feedback per role per session
 }
 
 
