@@ -438,8 +438,15 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const where =
       range === "past"
-        ? { AND: [whereBase, { status: "completed" }] } // only completed
-        : { AND: [whereBase, notCanceled, inProgressOrFuture] }; // future + in-progress
+        ? {
+            AND: [
+              whereBase,
+              { startAt: { lt: now } }, // everything that has already started
+            ],
+          }
+        : {
+            AND: [whereBase, notCanceled, inProgressOrFuture], // future + in-progress
+          };
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
 
