@@ -10,7 +10,7 @@ import {
   finalizeExpiredSessionsForUser,
   finalizeExpiredSessionsForTeacher,
 } from "../services/sessionsService.js";
-import csrfMiddleware from "../middleware/csrf.js";
+import { csrfMiddleware } from "../middleware/csrf.js";
 
 const router = Router();
 const prisma = new PrismaClient();
