@@ -102,6 +102,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       include: {
         user: true,
         teacher: true,
+        teacherFeedback: true, // or `feedback` if you stick with that name
       },
     });
 
@@ -109,13 +110,17 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
+    const fb = session.teacherFeedback; // or session.feedback
+
     const shaped = {
       ...session,
-      teacherFeedback: {
-        messageToLearner: session.teacherFeedbackMessageToLearner || "",
-        commentsOnSession: session.teacherFeedbackComments || "",
-        futureSteps: session.teacherFeedbackFutureSteps || "",
-      },
+      teacherFeedback: fb
+        ? {
+            messageToLearner: fb.messageToLearner || "",
+            commentsOnSession: fb.commentsOnSession || "",
+            futureSteps: fb.futureSteps || "",
+          }
+        : null,
     };
 
     return res.json({ session: shaped });
@@ -508,15 +513,9 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         : { userId };
 
     const sessions = await prisma.session.findMany({
-      where: {
-        AND: [
-          whereBase,
-          includeCanceled ? {} : { status: { not: "canceled" } },
-          { startAt: { lte: endAt } },
-          { OR: [{ endAt: { gte: startAt } }, { endAt: null }] },
-        ],
-      },
-      orderBy: { startAt: "asc" },
+      where,
+      orderBy,
+      take: Number(limit) || 10,
       select: {
         id: true,
         title: true,
@@ -524,10 +523,20 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
+        // use the actual Prisma relation name:
+        feedback: {
+          select: { id: true }, // null if no feedback yet
+        },
       },
     });
 
-    res.json(sessions);
+    // Normalize shape for the frontend: keep `teacherFeedback`
+    const shaped = sessions.map((s) => ({
+      ...s,
+      teacherFeedback: s.feedback,
+    }));
+
+    res.json(shaped);
   } catch (e) {
     console.error("GET /me/sessions-between failed:", e);
     res.status(500).json({
