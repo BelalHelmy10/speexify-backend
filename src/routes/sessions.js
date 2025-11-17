@@ -382,7 +382,9 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
     res.json(sessions);
   } catch (e) {
     console.error("GET /me/sessions-between failed:", e);
-    res.status(500).json({ error: "Failed to load calendar sessions" });
+    res.status(500).json({
+      error: e?.message || e?.meta?.cause || "Failed to load calendar sessions",
+    });
   }
 });
 

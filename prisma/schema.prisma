@@ -118,7 +118,7 @@ model Session {
   startAt    DateTime
   endAt      DateTime?
   notes      String?   // internal notes / summary / homework
-  joinUrl    String?   // Zoom/Meet link or similar
+  meetingUrl String?   // Zoom/Meet link or similar
 
   // Learner
   userId Int
@@ -130,19 +130,19 @@ model Session {
 
   // Status & feedback for dashboard features
   status        SessionStatus @default(scheduled)
-  feedbackScore Int? // 1..5 optional rating
+  feedbackScore Int?
 
-  // Reminder bookkeeping (for cron/queues)
+  // Reminder bookkeeping
   reminder24hSentAt DateTime?
   reminder1hSentAt  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Useful indexes for queries shown on the dashboard
   @@index([userId, startAt])
   @@index([teacherId, startAt])
 }
+
 
 model VerificationCode {
   id        String   @id @default(cuid())
