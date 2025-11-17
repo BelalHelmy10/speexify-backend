@@ -86,7 +86,7 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
 });
 
 /**
- * NEW: GET /api/sessions/:id
+ * GET /api/sessions/:id
  * Returns full details for a single session (only to learner, teacher, or admin).
  */
 router.get("/sessions/:id", requireAuth, async (req, res) => {
@@ -277,7 +277,13 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
-    await finalizeExpiredSessionsForUser(req.viewUserId);
+    // Don't let finalization break the endpoint
+    try {
+      await finalizeExpiredSessionsForUser(req.viewUserId);
+    } catch (e) {
+      console.error("finalizeExpiredSessionsForUser failed:", e);
+    }
+
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { range = "upcoming", limit = 10 } = req.query;
@@ -333,7 +339,13 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
 router.get("/me/sessions-between", requireAuth, async (req, res) => {
   try {
-    await finalizeExpiredSessionsForUser(req.viewUserId);
+    // Don't let finalization break the endpoint
+    try {
+      await finalizeExpiredSessionsForUser(req.viewUserId);
+    } catch (e) {
+      console.error("finalizeExpiredSessionsForUser failed:", e);
+    }
+
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
     const { start, end } = req.query;
@@ -376,10 +388,8 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 
 /* ========================================================================== */
 /*                               ADMIN: SESSIONS                              */
-/*  ✅ New block powering the Admin dashboard                                 */
 /* ========================================================================== */
 
-// GET /api/admin/sessions   (?q=&userId=&teacherId=&range=upcoming|past&limit=&offset=)
 router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
     const {
@@ -446,7 +456,6 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
 router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
-    // ---- normalize & basic validation ---------------------------------------
     const learnerId = Number(req.body.learnerId ?? req.body.userId);
     const teacherId = Number(req.body.tutorId ?? req.body.teacherId);
 
@@ -478,11 +487,9 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     if (!durationMin && !endAt)
       return res.status(400).json({ error: "Provide durationMin OR endAt" });
 
-    // Compute endAt if only duration provided
     const finalEndAt =
       endAt || new Date(startAt.getTime() + Number(durationMin) * 60 * 1000);
 
-    // ---- check users & roles -------------------------------------------------
     const [learner, teacher] = await Promise.all([
       prisma.user.findUnique({
         where: { id: learnerId },
@@ -502,7 +509,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Teacher is disabled" });
 
     if (learner.role !== "learner" && learner.role !== "admin") {
-      // allow admin to be scheduled as a learner if you want; otherwise enforce learner only
       return res
         .status(400)
         .json({ error: "learnerId must refer to a learner" });
@@ -517,7 +523,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
           .json({ error: "tutorId/teacherId must refer to a teacher" });
     }
 
-    // ---- conflict check (excludeId: none on create) -------------------------
     const conflicts = await findSessionConflicts({
       startAt,
       endAt: finalEndAt,
@@ -528,7 +533,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       return res.status(409).json({ error: "Time conflict", conflicts });
     }
 
-    // ---- credit guard (soft enforcement with admin override) ---------------
     const allowNoCredit = req.body.allowNoCredit === true;
     const remainingCredits = await getRemainingCredits(learnerId);
 
@@ -541,7 +545,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       });
     }
 
-    // ---- create -------------------------------------------------------------
     const created = await prisma.session.create({
       data: {
         userId: learnerId,
@@ -559,13 +562,12 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         teacherId: true,
         startAt: true,
         endAt: true,
-        meetingUrl: true,
+        meetingUrl,
         notes: true,
         status: true,
       },
     });
 
-    // optional audit
     await audit(req.user.id, "session_create", "Session", created.id, {
       learnerId,
       teacherId,
@@ -580,7 +582,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// PATCH /api/admin/sessions/:id
 router.patch(
   "/admin/sessions/:id",
   requireAuth,
@@ -632,19 +633,15 @@ router.patch(
       if (patch.endAt !== undefined)
         patch.endAt = patch.endAt ? new Date(patch.endAt) : null;
 
-      // Detect status transition for credit accounting
       const prevStatus = existing.status;
       const nextStatus = patch.status ?? existing.status;
 
-      // We handle credits *after* the session is actually updated (below),
-      // but we need the intent here to apply rules post-update.
       let shouldConsume = false;
       let shouldRefund = false;
 
       if (prevStatus !== "completed" && nextStatus === "completed") {
         shouldConsume = true;
       } else if (prevStatus === "completed" && nextStatus !== "completed") {
-        // If an admin reopens or cancels a completed session, return a credit.
         shouldRefund = true;
       }
 
@@ -665,8 +662,6 @@ router.patch(
               "[credits] No active credits to consume for user",
               updated.userId
             );
-            // Optional: revert status if you want hard enforcement
-            // await prisma.session.update({ where: { id }, data: { status: prevStatus } });
           }
         } else if (shouldRefund) {
           const resRef = await refundOneCredit(updated.userId);
@@ -690,7 +685,6 @@ router.patch(
   }
 );
 
-// DELETE /api/admin/sessions/:id
 router.delete(
   "/admin/sessions/:id",
   requireAuth,
