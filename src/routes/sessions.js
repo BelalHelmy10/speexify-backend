@@ -99,15 +99,25 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
     const session = await prisma.session.findUnique({
       where: { id },
       include: {
-        user: {
-          select: { id: true, name: true, email: true },
-        },
-        teacher: {
-          select: { id: true, name: true, email: true },
-        },
-        teacherFeedback: true, // Detailed teacher feedback
+        user: true,
+        teacher: true,
       },
     });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const shaped = {
+      ...session,
+      teacherFeedback: {
+        messageToLearner: session.teacherFeedbackMessageToLearner || "",
+        commentsOnSession: session.teacherFeedbackComments || "",
+        futureSteps: session.teacherFeedbackFutureSteps || "",
+      },
+    };
+
+    return res.json({ session: shaped });
 
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
@@ -219,6 +229,57 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to save feedback" });
   }
 });
+
+// POST /sessions/:id/feedback/teacher
+router.post(
+  "/sessions/:id/feedback/teacher",
+  requireAuth,
+  csrfMiddleware, // if you use it on other POSTs, keep it here too
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!id || Number.isNaN(id)) {
+        return res.status(400).json({ error: "Invalid session id" });
+      }
+
+      const { messageToLearner, commentsOnSession, futureSteps } =
+        req.body || {};
+
+      const session = await prisma.session.findUnique({
+        where: { id },
+      });
+
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      // Only the assigned teacher can edit feedback
+      if (
+        req.user.role !== "teacher" ||
+        !session.teacherId ||
+        session.teacherId !== req.user.id
+      ) {
+        return res
+          .status(403)
+          .json({ error: "Only the assigned teacher can update feedback" });
+      }
+
+      const updated = await prisma.session.update({
+        where: { id },
+        data: {
+          teacherFeedbackMessageToLearner: messageToLearner || null,
+          teacherFeedbackComments: commentsOnSession || null,
+          teacherFeedbackFutureSteps: futureSteps || null,
+        },
+      });
+
+      return res.json({ session: updated });
+    } catch (err) {
+      console.error("Teacher feedback save failed", err);
+      return next(err); // your global error handler will send 500
+    }
+  }
+);
 
 router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
   try {
