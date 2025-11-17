@@ -452,7 +452,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         title: true,
         startAt: true,
         endAt: true,
-        meetingUrl: true,
+        joinUrl: true,
         status: true,
         // 👇 Detailed teacher feedback
         teacherFeedback: {
@@ -505,7 +505,7 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         title: true,
         startAt: true,
         endAt: true,
-        meetingUrl: true,
+        joinUrl: true,
         status: true,
       },
     });
