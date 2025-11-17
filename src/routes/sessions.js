@@ -105,7 +105,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
         teacher: {
           select: { id: true, name: true, email: true },
         },
-        feedbacks: true, // 👈 NEW
+        teacherFeedback: true, // Detailed teacher feedback
       },
     });
 
@@ -122,16 +122,8 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { feedbacks, ...rest } = session;
-    const learnerFeedback = feedbacks.find((f) => f.role === "LEARNER") || null;
-    const teacherFeedback = feedbacks.find((f) => f.role === "TEACHER") || null;
-
     return res.json({
-      session: {
-        ...rest,
-        learnerFeedback,
-        teacherFeedback,
-      },
+      session,
     });
   } catch (err) {
     console.error("GET /sessions/:id failed:", err);
@@ -140,168 +132,91 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// Learner feedback
-// POST /api/sessions/:id/feedback/learner
+// GET /sessions/:id/feedback - Get detailed teacher feedback
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/feedback/learner", requireAuth, async (req, res) => {
+router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!id) {
-      return res.status(400).json({ error: "Invalid session id" });
-    }
-
-    const { rating, notes } = req.body;
-    const notesStr = (notes ?? "").toString().trim() || null;
-
-    let ratingNum = null;
-    if (rating !== undefined && rating !== null && rating !== "") {
-      const parsed = Number(rating);
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
-        return res
-          .status(400)
-          .json({ error: "Rating must be a number between 1 and 5" });
-      }
-      ratingNum = Math.round(parsed);
-    }
-
-    const session = await prisma.session.findUnique({
+    const s = await prisma.session.findUnique({
       where: { id },
-      select: {
-        id: true,
-        userId: true,
-        startAt: true,
-        endAt: true,
-        status: true,
+      include: {
+        teacherFeedback: true,
       },
     });
 
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
+    if (!s) return res.status(404).json({ error: "Session not found" });
 
-    // only the learner (or admin) can submit learner feedback
-    const isLearner = session.userId === req.user.id;
+    const isLearner = s.userId === req.user.id;
+    const isTeacher = s.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
-    if (!(isLearner || isAdmin)) {
+
+    if (!(isLearner || isTeacher || isAdmin)) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // only allow after the session has started
-    const now = new Date();
-    if (new Date(session.startAt) > now) {
-      return res
-        .status(400)
-        .json({ error: "You can only leave feedback after the session" });
-    }
-
-    const role = "LEARNER";
-
-    const fb = await prisma.sessionFeedback.upsert({
-      where: {
-        sessionId_role: { sessionId: id, role },
-      },
-      update: {
-        rating: ratingNum,
-        notes: notesStr,
-      },
-      create: {
-        sessionId: id,
-        role,
-        rating: ratingNum,
-        notes: notesStr,
-      },
-    });
-
-    // Mirror learner rating onto Session.feedbackScore
-    if (ratingNum !== null) {
-      await prisma.session.update({
-        where: { id },
-        data: { feedbackScore: ratingNum },
-      });
-    }
-
-    return res.json({ ok: true, feedback: fb });
-  } catch (err) {
-    console.error("POST /sessions/:id/feedback/learner failed:", err);
-    return res.status(500).json({ error: "Failed to submit feedback" });
+    res.json(s.teacherFeedback || null);
+  } catch (e) {
+    console.error("GET /sessions/:id/feedback error:", e);
+    res.status(500).json({ error: "Failed to load feedback" });
   }
 });
 
 // --------------------------------------------------------------------------
-// Teacher feedback
-// POST /api/sessions/:id/feedback/teacher
+// POST /sessions/:id/feedback - Create/update detailed teacher feedback
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/feedback/teacher", requireAuth, async (req, res) => {
+router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!id) {
-      return res.status(400).json({ error: "Invalid session id" });
-    }
-
-    const { rating, notes } = req.body;
-    const notesStr = (notes ?? "").toString().trim() || null;
-
-    let ratingNum = null;
-    if (rating !== undefined && rating !== null && rating !== "") {
-      const parsed = Number(rating);
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
-        return res
-          .status(400)
-          .json({ error: "Rating must be a number between 1 and 5" });
-      }
-      ratingNum = Math.round(parsed);
-    }
-
-    const session = await prisma.session.findUnique({
+    const s = await prisma.session.findUnique({
       where: { id },
-      select: {
-        id: true,
-        teacherId: true,
-        startAt: true,
-        endAt: true,
-        status: true,
-      },
+      select: { id: true, userId: true, teacherId: true, startAt: true },
     });
 
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
+    if (!s) return res.status(404).json({ error: "Session not found" });
 
-    const isTeacher = session.teacherId === req.user.id;
+    // Only the teacher assigned to this session (or admin) can write feedback
+    const isTeacher = s.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
+
     if (!(isTeacher || isAdmin)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res
+        .status(403)
+        .json({ error: "Only the teacher can give feedback" });
     }
 
+    // Optional: only allow after the session has started
     const now = new Date();
-    if (new Date(session.startAt) > now) {
+    if (new Date(s.startAt) > now) {
       return res
         .status(400)
         .json({ error: "You can only leave feedback after the session" });
     }
 
-    const role = "TEACHER";
+    const messageToLearner = String(req.body?.messageToLearner || "").trim();
+    const commentsOnSession = String(req.body?.commentsOnSession || "").trim();
+    const futureSteps = String(req.body?.futureSteps || "").trim();
 
-    const fb = await prisma.sessionFeedback.upsert({
-      where: {
-        sessionId_role: { sessionId: id, role },
-      },
+    const feedback = await prisma.sessionFeedback.upsert({
+      where: { sessionId: s.id },
       update: {
-        rating: ratingNum,
-        notes: notesStr,
+        messageToLearner,
+        commentsOnSession,
+        futureSteps,
+        teacherId: req.user.id,
       },
       create: {
-        sessionId: id,
-        role,
-        rating: ratingNum,
-        notes: notesStr,
+        sessionId: s.id,
+        teacherId: req.user.id,
+        messageToLearner,
+        commentsOnSession,
+        futureSteps,
       },
     });
 
-    return res.json({ ok: true, feedback: fb });
-  } catch (err) {
-    console.error("POST /sessions/:id/feedback/teacher failed:", err);
-    return res.status(500).json({ error: "Failed to submit feedback" });
+    res.json({ ok: true, feedback });
+  } catch (e) {
+    console.error("POST /sessions/:id/feedback error:", e);
+    res.status(500).json({ error: "Failed to save feedback" });
   }
 });
 
@@ -477,7 +392,10 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         endAt: true,
         meetingUrl: true,
         status: true,
-        feedbackScore: true,
+        // 👇 Detailed teacher feedback
+        teacherFeedback: {
+          select: { id: true },
+        },
       },
     });
 

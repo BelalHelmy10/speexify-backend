@@ -94,6 +94,7 @@ model User {
   userPackages          UserPackage[] // ← back-relation added
   onboardingForms       OnboardingForm[]
   assessmentSubmissions AssessmentSubmission[]
+  sessionFeedbacks      SessionFeedback[]
 
   @@index([role])
 }
@@ -139,7 +140,7 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  feedbacks SessionFeedback[]
+  teacherFeedback SessionFeedback?
 
   @@index([userId, startAt])
   @@index([teacherId, startAt])
@@ -148,18 +149,19 @@ model Session {
 
 model SessionFeedback {
   id        String   @id @default(cuid())
-  session   Session  @relation(fields: [sessionId], references: [id])
-  sessionId Int
 
-  // "LEARNER" or "TEACHER"
-  role   String
-  rating Int?
-  notes  String?
+  sessionId Int      @unique
+  session   Session  @relation(fields: [sessionId], references: [id])
+
+  teacherId Int
+  teacher   User     @relation(fields: [teacherId], references: [id])
+
+  messageToLearner   String?
+  commentsOnSession  String?
+  futureSteps        String?
 
   createdAt DateTime @default(now())
-
-  @@index([sessionId, role])
-  @@unique([sessionId, role]) // at most one feedback per role per session
+  updatedAt DateTime @updatedAt
 }
 
 
