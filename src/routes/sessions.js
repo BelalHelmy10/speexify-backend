@@ -417,6 +417,8 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
+    // For teachers, we show both the lessons they attend (userId)
+    // and the ones they teach (teacherId). For learners, only userId.
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
@@ -424,9 +426,12 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const notCanceled = { status: { not: "canceled" } };
 
+    // Future or currently-live sessions
     const inProgressOrFuture = {
       OR: [
+        // starts in the future
         { startAt: { gte: now } },
+        // or has started but not finished yet (or no endAt set)
         {
           AND: [
             { startAt: { lte: now } },
@@ -436,16 +441,22 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
       ],
     };
 
+    // Past = same logic you use in admin: any session that has fully finished,
+    // or has no endAt but started before now.
+    const pastCondition = {
+      OR: [
+        { endAt: { lt: now } },
+        { AND: [{ endAt: null }, { startAt: { lt: now } }] },
+      ],
+    };
+
     const where =
       range === "past"
         ? {
-            AND: [
-              whereBase,
-              { startAt: { lt: now } }, // everything that has already started
-            ],
+            AND: [whereBase, pastCondition],
           }
         : {
-            AND: [whereBase, notCanceled, inProgressOrFuture], // future + in-progress
+            AND: [whereBase, notCanceled, inProgressOrFuture],
           };
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
@@ -459,11 +470,10 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         title: true,
         startAt: true,
         endAt: true,
-        joinUrl: true,
+        joinUrl: true, // <- matches your schema
         status: true,
-        // 👇 Detailed teacher feedback
         teacherFeedback: {
-          select: { id: true },
+          select: { id: true }, // null if no feedback yet
         },
       },
     });
