@@ -577,10 +577,6 @@ router.get("/me/progress", requireAuth, async (req, res) => {
       where: {
         userId,
         status: "completed",
-        // safer "not null" filter for Prisma
-        NOT: {
-          startAt: null,
-        },
       },
       orderBy: { startAt: "asc" },
       select: {
