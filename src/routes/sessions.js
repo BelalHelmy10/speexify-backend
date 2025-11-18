@@ -567,15 +567,16 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 
 // GET /api/me/progress
 // Learner progress summary + simple monthly timeline
+// GET /api/me/progress
 router.get("/me/progress", requireAuth, async (req, res) => {
   try {
-    const userId = req.viewUserId;
+    const userId = req.viewUserId || req.user.id;
 
-    // Only learners for now; teachers/admins could get 403 or just empty
+    // For now, learners only – you can relax this later if you want
     if (req.user.role !== "learner") {
       return res
         .status(403)
-        .json({ error: "Progress is only for learners right now" });
+        .json({ error: "Progress is only available for learners right now" });
     }
 
     const completedSessions = await prisma.session.findMany({
@@ -595,7 +596,7 @@ router.get("/me/progress", requireAuth, async (req, res) => {
     const totalCompletedSessions = completedSessions.length;
 
     let totalMinutes = 0;
-    const monthCounts = new Map(); // key: "YYYY-MM" -> count
+    const monthCounts = new Map();
 
     for (const s of completedSessions) {
       const start = s.startAt ? new Date(s.startAt) : null;
@@ -608,9 +609,7 @@ router.get("/me/progress", requireAuth, async (req, res) => {
         !Number.isNaN(end.getTime())
       ) {
         const diffMs = end.getTime() - start.getTime();
-        if (diffMs > 0) {
-          totalMinutes += diffMs / 1000 / 60;
-        }
+        if (diffMs > 0) totalMinutes += diffMs / 1000 / 60;
       }
 
       if (start && !Number.isNaN(start.getTime())) {
@@ -623,7 +622,6 @@ router.get("/me/progress", requireAuth, async (req, res) => {
 
     const totalHours = Number((totalMinutes / 60).toFixed(1));
 
-    // Build timeline array, sorted by month, last 12 months
     const timeline = Array.from(monthCounts.entries())
       .map(([month, count]) => ({ month, count }))
       .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0))
@@ -634,7 +632,7 @@ router.get("/me/progress", requireAuth, async (req, res) => {
         totalCompletedSessions,
         totalMinutes: Math.round(totalMinutes),
         totalHours,
-        averageRating: null, // placeholder for future learner ratings
+        averageRating: null, // placeholder for future ratings
       },
       timeline,
     });
