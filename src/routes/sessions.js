@@ -410,6 +410,7 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
+    // Best-effort finalize
     try {
       await finalizeExpiredSessionsForUser(req.viewUserId);
     } catch (e) {
@@ -465,52 +466,58 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
-        // THIS is the real Prisma relation:
-        feedback: {
-          select: { id: true },
-        },
+        feedback: { select: { id: true } }, // <- P R I S M A relation
       },
     });
 
-    // Normalize for the frontend: keep `teacherFeedback`
     const shaped = sessions.map((s) => ({
       ...s,
       teacherFeedback: s.feedback,
     }));
 
-    res.json(shaped);
+    return res.json(shaped);
   } catch (e) {
     console.error("GET /me/sessions failed:", e);
-    res.status(500).json({ error: "Failed to load sessions" });
+    return res.status(500).json({ error: "Failed to load sessions" });
   }
 });
 
 router.get("/me/sessions-between", requireAuth, async (req, res) => {
   try {
-    // Don't let finalization break the endpoint
-    try {
-      await finalizeExpiredSessionsForUser(req.viewUserId);
-    } catch (e) {
-      console.error("finalizeExpiredSessionsForUser failed:", e);
+    const startParam = String(req.query.start || "");
+    const endParam = String(req.query.end || "");
+    const includeCanceled = String(req.query.includeCanceled || "") === "true";
+
+    const startAt = new Date(startParam);
+    const endAt = new Date(endParam);
+
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+      return res.status(400).json({ error: "Invalid date range" });
     }
 
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
-    const { start, end } = req.query;
-    const includeCanceled = String(req.query.includeCanceled) === "true";
 
-    const startAt = start ? new Date(start) : new Date("1970-01-01");
-    const endAt = end ? new Date(end) : new Date("2999-12-31");
-
+    // base filter: learner vs teacher
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
         : { userId };
 
+    // build the full Prisma "where" object here
+    const where = {
+      AND: [
+        whereBase,
+        includeCanceled ? {} : { status: { not: "canceled" } },
+        // events that overlap with the [startAt, endAt] window
+        { startAt: { lte: endAt } },
+        { OR: [{ endAt: { gte: startAt } }, { endAt: null }] },
+      ],
+    };
+
     const sessions = await prisma.session.findMany({
       where,
-      orderBy,
-      take: Number(limit) || 10,
+      orderBy: { startAt: "asc" },
       select: {
         id: true,
         title: true,
@@ -518,23 +525,21 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
-        // use the actual Prisma relation name:
-        feedback: {
-          select: { id: true }, // null if no feedback yet
-        },
+        // use the real relation name from Prisma
+        feedback: { select: { id: true } },
       },
     });
 
-    // Normalize shape for the frontend: keep `teacherFeedback`
+    // shape for the frontend: keep teacherFeedback key
     const shaped = sessions.map((s) => ({
       ...s,
       teacherFeedback: s.feedback,
     }));
 
-    res.json(shaped);
+    return res.json({ sessions: shaped });
   } catch (e) {
     console.error("GET /me/sessions-between failed:", e);
-    res.status(500).json({
+    return res.status(500).json({
       error: e?.message || e?.meta?.cause || "Failed to load calendar sessions",
     });
   }
