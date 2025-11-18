@@ -568,22 +568,19 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 // GET /api/me/progress
 // Learner progress summary + simple monthly timeline
 // GET /api/me/progress
+// GET /api/me/progress
 router.get("/me/progress", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId || req.user.id;
-
-    // For now, learners only – you can relax this later if you want
-    if (req.user.role !== "learner") {
-      return res
-        .status(403)
-        .json({ error: "Progress is only available for learners right now" });
-    }
 
     const completedSessions = await prisma.session.findMany({
       where: {
         userId,
         status: "completed",
-        startAt: { not: null },
+        // safer "not null" filter for Prisma
+        NOT: {
+          startAt: null,
+        },
       },
       orderBy: { startAt: "asc" },
       select: {
@@ -609,7 +606,9 @@ router.get("/me/progress", requireAuth, async (req, res) => {
         !Number.isNaN(end.getTime())
       ) {
         const diffMs = end.getTime() - start.getTime();
-        if (diffMs > 0) totalMinutes += diffMs / 1000 / 60;
+        if (diffMs > 0) {
+          totalMinutes += diffMs / 1000 / 60;
+        }
       }
 
       if (start && !Number.isNaN(start.getTime())) {
@@ -632,13 +631,16 @@ router.get("/me/progress", requireAuth, async (req, res) => {
         totalCompletedSessions,
         totalMinutes: Math.round(totalMinutes),
         totalHours,
-        averageRating: null, // placeholder for future ratings
+        averageRating: null,
       },
       timeline,
     });
   } catch (err) {
     console.error("GET /me/progress failed:", err);
-    return res.status(500).json({ error: "Failed to load progress" });
+    // send the real message to help debug if it ever breaks again
+    return res
+      .status(500)
+      .json({ error: err?.message || "Failed to load progress" });
   }
 });
 
