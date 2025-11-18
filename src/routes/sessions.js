@@ -93,7 +93,7 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
 router.get("/sessions/:id", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!id) {
+    if (!id || Number.isNaN(id)) {
       return res.status(400).json({ error: "Invalid session id" });
     }
 
@@ -102,28 +102,8 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       include: {
         user: true,
         teacher: true,
-        feedback: true, // <- SessionFeedback
       },
     });
-
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    const fb = session.feedback;
-
-    const shaped = {
-      ...session,
-      teacherFeedback: fb
-        ? {
-            messageToLearner: fb.messageToLearner || "",
-            commentsOnSession: fb.commentsOnSession || "",
-            futureSteps: fb.futureSteps || "",
-          }
-        : null,
-    };
-
-    return res.json({ session: shaped });
 
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
@@ -138,9 +118,23 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    return res.json({
-      session,
-    });
+    const hasFeedback =
+      !!session.teacherFeedbackMessageToLearner ||
+      !!session.teacherFeedbackComments ||
+      !!session.teacherFeedbackFutureSteps;
+
+    const shaped = {
+      ...session,
+      teacherFeedback: hasFeedback
+        ? {
+            messageToLearner: session.teacherFeedbackMessageToLearner || "",
+            commentsOnSession: session.teacherFeedbackComments || "",
+            futureSteps: session.teacherFeedbackFutureSteps || "",
+          }
+        : null,
+    };
+
+    return res.json({ session: shaped });
   } catch (err) {
     console.error("GET /sessions/:id failed:", err);
     return res.status(500).json({ error: "Failed to load session" });
@@ -409,7 +403,7 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
-    // Best-effort finalize
+    // Best-effort finalization, don't break if it fails
     try {
       await finalizeExpiredSessionsForUser(req.viewUserId);
     } catch (e) {
@@ -421,6 +415,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
+    // base filter: learner vs teacher
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
@@ -454,7 +449,8 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
 
-    const sessions = await prisma.session.findMany({
+    // 1) Fetch raw sessions including the three feedback columns
+    const rawSessions = await prisma.session.findMany({
       where,
       orderBy,
       take: Number(limit) || 10,
@@ -465,19 +461,44 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
-        feedback: { select: { id: true } }, // <- P R I S M A relation
+        teacherFeedbackMessageToLearner: true,
+        teacherFeedbackComments: true,
+        teacherFeedbackFutureSteps: true,
       },
     });
 
-    const shaped = sessions.map((s) => ({
-      ...s,
-      teacherFeedback: s.feedback,
-    }));
+    // 2) Shape the feedback columns into a teacherFeedback object
+    const sessions = rawSessions.map((s) => {
+      const hasFeedback =
+        !!s.teacherFeedbackMessageToLearner ||
+        !!s.teacherFeedbackComments ||
+        !!s.teacherFeedbackFutureSteps;
 
-    return res.json(shaped);
+      const teacherFeedback = hasFeedback
+        ? {
+            messageToLearner: s.teacherFeedbackMessageToLearner || "",
+            commentsOnSession: s.teacherFeedbackComments || "",
+            futureSteps: s.teacherFeedbackFutureSteps || "",
+          }
+        : null;
+
+      const {
+        teacherFeedbackMessageToLearner,
+        teacherFeedbackComments,
+        teacherFeedbackFutureSteps,
+        ...rest
+      } = s;
+
+      return {
+        ...rest,
+        teacherFeedback,
+      };
+    });
+
+    res.json(sessions);
   } catch (e) {
     console.error("GET /me/sessions failed:", e);
-    return res.status(500).json({ error: "Failed to load sessions" });
+    res.status(500).json({ error: "Failed to load sessions" });
   }
 });
 
