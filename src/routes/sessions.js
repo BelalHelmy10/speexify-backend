@@ -565,6 +565,85 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/me/progress
+// Learner progress summary + simple monthly timeline
+router.get("/me/progress", requireAuth, async (req, res) => {
+  try {
+    const userId = req.viewUserId;
+
+    // Only learners for now; teachers/admins could get 403 or just empty
+    if (req.user.role !== "learner") {
+      return res
+        .status(403)
+        .json({ error: "Progress is only for learners right now" });
+    }
+
+    const completedSessions = await prisma.session.findMany({
+      where: {
+        userId,
+        status: "completed",
+        startAt: { not: null },
+      },
+      orderBy: { startAt: "asc" },
+      select: {
+        id: true,
+        startAt: true,
+        endAt: true,
+      },
+    });
+
+    const totalCompletedSessions = completedSessions.length;
+
+    let totalMinutes = 0;
+    const monthCounts = new Map(); // key: "YYYY-MM" -> count
+
+    for (const s of completedSessions) {
+      const start = s.startAt ? new Date(s.startAt) : null;
+      const end = s.endAt ? new Date(s.endAt) : null;
+
+      if (
+        start &&
+        end &&
+        !Number.isNaN(start.getTime()) &&
+        !Number.isNaN(end.getTime())
+      ) {
+        const diffMs = end.getTime() - start.getTime();
+        if (diffMs > 0) {
+          totalMinutes += diffMs / 1000 / 60;
+        }
+      }
+
+      if (start && !Number.isNaN(start.getTime())) {
+        const year = start.getFullYear();
+        const month = String(start.getMonth() + 1).padStart(2, "0");
+        const key = `${year}-${month}`;
+        monthCounts.set(key, (monthCounts.get(key) || 0) + 1);
+      }
+    }
+
+    const totalHours = Number((totalMinutes / 60).toFixed(1));
+
+    // Build timeline array, sorted by month, last 12 months
+    const timeline = Array.from(monthCounts.entries())
+      .map(([month, count]) => ({ month, count }))
+      .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0))
+      .slice(-12);
+
+    return res.json({
+      summary: {
+        totalCompletedSessions,
+        totalMinutes: Math.round(totalMinutes),
+        totalHours,
+        averageRating: null, // placeholder for future learner ratings
+      },
+      timeline,
+    });
+  } catch (err) {
+    console.error("GET /me/progress failed:", err);
+    return res.status(500).json({ error: "Failed to load progress" });
+  }
+});
+
 /* ========================================================================== */
 /*                               ADMIN: SESSIONS                              */
 /* ========================================================================== */
