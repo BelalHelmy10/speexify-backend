@@ -102,7 +102,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       include: {
         user: true,
         teacher: true,
-        teacherFeedback: true, // or `feedback` if you stick with that name
+        feedback: true, // <- SessionFeedback
       },
     });
 
@@ -110,7 +110,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const fb = session.teacherFeedback; // or session.feedback
+    const fb = session.feedback;
 
     const shaped = {
       ...session,
@@ -410,7 +410,6 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
-    // Don't let finalization break the endpoint
     try {
       await finalizeExpiredSessionsForUser(req.viewUserId);
     } catch (e) {
@@ -422,8 +421,6 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
-    // For teachers, we show both the lessons they attend (userId)
-    // and the ones they teach (teacherId). For learners, only userId.
     const whereBase =
       role === "teacher"
         ? { OR: [{ userId }, { teacherId: userId }] }
@@ -431,12 +428,9 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const notCanceled = { status: { not: "canceled" } };
 
-    // Future or currently-live sessions
     const inProgressOrFuture = {
       OR: [
-        // starts in the future
         { startAt: { gte: now } },
-        // or has started but not finished yet (or no endAt set)
         {
           AND: [
             { startAt: { lte: now } },
@@ -446,8 +440,6 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
       ],
     };
 
-    // Past = same logic you use in admin: any session that has fully finished,
-    // or has no endAt but started before now.
     const pastCondition = {
       OR: [
         { endAt: { lt: now } },
@@ -457,12 +449,8 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const where =
       range === "past"
-        ? {
-            AND: [whereBase, pastCondition],
-          }
-        : {
-            AND: [whereBase, notCanceled, inProgressOrFuture],
-          };
+        ? { AND: [whereBase, pastCondition] }
+        : { AND: [whereBase, notCanceled, inProgressOrFuture] };
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
 
@@ -475,15 +463,22 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         title: true,
         startAt: true,
         endAt: true,
-        joinUrl: true, // <- matches your schema
+        joinUrl: true,
         status: true,
-        teacherFeedback: {
-          select: { id: true }, // null if no feedback yet
+        // THIS is the real Prisma relation:
+        feedback: {
+          select: { id: true },
         },
       },
     });
 
-    res.json(sessions);
+    // Normalize for the frontend: keep `teacherFeedback`
+    const shaped = sessions.map((s) => ({
+      ...s,
+      teacherFeedback: s.feedback,
+    }));
+
+    res.json(shaped);
   } catch (e) {
     console.error("GET /me/sessions failed:", e);
     res.status(500).json({ error: "Failed to load sessions" });
