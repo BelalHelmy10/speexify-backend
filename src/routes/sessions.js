@@ -240,7 +240,6 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
 router.post(
   "/sessions/:id/feedback/teacher",
   requireAuth,
-  csrfMiddleware, // if you use it on other POSTs, keep it here too
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);

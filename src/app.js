@@ -553,6 +553,8 @@ app.get("/api/db-check", async (_req, res) => {
   }
 });
 
+app.use(csrfErrorHandler);
+
 app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     console.warn("CORS blocked:", req.headers.origin);
@@ -561,7 +563,5 @@ app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
-
-app.use(csrfErrorHandler);
 
 export default app;
