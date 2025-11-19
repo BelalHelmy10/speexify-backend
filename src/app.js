@@ -4,6 +4,8 @@
 // Core: Express app, CORS, sessions, dotenv, axios, mail
 // ─────────────────────────────────────────────────────────────────────────────
 import express from "express";
+import { initSentry } from "./config/sentry.js";
+import * as Sentry from "@sentry/node";
 import "dotenv/config";
 import axios from "axios";
 import { z } from "zod";
@@ -46,6 +48,10 @@ import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 import { logger } from "./lib/logger.js"; // adjust relative path if needed
 
 const app = express();
+
+// Initialize Sentry BEFORE other middlewares
+initSentry(app);
+
 const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
@@ -554,7 +560,11 @@ app.get("/api/db-check", async (_req, res) => {
   }
 });
 
+// CSRF-specific error handler
 app.use(csrfErrorHandler);
+
+// Sentry error handler (before your own logger-based handler)
+app.use(Sentry.Handlers.errorHandler());
 
 // Generic error handler (must be last)
 app.use((err, req, res, next) => {

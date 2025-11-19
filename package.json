@@ -20,6 +20,7 @@
   "type": "module",
   "dependencies": {
     "@prisma/client": "^6.17.1",
+    "@sentry/node": "^10.26.0",
     "axios": "^1.12.2",
     "bcryptjs": "^3.0.2",
     "cookie-parser": "^1.4.7",
