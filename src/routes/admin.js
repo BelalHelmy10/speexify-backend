@@ -29,11 +29,11 @@ if (hasSMTP) {
 
   transporter
     .verify()
-    .then(() => console.log("📧 SMTP transporter ready (admin routes)"))
+    .then(() => logger.info({}, "📨 SMTP transporter ready (admin routes)"))
     .catch((err) => {
-      console.warn(
-        "⚠️  SMTP verify failed in admin routes. Falling back to console email.",
-        err?.message || err
+      logger.warn(
+        { err },
+        "⚠️ SMTP verify failed in admin routes. Falling back to console email."
       );
       transporter = null;
     });
@@ -41,7 +41,7 @@ if (hasSMTP) {
 
 async function sendEmail(to, subject, html) {
   if (!transporter) {
-    console.log(`\n[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${html}\n`);
+    logger.info({ to, subject, html }, "[DEV EMAIL] Outgoing email (DEV mode)");
     return;
   }
   await transporter.sendMail({ from: EMAIL_FROM, to, subject, html });
@@ -61,7 +61,7 @@ async function audit(actorId, action, entity, entityId, meta = {}) {
       data: { actorId, action, entity, entityId, meta },
     });
   } catch (e) {
-    console.error("audit failed:", e?.message || e);
+    logger.error({ err: e }, "audit failed");
   }
 }
 
@@ -158,7 +158,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
     await audit(req.user.id, "user_create", "User", user.id, { email, role });
     res.status(201).json({ user });
   } catch (err) {
-    console.error("admin.createUser error:", err);
+    logger.error({ err }, "admin.createUser error");
     res.status(500).json({ error: "Failed to create user" });
   }
 });
@@ -214,7 +214,7 @@ router.patch(
 
       res.json(user);
     } catch (err) {
-      console.error("admin.patchUser error:", err);
+      logger.error({ err }, "admin.patchUser error");
       res.status(500).json({ error: "Failed to update user" });
     }
   }
@@ -253,7 +253,7 @@ router.post(
       await audit(req.user.id, "password_reset_send", "User", id);
       res.json({ ok: true });
     } catch (err) {
-      console.error("admin.resetPassword error:", err);
+      logger.error({ err }, "admin.resetPassword error");
       res.status(500).json({ error: "Failed to send reset" });
     }
   }
@@ -285,7 +285,7 @@ router.post(
       await audit(req.user.id, "impersonate_start", "User", targetId);
       res.json({ ok: true });
     } catch (err) {
-      console.error("admin.impersonateStart error:", err);
+      logger.error({ err }, "admin.impersonateStart error");
       res.status(500).json({ error: "Failed to impersonate" });
     }
   }
@@ -309,7 +309,7 @@ router.post(
       req.session.asUserId = null;
       res.json({ ok: true });
     } catch (err) {
-      console.error("admin.impersonateStop error:", err);
+      logger.error({ err }, "admin.impersonateStop error");
       res.status(500).json({ error: "Failed to stop impersonation" });
     }
   }

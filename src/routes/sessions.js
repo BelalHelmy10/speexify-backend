@@ -11,6 +11,7 @@ import {
   finalizeExpiredSessionsForTeacher,
 } from "../services/sessionsService.js";
 import { csrfMiddleware } from "../middleware/csrf.js";
+import { logger } from "../lib/logger.js";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -49,7 +50,7 @@ router.get("/sessions/conflicts", requireAuth, async (req, res) => {
     });
     res.json({ conflicts });
   } catch (e) {
-    console.error("conflicts endpoint error:", e);
+    logger.error({ err: e }, "conflicts endpoint error");
     res.status(500).json({ error: "Failed to check conflicts" });
   }
 });
@@ -65,7 +66,7 @@ router.get("/sessions", requireAuth, async (req, res) => {
     });
     res.json(sessions);
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "GET /sessions failed");
     res.status(500).json({ error: "Failed to load sessions" });
   }
 });
@@ -81,7 +82,7 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
     });
     res.json(sessions);
   } catch (e) {
-    console.error(e);
+    logger.error({ err: e }, "GET /teacher/sessions failed");
     res.status(500).json({ error: "Failed to load teacher sessions" });
   }
 });
@@ -136,7 +137,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 
     return res.json({ session: shaped });
   } catch (err) {
-    console.error("GET /sessions/:id failed:", err);
+    logger.error({ err }, "GET /sessions/:id failed");
     return res.status(500).json({ error: "Failed to load session" });
   }
 });
@@ -166,7 +167,7 @@ router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
 
     res.json(s.teacherFeedback || null);
   } catch (e) {
-    console.error("GET /sessions/:id/feedback error:", e);
+    logger.error({ err: e }, "GET /sessions/:id/feedback error");
     res.status(500).json({ error: "Failed to load feedback" });
   }
 });
@@ -225,7 +226,7 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
 
     res.json({ ok: true, feedback });
   } catch (e) {
-    console.error("POST /sessions/:id/feedback error:", e);
+    logger.error({ err: e }, "POST /sessions/:id/feedback error");
     res.status(500).json({ error: "Failed to save feedback" });
   }
 });
@@ -274,7 +275,7 @@ router.post(
 
       return res.json({ session: updated });
     } catch (err) {
-      console.error("Teacher feedback save failed", err);
+      logger.error({ err }, "Teacher feedback save failed");
       return next(err); // your global error handler will send 500
     }
   }
@@ -301,12 +302,15 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
       try {
         await consumeOneCredit(s.userId);
       } catch (e) {
-        console.error(e);
+        logger.error(
+          { err: e, userId: s.userId, sessionId: s.id },
+          "consumeOneCredit failed during complete"
+        );
       }
     }
     res.json({ ok: true });
   } catch (e) {
-    console.error("complete error:", e);
+    logger.error({ err: e }, "complete error");
     res.status(500).json({ error: "Failed to complete session" });
   }
 });
@@ -340,16 +344,23 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
     try {
       if (eligibleForRefund) {
         const r = await refundOneCredit(sessionRow.userId);
-        if (!r.ok)
-          console.warn("[credits] cancel refund not applied (none to refund)");
+        if (!r.ok) {
+          logger.warn(
+            { userId: sessionRow.userId, sessionId: sessionRow.id },
+            "[credits] cancel refund not applied (none to refund)"
+          );
+        }
       }
     } catch (e) {
-      console.error("[credits] cancel refund failed:", e?.message || e);
+      logger.error(
+        { err: e, userId: sessionRow.userId, sessionId: sessionRow.id },
+        "[credits] cancel refund failed"
+      );
     }
 
     res.json({ ok: true, session: updated });
   } catch (e) {
-    console.error("Cancel failed:", e);
+    logger.error({ err: e }, "Cancel failed");
     res.status(400).json({ error: "Failed to cancel session" });
   }
 });
@@ -396,7 +407,7 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
     res.json({ ok: true, session: updated });
   } catch (e) {
-    console.error("reschedule error:", e);
+    logger.error({ err: e }, "reschedule error");
     res.status(400).json({ error: "Failed to reschedule session" });
   }
 });
@@ -407,7 +418,10 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     try {
       await finalizeExpiredSessionsForUser(req.viewUserId);
     } catch (e) {
-      console.error("finalizeExpiredSessionsForUser failed:", e);
+      logger.error(
+        { err: e, userId: req.viewUserId },
+        "finalizeExpiredSessionsForUser failed"
+      );
     }
 
     const userId = req.viewUserId;
@@ -497,7 +511,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     res.json(sessions);
   } catch (e) {
-    console.error("GET /me/sessions failed:", e);
+    logger.error({ err: e }, "GET /me/sessions failed");
     res.status(500).json({ error: "Failed to load sessions" });
   }
 });
@@ -558,7 +572,7 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 
     return res.json({ sessions: shaped });
   } catch (e) {
-    console.error("GET /me/sessions-between failed:", e);
+    logger.error({ err: e }, "GET /me/sessions-between failed");
     return res.status(500).json({
       error: e?.message || e?.meta?.cause || "Failed to load calendar sessions",
     });
@@ -632,7 +646,7 @@ router.get("/me/progress", requireAuth, async (req, res) => {
       timeline,
     });
   } catch (err) {
-    console.error("GET /me/progress failed:", err);
+    logger.error({ err }, "GET /me/progress failed");
     // send the real message to help debug if it ever breaks again
     return res
       .status(500)
@@ -703,7 +717,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
     res.json({ items, total });
   } catch (err) {
-    console.error("admin.sessions.list error:", err);
+    logger.error({ err }, "admin.sessions.list error");
     res.status(500).json({ error: "Failed to load sessions" });
   }
 });
@@ -831,7 +845,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
     return res.status(201).json({ ok: true, session: created });
   } catch (e) {
-    console.error("admin.createSession error:", e);
+    logger.error({ err: e }, "admin.createSession error");
     return res.status(500).json({ error: "Failed to create session" });
   }
 });
@@ -912,28 +926,31 @@ router.patch(
         if (shouldConsume) {
           const resUse = await consumeOneCredit(updated.userId);
           if (!resUse.ok) {
-            console.warn(
-              "[credits] No active credits to consume for user",
-              updated.userId
+            logger.warn(
+              { userId: updated.userId, sessionId: updated.id },
+              "[credits] No active credits to consume for user"
             );
           }
         } else if (shouldRefund) {
           const resRef = await refundOneCredit(updated.userId);
           if (!resRef.ok) {
-            console.warn(
-              "[credits] Nothing to refund for user",
-              updated.userId
+            logger.warn(
+              { userId: updated.userId, sessionId: updated.id },
+              "[credits] Nothing to refund for user"
             );
           }
         }
       } catch (e) {
-        console.error("[credits] accounting failure:", e?.message || e);
+        logger.error(
+          { err: e, userId: updated.userId, sessionId: updated.id },
+          "[credits] accounting failure"
+        );
       }
 
       await audit(req.user.id, "session_update", "Session", id, patch);
       res.json(updated);
     } catch (err) {
-      console.error("admin.sessions.patch error:", err);
+      logger.error({ err }, "admin.sessions.patch error");
       res.status(500).json({ error: "Failed to update session" });
     }
   }
@@ -950,7 +967,7 @@ router.delete(
       await audit(req.user.id, "session_delete", "Session", id);
       res.json({ ok: true });
     } catch (err) {
-      console.error("admin.sessions.delete error:", err);
+      logger.error({ err }, "admin.sessions.delete error");
       res.status(500).json({ error: "Failed to delete session" });
     }
   }

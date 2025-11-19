@@ -19,11 +19,11 @@ if (hasSMTP) {
 
   transporter
     .verify()
-    .then(() => console.log("📧 SMTP transporter ready (shared)"))
+    .then(() => logger.info({}, "📧 SMTP transporter ready (shared)"))
     .catch((err) => {
-      console.warn(
-        "⚠️  SMTP verify failed. Falling back to console email.",
-        err?.message || err
+      logger.warn(
+        { err },
+        "⚠️  SMTP verify failed. Falling back to console email."
       );
       transporter = null;
     });
@@ -31,7 +31,7 @@ if (hasSMTP) {
 
 export async function sendEmail(to, subject, html) {
   if (!transporter) {
-    console.log(`\n[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${html}\n`);
+    logger.info({ to, subject, html }, "[DEV EMAIL] Outgoing email (DEV mode)");
     return;
   }
   await transporter.sendMail({ from: EMAIL_FROM, to, subject, html });

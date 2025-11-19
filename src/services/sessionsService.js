@@ -143,17 +143,15 @@ export async function finalizeExpiredSessionsForUser(userId) {
       try {
         await consumeOneCredit(s.userId);
       } catch (e) {
-        console.error(
-          "[finalize] credit consume failed for session",
-          s.id,
-          e?.message || e
+        logger.error(
+          { err: e, sessionId: s.id },
+          "[finalize] credit consume failed for session"
         );
       }
     } catch (e) {
-      console.error(
-        "[finalize] update failed for session",
-        s.id,
-        e?.message || e
+      logger.error(
+        { err: e, sessionId: s.id },
+        "[finalize] update failed for session"
       );
     }
   }
@@ -186,14 +184,16 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
       try {
         await consumeOneCredit(s.userId);
       } catch (e) {
-        console.error(
-          "[finalize-teacher] credit consume failed",
-          s.id,
-          e?.message || e
+        logger.error(
+          { err: e, sessionId: s.id },
+          "[finalize-teacher] credit consume failed"
         );
       }
     } catch (e) {
-      console.error("[finalize-teacher] update failed", s.id, e?.message || e);
+      logger.error(
+        { err: e, sessionId: s.id },
+        "[finalize-teacher] update failed"
+      );
     }
   }
 }

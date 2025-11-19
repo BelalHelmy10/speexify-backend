@@ -41,7 +41,7 @@ async function requireAuth(req, res, next) {
     req.viewUserId = req.session.asUserId || dbUser.id;
     next();
   } catch (e) {
-    console.error("[packages] requireAuth error:", e);
+    logger.error({ err: e }, "[packages] requireAuth error");
     return res.status(500).json({ error: "Auth check failed" });
   }
 }
@@ -89,7 +89,7 @@ router.get("/packages", async (req, res) => {
     const mapped = packages.map((p) => ({ ...p, featuresRaw: p.features }));
     res.json(mapped);
   } catch (error) {
-    console.error("[packages] list error:", error);
+    logger.error({ err: error }, "[packages] list error");
     res.status(500).json({ error: "Failed to fetch packages" });
   }
 });
@@ -125,7 +125,7 @@ router.get("/admin/packages", requireAuth, requireAdmin, async (req, res) => {
 
     res.json(items);
   } catch (err) {
-    console.error("[packages] admin list error:", err);
+    logger.error({ err: err }, "[packages] admin list error");
     res.status(500).json({ error: "Failed to load packages" });
   }
 });
@@ -180,7 +180,7 @@ router.post("/admin/packages", requireAuth, requireAdmin, async (req, res) => {
 
     res.status(201).json(created);
   } catch (err) {
-    console.error("[packages] admin create error:", err);
+    logger.error({ err: err }, "[packages] admin create error");
     res.status(500).json({ error: "Failed to create package" });
   }
 });
@@ -235,7 +235,7 @@ router.patch(
       const updated = await prisma.package.update({ where: { id }, data });
       res.json(updated);
     } catch (err) {
-      console.error("[packages] admin update error:", err);
+      logger.error({ err: err }, "[packages] admin update error");
       res.status(500).json({ error: "Failed to update package" });
     }
   }
@@ -252,7 +252,7 @@ router.delete(
       await prisma.package.delete({ where: { id } });
       res.json({ ok: true });
     } catch (err) {
-      console.error("[packages] admin delete error:", err);
+      logger.error({ err: err }, "[packages] admin delete error");
       res.status(500).json({ error: "Failed to delete package" });
     }
   }

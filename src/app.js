@@ -43,6 +43,7 @@ import {
 import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
+import { logger } from "./lib/logger.js"; // adjust relative path if needed
 
 const app = express();
 const prisma = new PrismaClient();
@@ -555,13 +556,23 @@ app.get("/api/db-check", async (_req, res) => {
 
 app.use(csrfErrorHandler);
 
+// Generic error handler (must be last)
 app.use((err, req, res, next) => {
-  if (err && err.message === "Not allowed by CORS") {
-    console.warn("CORS blocked:", req.headers.origin);
-    return res.status(403).json({ error: "Origin not allowed" });
+  logger.error(
+    {
+      err,
+      path: req.path,
+      method: req.method,
+      userId: req.session?.user?.id || null,
+    },
+    "Unhandled error in request"
+  );
+
+  if (res.headersSent) {
+    return next(err);
   }
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal Server Error" });
+
+  res.status(500).json({ error: "Internal server error" });
 });
 
 export default app;

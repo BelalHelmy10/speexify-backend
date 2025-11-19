@@ -94,7 +94,7 @@ router.post("/login", loginLimiter, async (req, res) => {
     req.session.user = sessionUser;
     res.json({ user: sessionUser });
   } catch (err) {
-    console.error("Login error:", err);
+    logger.error({ err }, "Login error");
     res.status(500).json({ error: "Failed to login" });
   }
 });
@@ -106,7 +106,8 @@ router.post("/login", loginLimiter, async (req, res) => {
 router.post("/google", async (req, res) => {
   try {
     if (!GOOGLE_CLIENT_ID) {
-      console.error(
+      logger.error(
+        {},
         "[google] Missing GOOGLE_CLIENT_ID env; cannot verify token."
       );
       return res.status(500).json({ ok: false, error: "config_error" });
@@ -119,10 +120,10 @@ router.post("/google", async (req, res) => {
     }
 
     const origin = req.get("origin") || "unknown-origin";
-    console.log("[google] verify start", {
-      origin,
-      audience: GOOGLE_CLIENT_ID.slice(0, 10) + "...",
-    });
+    logger.info(
+      { origin, audience: GOOGLE_CLIENT_ID.slice(0, 10) + "..." },
+      "[google] verify start"
+    );
 
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
@@ -183,7 +184,7 @@ router.post("/google", async (req, res) => {
 
     req.session.save((saveErr) => {
       if (saveErr) {
-        console.error("[google] session.save error:", saveErr);
+        logger.error({ err: saveErr }, "[google] session.save error");
         return res.status(500).json({ ok: false, error: "session_error" });
       }
       res.set({
@@ -194,12 +195,12 @@ router.post("/google", async (req, res) => {
         "Surrogate-Control": "no-store",
         Vary: "Cookie",
       });
-      console.log("[google] verify ok → session established for", email);
+      logger.info({ email }, "[google] verify ok → session established");
       return res.json({ ok: true, user: req.session.user });
     });
   } catch (err) {
     const msg = (err && (err.message || err.toString())) || "unknown_error";
-    console.error("[google] verify error:", msg);
+    logger.error({ err: msg }, "[google] verify error");
 
     const tokenErr = [
       "Wrong number of segments",
@@ -314,7 +315,7 @@ router.post("/password/reset/start", async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("password/reset/start error:", err);
+    logger.error({ err }, "password/reset/start error");
     return res.json({ ok: true });
   }
 });
@@ -403,7 +404,7 @@ router.post("/password/reset/complete", async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("password/reset/complete error:", err);
+    logger.error({ err }, "password/reset/complete error");
     return res.status(500).json({ error: "Failed to reset password" });
   }
 });
@@ -454,7 +455,7 @@ router.post("/register/start", async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("register/start error:", err);
+    logger.error({ err }, "register/start error");
     return res.status(500).json({ error: "Failed to start registration" });
   }
 });
@@ -545,7 +546,7 @@ router.post("/register/complete", async (req, res) => {
 
     return res.json({ ok: true, user });
   } catch (err) {
-    console.error("register/complete error:", err);
+    logger.error({ err }, "register/complete error");
     return res.status(500).json({ error: "Failed to complete registration" });
   }
 });

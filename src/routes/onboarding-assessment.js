@@ -87,7 +87,7 @@ router.get("/admin/onboarding", requireAuth, requireAdmin, async (req, res) => {
     ]);
     res.json({ items, total });
   } catch (e) {
-    console.error("admin.onboarding.list error:", e);
+    logger.error({ err: e }, "admin.onboarding.list error");
     res.status(500).json({ error: "Failed to load onboarding forms" });
   }
 });
@@ -121,7 +121,7 @@ router.get(
       ]);
       res.json({ items, total });
     } catch (e) {
-      console.error("admin.assessments.list error:", e);
+      logger.error({ err: e }, "admin.assessments.list error");
       res.status(500).json({ error: "Failed to load assessments" });
     }
   }
@@ -158,7 +158,7 @@ router.post(
       });
       res.json({ ok: true, assessment: updated });
     } catch (e) {
-      console.error("admin.assessments.review error:", e);
+      logger.error({ err: e }, "admin.assessments.review error");
       res.status(500).json({ error: "Failed to review assessment" });
     }
   }
@@ -177,7 +177,7 @@ router.get("/me/onboarding", requireAuth, async (req, res) => {
     });
     res.json(row || null);
   } catch (e) {
-    console.error("GET /api/me/onboarding failed:", e);
+    logger.error({ err: e }, "GET /api/me/onboarding failed");
     res.status(500).json({ error: "Failed to load onboarding form" });
   }
 });
@@ -231,7 +231,7 @@ router.post("/me/onboarding", requireAuth, async (req, res) => {
 
     return res.status(201).json({ ok: true, form: created });
   } catch (e) {
-    console.error("POST /api/me/onboarding failed:", e);
+    logger.error({ err: e }, "POST /api/me/onboarding failed");
     res.status(500).json({ error: "Failed to save onboarding form" });
   }
 });
@@ -249,7 +249,7 @@ router.get("/me/assessment", requireAuth, async (req, res) => {
     });
     res.json(row || null);
   } catch (e) {
-    console.error("GET /api/me/assessment failed:", e);
+    logger.error({ err: e }, "GET /api/me/assessment failed");
     res.status(500).json({ error: "Failed to load assessment" });
   }
 });
@@ -282,7 +282,7 @@ router.post("/me/assessment", requireAuth, async (req, res) => {
     });
     res.status(201).json({ ok: true, submission: created });
   } catch (e) {
-    console.error("POST /api/me/assessment failed:", e);
+    logger.error({ err: e }, "POST /api/me/assessment failed");
     res.status(500).json({ error: "Failed to submit assessment" });
   }
 });

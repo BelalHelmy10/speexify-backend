@@ -29,7 +29,8 @@ if (
   !PAYMOB_IFRAME_ID ||
   !PAYMOB_HMAC_SECRET
 ) {
-  console.warn(
+  logger.warn(
+    {},
     "⚠️  Missing one or more Paymob env vars (PAYMOB_API_KEY, PAYMOB_INTEGRATION_ID, PAYMOB_IFRAME_ID, PAYMOB_HMAC_SECRET). Test mode will fail until set."
   );
 }
@@ -166,7 +167,7 @@ router.post("/create-intent", async (req, res) => {
 
     return res.json({ ok: true, iframeUrl, paymobOrderId: order.id });
   } catch (err) {
-    console.error("create-intent error:", err?.response?.data || err.message);
+    logger.error({ err }, "create-intent error");
     return res.status(500).json({ ok: false, message: "payment init failed" });
   }
 });
@@ -241,7 +242,7 @@ router.post("/webhook/paymob", async (req, res) => {
 
     return res.sendStatus(200);
   } catch (e) {
-    console.error("webhook error:", e);
+    logger.error({ err: e }, "webhook error");
     return res.sendStatus(500);
   }
 });
