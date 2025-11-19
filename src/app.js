@@ -563,9 +563,6 @@ app.get("/api/db-check", async (_req, res) => {
 // CSRF-specific error handler
 app.use(csrfErrorHandler);
 
-// Sentry error handler (before your own logger-based handler)
-app.use(Sentry.Handlers.errorHandler());
-
 // Generic error handler (must be last)
 app.use((err, req, res, next) => {
   logger.error(
