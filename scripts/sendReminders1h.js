@@ -49,7 +49,7 @@ async function main() {
       `Your session starts in about one hour:`,
       `Title: ${s.title || "Session"}`,
       `When: ${when} (${s.user?.timezone || "UTC"})`,
-      s.meetingUrl ? `Join: ${s.meetingUrl}` : null,
+      s.joinUrl ? `Join: ${s.joinUrl}` : null,
       s.notes ? `Notes: ${s.notes}` : null,
       ``,
       `See you soon!`,

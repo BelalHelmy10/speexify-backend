@@ -353,7 +353,7 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
         title: true,
         startAt: true,
         endAt: true,
-        meetingUrl: true,
+        joinUrl: true,
         status: true,
       },
     });

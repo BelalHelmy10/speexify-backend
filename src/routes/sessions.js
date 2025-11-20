@@ -677,7 +677,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         ? {
             OR: [
               { title: { contains: q, mode: "insensitive" } },
-              { meetingUrl: { contains: q, mode: "insensitive" } },
+              { joinUrl: { contains: q, mode: "insensitive" } },
             ],
           }
         : {}),
@@ -820,7 +820,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         title,
         startAt,
         endAt: finalEndAt,
-        meetingUrl,
+        joinUrl: meetingUrl,
         status: "scheduled",
       },
       select: {
@@ -830,7 +830,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         teacherId: true,
         startAt: true,
         endAt: true,
-        meetingUrl,
+        joinUrl: true,
         notes: true,
         status: true,
       },
@@ -863,7 +863,7 @@ router.patch(
       const patch = {};
       const allowed = [
         "title",
-        "meetingUrl",
+        "joinUrl",
         "status",
         "startAt",
         "endAt",
