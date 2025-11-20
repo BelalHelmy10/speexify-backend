@@ -1,5 +1,6 @@
 // src/services/emailService.js
 import nodemailer from "nodemailer";
+import { logger } from "../lib/logger.js";
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM || "Speexify <no-reply@speexify.local>";
