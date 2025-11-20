@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { isProd, COOKIE_DOMAIN } from "../config/env.js";
 import { sendEmail } from "../services/emailService.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
+import { logger } from "../lib/logger.js";
 
 const prisma = new PrismaClient();
 const router = Router();

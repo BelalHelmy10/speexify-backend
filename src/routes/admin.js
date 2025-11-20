@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import nodemailer from "nodemailer";
 import crypto from "node:crypto";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
+import { logger } from "../lib/logger.jss";
 
 const prisma = new PrismaClient();
 const router = Router();

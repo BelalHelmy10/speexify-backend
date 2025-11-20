@@ -1,5 +1,6 @@
 // src/services/sessionsService.js
 import { PrismaClient } from "@prisma/client";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 

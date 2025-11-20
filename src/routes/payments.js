@@ -16,6 +16,7 @@ import {
   PAYMOB_HMAC_SECRET,
   PAYMOB_INTEGRATION_ID,
 } from "../config/env.js";
+import { logger } from "../lib/logger.js";
 
 const router = Router();
 const prisma = new PrismaClient();
