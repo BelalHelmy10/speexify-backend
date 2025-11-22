@@ -12,8 +12,9 @@ import { logger } from "../lib/logger.js";
 const prisma = new PrismaClient();
 const router = Router();
 
-//validating passwords
-
+// ---------------------------------------------------------------------------
+// Password strength helper
+// ---------------------------------------------------------------------------
 function validatePasswordStrength(password, label = "Password") {
   if (!password || typeof password !== "string") {
     return `${label} is required`;
@@ -67,7 +68,9 @@ async function randomHashedPassword() {
   return await bcrypt.hash(rand, 10);
 }
 
-// ---- Email sender (same behaviour as app.js) ----
+/* ========================================================================== */
+/*                                   LOGIN                                   */
+/* ========================================================================== */
 
 router.post("/login", loginLimiter, async (req, res) => {
   try {
@@ -101,7 +104,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 /* ========================================================================== */
-/*                           GOOGLE OAUTH (ID TOKEN)                           */
+/*                           GOOGLE OAUTH (ID TOKEN)                          */
 /* ========================================================================== */
 
 router.post("/google", async (req, res) => {
@@ -222,7 +225,6 @@ router.post("/google", async (req, res) => {
 
 router.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    // ✅ use the same domain value as session config
     res.clearCookie("speexify.sid", {
       httpOnly: true,
       secure: isProd,
@@ -269,6 +271,10 @@ router.get("/me", async (req, res) => {
   return res.json({ user: adminUser });
 });
 
+/* ========================================================================== */
+/*                          PASSWORD RESET (2-step)                           */
+/* ========================================================================== */
+
 router.post("/password/reset/start", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
@@ -306,13 +312,18 @@ router.post("/password/reset/start", async (req, res) => {
       create: data,
     });
 
-    await sendEmail(
-      email,
-      "Your Speexify password reset code",
-      `<p>Use this code to reset your password:</p>
-       <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-       <p>This code expires in 10 minutes.</p>`
-    );
+    // If sendEmail throws, we log but still respond ok:true (no user enumeration)
+    try {
+      await sendEmail(
+        email,
+        "Your Speexify password reset code",
+        `<p>Use this code to reset your password:</p>
+         <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
+         <p>This code expires in 10 minutes.</p>`
+      );
+    } catch (err) {
+      logger.error({ err, email }, "password/reset/start sendEmail failed");
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -329,15 +340,12 @@ router.post("/password/reset/complete", async (req, res) => {
     const code = String(req.body?.code || "").trim();
     const newPassword = String(req.body?.newPassword || "");
 
-    // Email format
     if (!/^\S+@\S+\.\S+$/.test(email))
       return res.status(400).json({ error: "Valid email is required" });
 
-    // Code format
     if (!/^\d{6}$/.test(code))
       return res.status(400).json({ error: "A 6-digit code is required" });
 
-    // NEW PASSWORD POLICY (embedded here)
     if (newPassword.length < 8) {
       return res
         .status(400)
@@ -349,15 +357,12 @@ router.post("/password/reset/complete", async (req, res) => {
       });
     }
 
-    // User exists?
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(400).json({ error: "Invalid code" });
 
-    // Get reset entry
     const pr = await prisma.passwordResetCode.findUnique({ where: { email } });
     if (!pr) return res.status(400).json({ error: "Invalid or expired code" });
 
-    // Expired?
     if (new Date() > pr.expiresAt) {
       await prisma.passwordResetCode.delete({ where: { email } });
       return res
@@ -365,7 +370,6 @@ router.post("/password/reset/complete", async (req, res) => {
         .json({ error: "Code expired. Request a new one." });
     }
 
-    // Too many attempts?
     if (pr.attempts >= 5) {
       await prisma.passwordResetCode.delete({ where: { email } });
       return res
@@ -373,7 +377,6 @@ router.post("/password/reset/complete", async (req, res) => {
         .json({ error: "Too many attempts. Try again later." });
     }
 
-    // Check code
     const ok = pr.codeHash === hashCode(code);
     if (!ok) {
       await prisma.passwordResetCode.update({
@@ -383,17 +386,14 @@ router.post("/password/reset/complete", async (req, res) => {
       return res.status(400).json({ error: "Invalid code" });
     }
 
-    // Update password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
       where: { email },
       data: { hashedPassword },
     });
 
-    // Cleanup
     await prisma.passwordResetCode.delete({ where: { email } });
 
-    // Log them in
     req.session.asUserId = null;
     req.session.user = {
       id: user.id,
@@ -409,6 +409,10 @@ router.post("/password/reset/complete", async (req, res) => {
     return res.status(500).json({ error: "Failed to reset password" });
   }
 });
+
+/* ========================================================================== */
+/*                 EMAIL VERIFICATION REGISTER (2-step)                       */
+/* ========================================================================== */
 
 router.post("/register/start", async (req, res) => {
   try {
@@ -446,13 +450,22 @@ router.post("/register/start", async (req, res) => {
       create: { email, codeHash, expiresAt, attempts: 0 },
     });
 
-    await sendEmail(
-      email,
-      "Your Speexify verification code",
-      `<p>Your verification code is:</p>
+    // 🔹 IMPORTANT: if sendEmail fails, tell the frontend explicitly
+    try {
+      await sendEmail(
+        email,
+        "Your Speexify verification code",
+        `<p>Your verification code is:</p>
          <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
          <p>This code expires in 10 minutes.</p>`
-    );
+      );
+    } catch (err) {
+      logger.error({ err, email }, "register/start sendEmail failed");
+      return res.status(500).json({
+        error:
+          "Failed to send verification email. Please check your email and try again.",
+      });
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -470,29 +483,24 @@ router.post("/register/complete", async (req, res) => {
     const password = String(req.body?.password || "");
     const name = String(req.body?.name || "");
 
-    // Email format
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
     }
 
-    // 6-digit code
     if (!/^\d{6}$/.test(code)) {
       return res.status(400).json({ error: "A 6-digit code is required" });
     }
 
-    // NEW PASSWORD POLICY
     const passwordError = validatePasswordStrength(password, "Password");
     if (passwordError) {
       return res.status(400).json({ error: passwordError });
     }
 
-    // User exists?
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) {
       return res.status(409).json({ error: "Email is already registered" });
     }
 
-    // Find verification code entry
     const v = await prisma.verificationCode.findUnique({ where: { email } });
     if (!v) {
       return res
@@ -500,13 +508,11 @@ router.post("/register/complete", async (req, res) => {
         .json({ error: "No verification code found for this email" });
     }
 
-    // Expired?
     if (new Date() > v.expiresAt) {
       await prisma.verificationCode.delete({ where: { email } });
       return res.status(400).json({ error: "Verification code has expired" });
     }
 
-    // Too many attempts?
     if (v.attempts >= 5) {
       await prisma.verificationCode.delete({ where: { email } });
       return res
@@ -514,7 +520,6 @@ router.post("/register/complete", async (req, res) => {
         .json({ error: "Too many attempts. Request a new code." });
     }
 
-    // Check the code
     const isMatch = v.codeHash === hashCode(code);
     if (!isMatch) {
       await prisma.verificationCode.update({
@@ -524,7 +529,6 @@ router.post("/register/complete", async (req, res) => {
       return res.status(400).json({ error: "Invalid verification code" });
     }
 
-    // Passed → create user
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { email, name: name || null, hashedPassword, role: "learner" },
@@ -538,10 +542,8 @@ router.post("/register/complete", async (req, res) => {
       },
     });
 
-    // Cleanup
     await prisma.verificationCode.delete({ where: { email } });
 
-    // Create session
     req.session.asUserId = null;
     req.session.user = user;
 
