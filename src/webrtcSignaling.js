@@ -1,149 +1,144 @@
 // src/webrtcSignaling.js
 import { WebSocketServer } from "ws";
-
-const rooms = new Map(); // roomId -> Set<ws>
+import { logger } from "./lib/logger.js";
 
 /**
- * Attach WebRTC signaling WebSocket server to an existing HTTP server.
- * We’ll use path: /ws/prep
+ * Attach a WebSocket server to the existing HTTP server.
+ * Room model:
+ * - roomId = resourceId (string)
+ * - max 2 peers per room
  */
-export function attachWebRtcSignaling(httpServer) {
-  const wss = new WebSocketServer({ noServer: true });
+export function setupWebRtcSignaling(httpServer) {
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: "/ws/prep",
+  });
 
-  httpServer.on("upgrade", (req, socket, head) => {
-    // only handle /ws/prep upgrades
-    if (!req.url.startsWith("/ws/prep")) {
+  // roomId -> Set<WebSocket>
+  const rooms = new Map();
+
+  function joinRoom(ws, roomId) {
+    let room = rooms.get(roomId);
+    if (!room) {
+      room = new Set();
+      rooms.set(roomId, room);
+    }
+
+    if (room.size >= 2) {
+      ws.send(JSON.stringify({ type: "room-full" }));
+      ws.close();
       return;
     }
 
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
-  });
+    room.add(ws);
+    ws.roomId = roomId;
 
-  wss.on("connection", (ws, req) => {
-    // custom metadata on the socket
-    ws._roomId = null;
+    const isInitiator = room.size === 1;
+    ws.isInitiator = isInitiator;
 
-    ws.on("message", (data) => {
+    ws.send(
+      JSON.stringify({
+        type: "joined",
+        roomId,
+        isInitiator,
+      })
+    );
+
+    // Notify the other peer that someone joined
+    for (const peer of room) {
+      if (peer !== ws) {
+        peer.send(
+          JSON.stringify({
+            type: "peer-joined",
+            roomId,
+          })
+        );
+      }
+    }
+  }
+
+  function leaveRoom(ws) {
+    const roomId = ws.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    room.delete(ws);
+
+    // notify remaining peer
+    for (const peer of room) {
+      peer.send(
+        JSON.stringify({
+          type: "peer-left",
+          roomId,
+        })
+      );
+    }
+
+    if (room.size === 0) {
+      rooms.delete(roomId);
+    }
+
+    ws.roomId = null;
+  }
+
+  wss.on("connection", (ws) => {
+    logger.info("[WebRTC] client connected");
+
+    ws.on("message", (raw) => {
       let msg;
       try {
-        msg = JSON.parse(data.toString());
-      } catch (err) {
-        console.warn("[webrtc] invalid message", err);
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+      if (!msg || !msg.type) return;
+
+      if (msg.type === "join") {
+        const { roomId } = msg;
+        if (!roomId || typeof roomId !== "string") {
+          ws.send(JSON.stringify({ type: "error", message: "Invalid roomId" }));
+          return;
+        }
+        joinRoom(ws, roomId);
         return;
       }
 
-      if (!msg || typeof msg.type !== "string") return;
+      if (msg.type === "leave") {
+        leaveRoom(ws);
+        return;
+      }
 
-      switch (msg.type) {
-        case "join":
-          handleJoin(ws, msg);
-          break;
-        case "signal":
-          handleSignal(ws, msg);
-          break;
-        case "leave":
-          handleLeave(ws);
-          break;
-        default:
-          break;
+      if (msg.type === "signal") {
+        const roomId = ws.roomId;
+        if (!roomId) return;
+        const room = rooms.get(roomId);
+        if (!room) return;
+
+        // forward signaling data to the other peer
+        for (const peer of room) {
+          if (peer !== ws && peer.readyState === peer.OPEN) {
+            peer.send(
+              JSON.stringify({
+                type: "signal",
+                signalType: msg.signalType,
+                data: msg.data,
+              })
+            );
+          }
+        }
       }
     });
 
     ws.on("close", () => {
-      handleLeave(ws);
+      leaveRoom(ws);
+    });
+
+    ws.on("error", (err) => {
+      logger.error({ err }, "[WebRTC] ws error");
+      leaveRoom(ws);
     });
   });
 
-  console.log("[webrtc] signaling server attached on /ws/prep");
-}
-
-function handleJoin(ws, msg) {
-  const roomId = String(msg.roomId || "").trim();
-  if (!roomId) return;
-
-  // Attach roomId to this socket
-  ws._roomId = roomId;
-
-  let room = rooms.get(roomId);
-  if (!room) {
-    room = new Set();
-    rooms.set(roomId, room);
-  }
-
-  // Limit to 2 participants for now (teacher + learner)
-  if (room.size >= 2) {
-    ws.send(JSON.stringify({ type: "room-full" }));
-    ws.close();
-    return;
-  }
-
-  room.add(ws);
-
-  const clientsInRoom = room.size;
-  const isInitiator = clientsInRoom === 2; // second person becomes initiator
-
-  ws.send(
-    JSON.stringify({
-      type: "joined",
-      roomId,
-      isInitiator,
-    })
-  );
-
-  // Notify the other peer someone joined (for UI / connection state)
-  broadcastInRoom(roomId, ws, {
-    type: "peer-joined",
-    roomId,
-  });
-
-  console.log(
-    `[webrtc] client joined room ${roomId} (size=${clientsInRoom}, initiator=${isInitiator})`
-  );
-}
-
-function handleSignal(ws, msg) {
-  const roomId = ws._roomId;
-  if (!roomId) return;
-
-  // Forward offer/answer/candidate to the *other* peer in the room
-  const payload = {
-    type: "signal",
-    signalType: msg.signalType,
-    data: msg.data,
-  };
-
-  broadcastInRoom(roomId, ws, payload);
-}
-
-function handleLeave(ws) {
-  const roomId = ws._roomId;
-  if (!roomId) return;
-
-  const room = rooms.get(roomId);
-  if (!room) return;
-
-  room.delete(ws);
-  ws._roomId = null;
-
-  if (room.size === 0) {
-    rooms.delete(roomId);
-  } else {
-    // tell remaining peer the other left
-    broadcastInRoom(roomId, ws, { type: "peer-left", roomId });
-  }
-
-  console.log(`[webrtc] client left room ${roomId} (now ${room.size} clients)`);
-}
-
-function broadcastInRoom(roomId, senderWs, msg) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-  const str = JSON.stringify(msg);
-  for (const client of room) {
-    if (client !== senderWs && client.readyState === client.OPEN) {
-      client.send(str);
-    }
-  }
+  logger.info("[WebRTC] signaling server mounted at /ws/prep");
 }
