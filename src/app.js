@@ -45,7 +45,7 @@ import {
 import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
-import { logger } from "./lib/logger.js"; // adjust relative path if needed
+import { logger } from "./lib/logger.js";
 
 const app = express();
 
@@ -80,31 +80,22 @@ app.use(corsMiddleware);
 app.options(/.*/, corsMiddleware);
 app.use(sessionMiddleware);
 
-// CSRF protection for all /api routes (except the ones we skip inside the middleware)
-app.use("/api", csrfMiddleware);
+// CSRF protection (middleware decides which paths to skip)
+app.use(csrfMiddleware);
 
 // Endpoint to fetch a CSRF token (frontend will call this)
 app.get("/api/csrf-token", (req, res) => {
   return res.json({ csrfToken: req.csrfToken() });
 });
 
-//mounting the auth
+// Mount routes
 app.use("/api/auth", authRoutes);
-
-//mounting the payment
 app.use("/api/payments", paymentsRoutes);
-
-//mounting sessions
 app.use("/api", sessionsRoutes);
-
-//mounting packages
 app.use("/api", packagesRoutes);
-
-//mounting admin routes
 app.use("/api", adminRoutes);
-
-//mounting onboarding and assessment
 app.use("/api", onboardingAssessmentRoutes);
+
 /* ========================================================================== */
 /*                                  HELPERS                                   */
 /* ========================================================================== */
@@ -413,13 +404,10 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
       },
     });
 
-    // "Completed" strictly by status
     const completedCount = await prisma.session.count({
       where: { ...whereBase, status: "completed" },
     });
 
-    // The UI can compute total = upcoming + completed
-    // (or you can return it here as well)
     res.json({ nextSession: null, upcomingCount, completedCount });
   } catch (err) {
     console.error("GET /api/me/summary failed:", err);
@@ -430,7 +418,6 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 // Learner: My packages (entitlements)
 // GET /api/me/packages
-// Returns an array of entitlements with a computed `remaining` field.
 // --------------------------------------------------------------------------
 app.get("/api/me/packages", requireAuth, async (req, res) => {
   try {
@@ -472,10 +459,6 @@ app.get("/api/me/packages", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to load packages" });
   }
 });
-
-// ============================================================================
-// Sessions (Learner)
-// ============================================================================
 
 /* ========================================================================== */
 /*                                  USERS                                     */
