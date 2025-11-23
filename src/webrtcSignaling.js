@@ -1,5 +1,5 @@
 // src/webrtcSignaling.js
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { logger } from "./lib/logger.js";
 
 /**
@@ -117,7 +117,7 @@ export function setupWebRtcSignaling(httpServer) {
 
         // forward signaling data to the other peer
         for (const peer of room) {
-          if (peer !== ws && peer.readyState === peer.OPEN) {
+          if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
               JSON.stringify({
                 type: "signal",
