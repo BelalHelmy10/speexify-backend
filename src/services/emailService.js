@@ -47,7 +47,13 @@ export async function sendEmail(to, subject, html) {
     logger.info({ to, subject }, "📧 Email sent via Brevo HTTP API");
   } catch (err) {
     logger.error(
-      { err, to, subject },
+      {
+        to,
+        subject,
+        message: err.message,
+        status: err.response?.status,
+        responseData: err.response?.data,
+      },
       "❌ Failed to send email via Brevo HTTP API"
     );
     throw err;
