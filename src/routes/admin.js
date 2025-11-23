@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
+
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
 import { sendEmail } from "../services/emailService.js";
@@ -81,7 +82,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
     if (exists) return res.status(409).json({ error: "User already exists" });
 
     const rand = crypto.randomBytes(16).toString("hex");
-    const hashedPassword = await crypto
+    const hashedPassword = crypto
       .createHash("sha256")
       .update(rand)
       .digest("hex"); // random, real login via reset
@@ -225,7 +226,6 @@ router.post(
 /*                              ADMIN: IMPERSONATE                            */
 /* ========================================================================== */
 
-// POST /api/admin/impersonate/:id
 router.post(
   "/admin/impersonate/:id",
   requireAuth,
@@ -253,7 +253,6 @@ router.post(
   }
 );
 
-// POST /api/admin/impersonate/stop
 router.post(
   "/admin/impersonate/stop",
   requireAuth,
