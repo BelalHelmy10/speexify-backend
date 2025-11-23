@@ -1,103 +1,64 @@
 // src/services/emailService.js
-import nodemailer from "nodemailer";
+import axios from "axios";
 import { logger } from "../lib/logger.js";
-import { isProd } from "../config/env.js";
 
-/**
- * Required environment variables:
- *  - SMTP_HOST
- *  - SMTP_PORT
- *  - SMTP_USER
- *  - SMTP_PASS
- *  - EMAIL_FROM   (e.g. "Speexify <hello@speexify.com>")
- */
+const BREVO_API_KEY = process.env.BREVO_API_KEY || "";
+const EMAIL_FROM = process.env.EMAIL_FROM || "Speexify <no-reply@speexify.com>";
 
-const EMAIL_FROM =
-  process.env.EMAIL_FROM || "Speexify <no-reply@speexify.local>";
+const isProd = process.env.NODE_ENV === "production";
 
-const SMTP_HOST = process.env.SMTP_HOST || "";
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_USER = process.env.SMTP_USER || "";
-const SMTP_PASS = process.env.SMTP_PASS || "";
+// Helper to split "Name <email@domain.com>" into { name, email }
+function parseFromHeader(from) {
+  let name = "Speexify";
+  let email = from.trim();
 
-const smtpConfigured =
-  Boolean(SMTP_HOST) &&
-  Boolean(SMTP_USER) &&
-  Boolean(SMTP_PASS) &&
-  Boolean(EMAIL_FROM);
+  const match = from.match(/^(.*)<(.+@.+)>$/);
+  if (match) {
+    name = match[1].trim().replace(/^"|"$/g, "") || "Speexify";
+    email = match[2].trim();
+  }
 
-let transporter = null;
-
-if (smtpConfigured) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // secure for port 465
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
-
-  transporter
-    .verify()
-    .then(() =>
-      logger.info("📧 SMTP transport verified — real emails will be sent.")
-    )
-    .catch((err) => {
-      logger.error({ err }, "❌ SMTP verification failed — falling back.");
-      transporter = null;
-    });
-} else {
-  logger.warn(
-    {
-      SMTP_HOST: !!SMTP_HOST,
-      SMTP_USER: !!SMTP_USER,
-      SMTP_PASS: !!SMTP_PASS,
-      EMAIL_FROM: !!EMAIL_FROM,
-    },
-    "⚠️ SMTP not fully configured — will NOT send real emails."
-  );
+  return { name, email };
 }
 
-/**
- * Email sending function.
- *
- * In PRODUCTION:
- *   - Uses SMTP and sends real emails.
- *
- * In DEVELOPMENT or if SMTP is not configured:
- *   - Logs the email to console.
- */
 export async function sendEmail(to, subject, html) {
-  // If no transporter or not prod, just log it (no real send)
-  if (!transporter || !isProd) {
+  if (!BREVO_API_KEY) {
     logger.info(
       { to, subject },
-      "[DEV EMAIL] Email NOT SENT — SMTP disabled or not in production."
+      "[DEV EMAIL] Email NOT SENT — BREVO_API_KEY is missing."
     );
-    logger.debug({ html }, "[DEV EMAIL BODY]");
     return;
   }
 
+  const { name, email } = parseFromHeader(EMAIL_FROM);
+
+  const payload = {
+    sender: {
+      email,
+      name,
+    },
+    to: [{ email: String(to).trim() }],
+    subject,
+    htmlContent: html,
+  };
+
   try {
-    const info = await transporter.sendMail({
-      from: EMAIL_FROM,
-      to,
-      subject,
-      html,
+    await axios.post("https://api.brevo.com/v3/smtp/email", payload, {
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json",
+        accept: "application/json",
+      },
+      timeout: 10000,
     });
 
-    logger.info(
-      {
-        to,
-        subject,
-        messageId: info.messageId,
-      },
-      "📧 Email sent successfully"
-    );
+    logger.info({ to, subject }, "📧 Email sent via Brevo HTTP API");
   } catch (err) {
-    logger.error({ err, to, subject }, "❌ Failed to send email");
-    throw err; // IMPORTANT — allows route to show an error instead of fake success
+    logger.error(
+      { err, to, subject },
+      "❌ Failed to send email via Brevo HTTP API"
+    );
+    // Let the caller decide what to do
+    throw err;
   }
 }
