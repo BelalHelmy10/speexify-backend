@@ -44,9 +44,9 @@ export function setupWebRtcSignaling(httpServer) {
       })
     );
 
-    // Notify the other peer that someone joined
+    // Notify everyone that someone joined:
     for (const peer of room) {
-      if (peer !== ws) {
+      if (peer.readyState === peer.OPEN) {
         peer.send(
           JSON.stringify({
             type: "peer-joined",
