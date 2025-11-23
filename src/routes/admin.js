@@ -1,52 +1,13 @@
 // src/routes/admin.js
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
-import nodemailer from "nodemailer";
 import crypto from "node:crypto";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
+import { sendEmail } from "../services/emailService.js";
 
 const prisma = new PrismaClient();
 const router = Router();
-
-/* -------------------------------------------------------------------------- */
-/* Email helpers (same behaviour as other files)                              */
-/* -------------------------------------------------------------------------- */
-
-const EMAIL_FROM =
-  process.env.EMAIL_FROM || "Speexify <no-reply@speexify.local>";
-
-const hasSMTP =
-  !!process.env.SMTP_HOST && !!process.env.SMTP_USER && !!process.env.SMTP_PASS;
-
-let transporter = null;
-if (hasSMTP) {
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: false,
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
-
-  transporter
-    .verify()
-    .then(() => logger.info({}, "📨 SMTP transporter ready (admin routes)"))
-    .catch((err) => {
-      logger.warn(
-        { err },
-        "⚠️ SMTP verify failed in admin routes. Falling back to console email."
-      );
-      transporter = null;
-    });
-}
-
-async function sendEmail(to, subject, html) {
-  if (!transporter) {
-    logger.info({ to, subject, html }, "[DEV EMAIL] Outgoing email (DEV mode)");
-    return;
-  }
-  await transporter.sendMail({ from: EMAIL_FROM, to, subject, html });
-}
 
 /* -------------------------------------------------------------------------- */
 /* Shared helpers                                                             */
@@ -123,7 +84,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
     const hashedPassword = await crypto
       .createHash("sha256")
       .update(rand)
-      .digest("hex"); // just random, real login will be via reset
+      .digest("hex"); // random, real login via reset
 
     const user = await prisma.user.create({
       data: { email, name: name || null, role, timezone, hashedPassword },
@@ -151,9 +112,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
       email,
       "Welcome to Speexify — set your password",
       `<p>Hi${name ? " " + name : ""},</p>
-         <p>Your setup code is:</p>
-         <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-         <p>Use it on the “Forgot password” page within 10 minutes.</p>`
+       <p>Your setup code is:</p>
+       <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
+       <p>Use it on the “Forgot password” page within 10 minutes.</p>`
     );
 
     await audit(req.user.id, "user_create", "User", user.id, { email, role });
