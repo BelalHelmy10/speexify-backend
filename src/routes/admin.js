@@ -2,7 +2,6 @@
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
-
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
 import { sendEmail } from "../services/emailService.js";
@@ -85,7 +84,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
     const hashedPassword = crypto
       .createHash("sha256")
       .update(rand)
-      .digest("hex"); // random, real login via reset
+      .digest("hex"); // random; login via reset
 
     const user = await prisma.user.create({
       data: { email, name: name || null, role, timezone, hashedPassword },

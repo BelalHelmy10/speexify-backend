@@ -31,30 +31,42 @@ export async function sendEmail(to, subject, html) {
   const { name, email } = parseFromHeader(EMAIL_FROM);
 
   const payload = {
-    sender: { email, name },
+    sender: {
+      email,
+      name,
+    },
     to: [{ email: String(to).trim() }],
     subject,
     htmlContent: html,
   };
 
   try {
-    await axios.post("https://api.brevo.com/v3/smtp/email", payload, {
-      headers: {
-        "api-key": BREVO_API_KEY,
-        "Content-Type": "application/json",
-        accept: "application/json",
-      },
-      timeout: 10000,
-    });
+    const resp = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      payload,
+      {
+        headers: {
+          "api-key": BREVO_API_KEY,
+          "Content-Type": "application/json",
+          accept: "application/json",
+        },
+        timeout: 10000,
+      }
+    );
 
-    logger.info({ to, subject }, "📧 Email sent via Brevo HTTP API");
+    logger.info(
+      { to, subject, brevoMessageId: resp.data?.messageId },
+      "📧 Email sent via Brevo HTTP API"
+    );
   } catch (err) {
+    // Log as much as possible so Render logs show the real reason
     logger.error(
       {
         to,
         subject,
-        status: err.response?.status,
-        data: err.response?.data,
+        errMessage: err?.message,
+        status: err?.response?.status,
+        data: err?.response?.data,
       },
       "❌ Failed to send email via Brevo HTTP API"
     );
