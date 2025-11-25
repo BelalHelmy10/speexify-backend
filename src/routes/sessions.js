@@ -129,8 +129,12 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       !!session.teacherFeedbackComments ||
       !!session.teacherFeedbackFutureSteps;
 
+    // ⭐ NEW: include isLearner / isTeacher / isAdmin flags for the frontend
     const shaped = {
       ...session,
+      isLearner,
+      isTeacher,
+      isAdmin,
       teacherFeedback: hasFeedback
         ? {
             messageToLearner: session.teacherFeedbackMessageToLearner || "",
@@ -586,8 +590,6 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
 
 // GET /api/me/progress
 // Learner progress summary + simple monthly timeline
-// GET /api/me/progress
-// GET /api/me/progress
 router.get("/me/progress", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId || req.user.id;
