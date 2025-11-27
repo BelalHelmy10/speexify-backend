@@ -145,8 +145,6 @@ model Session {
 
   @@index([userId, startAt])
   @@index([teacherId, startAt])
-
-  classroomState  Json?
 }
 
 
