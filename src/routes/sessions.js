@@ -429,7 +429,16 @@ router.get("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Invalid session id" });
     }
 
-    const session = await prisma.session.findUnique({ where: { id } });
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        userId: true,
+        teacherId: true,
+        classroomState: true,
+      },
+    });
+
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -442,16 +451,16 @@ router.get("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    res.json({
+    return res.json({
       classroomState: session.classroomState || {},
     });
   } catch (err) {
     logger.error({ err }, "GET classroom-state failed");
-    res.status(500).json({ error: "Failed to load classroom state" });
+    return res.status(500).json({ error: "Failed to load classroom state" });
   }
 });
 
-// POST (update) classroom state – overwrite with full object
+// POST (update) classroom state – teacher/admin only
 router.post("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -459,43 +468,37 @@ router.post("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Invalid session id" });
     }
 
-    const session = await prisma.session.findUnique({ where: { id } });
+    const { classroomState } = req.body || {};
+
+    // Only teacher (or admin) can change the shared state
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: { id: true, userId: true, teacherId: true },
+    });
+
     if (!session) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const isLearner = session.userId === req.user.id;
     const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
 
-    if (!(isLearner || isTeacher || isAdmin)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
-    const { classroomState } = req.body || {};
-    if (
-      !classroomState ||
-      typeof classroomState !== "object" ||
-      Array.isArray(classroomState)
-    ) {
+    if (!(isTeacher || isAdmin)) {
       return res
-        .status(400)
-        .json({ error: "Body must contain a classroomState object" });
+        .status(403)
+        .json({ error: "Only the teacher can update classroom state" });
     }
 
-    const updated = await prisma.session.update({
+    await prisma.session.update({
       where: { id },
-      data: {
-        classroomState,
-      },
+      data: { classroomState },
+      select: { id: true }, // keep it minimal
     });
 
-    res.json({
-      classroomState: updated.classroomState || {},
-    });
+    return res.json({ ok: true });
   } catch (err) {
     logger.error({ err }, "POST classroom-state failed");
-    res.status(500).json({ error: "Failed to update classroom state" });
+    return res.status(500).json({ error: "Failed to save classroom state" });
   }
 });
 
