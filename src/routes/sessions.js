@@ -422,34 +422,81 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 });
 
 // GET current classroom state
-router.get("/sessions/:id/classroom-state", async (req, res) => {
-  const id = Number(req.params.id);
-  const session = await prisma.session.findUnique({ where: { id } });
+router.get("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
 
-  if (!session) {
-    return res.status(404).json({ error: "Session not found" });
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const isLearner = session.userId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
+
+    if (!(isLearner || isTeacher || isAdmin)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    res.json({
+      classroomState: session.classroomState || {},
+    });
+  } catch (err) {
+    logger.error({ err }, "GET classroom-state failed");
+    res.status(500).json({ error: "Failed to load classroom state" });
   }
-
-  res.json({
-    classroomState: session.classroomState || {},
-  });
 });
 
-// POST (update) classroom state
-router.post("/sessions/:id/classroom-state", async (req, res) => {
-  const id = Number(req.params.id);
-  const { classroomState } = req.body; // expect a plain object
+// POST (update) classroom state – overwrite with full object
+router.post("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
 
-  const session = await prisma.session.update({
-    where: { id },
-    data: {
-      classroomState,
-    },
-  });
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
 
-  res.json({
-    classroomState: session.classroomState || {},
-  });
+    const isLearner = session.userId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
+    const isAdmin = req.user.role === "admin";
+
+    if (!(isLearner || isTeacher || isAdmin)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const { classroomState } = req.body || {};
+    if (
+      !classroomState ||
+      typeof classroomState !== "object" ||
+      Array.isArray(classroomState)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Body must contain a classroomState object" });
+    }
+
+    const updated = await prisma.session.update({
+      where: { id },
+      data: {
+        classroomState,
+      },
+    });
+
+    res.json({
+      classroomState: updated.classroomState || {},
+    });
+  } catch (err) {
+    logger.error({ err }, "POST classroom-state failed");
+    res.status(500).json({ error: "Failed to update classroom state" });
+  }
 });
 
 router.get("/me/sessions", requireAuth, async (req, res) => {
