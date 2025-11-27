@@ -421,6 +421,37 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
   }
 });
 
+// GET current classroom state
+router.get("/sessions/:id/classroom-state", async (req, res) => {
+  const id = Number(req.params.id);
+  const session = await prisma.session.findUnique({ where: { id } });
+
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+
+  res.json({
+    classroomState: session.classroomState || {},
+  });
+});
+
+// POST (update) classroom state
+router.post("/sessions/:id/classroom-state", async (req, res) => {
+  const id = Number(req.params.id);
+  const { classroomState } = req.body; // expect a plain object
+
+  const session = await prisma.session.update({
+    where: { id },
+    data: {
+      classroomState,
+    },
+  });
+
+  res.json({
+    classroomState: session.classroomState || {},
+  });
+});
+
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
     // Best-effort finalization, don't break if it fails
