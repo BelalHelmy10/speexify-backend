@@ -149,7 +149,7 @@ export function setupWebRtcSignaling(httpServer) {
   logger.info("[WebRTC] signaling server mounted at /ws/prep");
 
   // ─────────────────────────────────────────────
-  // 2) Classroom channel (/ws/classroom)
+  // 2) Classroom channel (/ws/classroom) a
   //    – resource sync, annotations, etc.
   // ─────────────────────────────────────────────
   const wssClassroom = new WebSocketServer({
