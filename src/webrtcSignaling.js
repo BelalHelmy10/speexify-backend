@@ -5,35 +5,37 @@ import { logger } from "./lib/logger.js";
 /**
  * Attach WebSocket servers to the existing HTTP server.
  *
- * /ws/prep       → WebRTC signaling (video, screen share)
+ * /ws/prep       → WebRTC signaling (video)
  * /ws/classroom  → Classroom events (resource sync, annotations, etc.)
  */
 export function setupWebRtcSignaling(httpServer) {
-  // ─────────────────────────────────────────────────────────────
-  // 1) WebRTC signaling: /ws/prep (max 2 peers per room)
-  // ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // 1) WebRTC signaling (/ws/prep) – 1:1 video
+  // ─────────────────────────────────────────────
   const wssPrep = new WebSocketServer({
     server: httpServer,
     path: "/ws/prep",
   });
 
-  const prepRooms = new Map(); // roomId -> Set<WebSocket>
+  // roomId -> Set<WebSocket>
+  const videoRooms = new Map();
+  const MAX_VIDEO_PEERS = 2; // strictly 1:1
 
-  function joinPrepRoom(ws, roomId) {
-    let room = prepRooms.get(roomId);
+  function joinVideoRoom(ws, roomId) {
+    let room = videoRooms.get(roomId);
     if (!room) {
       room = new Set();
-      prepRooms.set(roomId, room);
+      videoRooms.set(roomId, room);
     }
 
-    if (room.size >= 2) {
+    if (room.size >= MAX_VIDEO_PEERS) {
       ws.send(JSON.stringify({ type: "room-full" }));
       ws.close();
       return;
     }
 
     room.add(ws);
-    ws.prepRoomId = roomId;
+    ws.videoRoomId = roomId;
 
     const isInitiator = room.size === 1;
     ws.isInitiator = isInitiator;
@@ -46,9 +48,9 @@ export function setupWebRtcSignaling(httpServer) {
       })
     );
 
-    // Notify everyone that someone joined:
+    // Notify everyone that someone joined (for "peer-joined" in PrepVideoCall)
     for (const peer of room) {
-      if (peer.readyState === peer.OPEN) {
+      if (peer.readyState === WebSocket.OPEN) {
         peer.send(
           JSON.stringify({
             type: "peer-joined",
@@ -59,10 +61,10 @@ export function setupWebRtcSignaling(httpServer) {
     }
   }
 
-  function leavePrepRoom(ws) {
-    const roomId = ws.prepRoomId;
+  function leaveVideoRoom(ws) {
+    const roomId = ws.videoRoomId;
     if (!roomId) return;
-    const room = prepRooms.get(roomId);
+    const room = videoRooms.get(roomId);
     if (!room) return;
 
     room.delete(ws);
@@ -80,10 +82,10 @@ export function setupWebRtcSignaling(httpServer) {
     }
 
     if (room.size === 0) {
-      prepRooms.delete(roomId);
+      videoRooms.delete(roomId);
     }
 
-    ws.prepRoomId = null;
+    ws.videoRoomId = null;
   }
 
   wssPrep.on("connection", (ws) => {
@@ -104,22 +106,22 @@ export function setupWebRtcSignaling(httpServer) {
           ws.send(JSON.stringify({ type: "error", message: "Invalid roomId" }));
           return;
         }
-        joinPrepRoom(ws, roomId);
+        joinVideoRoom(ws, roomId);
         return;
       }
 
       if (msg.type === "leave") {
-        leavePrepRoom(ws);
+        leaveVideoRoom(ws);
         return;
       }
 
       if (msg.type === "signal") {
-        const roomId = ws.prepRoomId;
+        const roomId = ws.videoRoomId;
         if (!roomId) return;
-        const room = prepRooms.get(roomId);
+        const room = videoRooms.get(roomId);
         if (!room) return;
 
-        // forward signaling data to the other peer
+        // forward signaling data (offer/answer/candidate) to the other peer
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
@@ -135,21 +137,21 @@ export function setupWebRtcSignaling(httpServer) {
     });
 
     ws.on("close", () => {
-      leavePrepRoom(ws);
+      leaveVideoRoom(ws);
     });
 
     ws.on("error", (err) => {
       logger.error({ err }, "[WebRTC] ws error (/ws/prep)");
-      leavePrepRoom(ws);
+      leaveVideoRoom(ws);
     });
   });
 
   logger.info("[WebRTC] signaling server mounted at /ws/prep");
 
-  // ─────────────────────────────────────────────────────────────
-  // 2) Classroom channel: /ws/classroom
-  //    Same roomId model, separate from WebRTC sockets.
-  // ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // 2) Classroom channel (/ws/classroom)
+  //    – resource sync, annotations, etc.
+  // ─────────────────────────────────────────────
   const wssClassroom = new WebSocketServer({
     server: httpServer,
     path: "/ws/classroom",
@@ -163,11 +165,8 @@ export function setupWebRtcSignaling(httpServer) {
       room = new Set();
       classroomRooms.set(roomId, room);
     }
-
     room.add(ws);
     ws.classroomRoomId = roomId;
-
-    // We don't send joined/peer-joined here unless you need them.
   }
 
   function leaveClassroomRoom(ws) {
@@ -216,6 +215,7 @@ export function setupWebRtcSignaling(httpServer) {
         const room = classroomRooms.get(roomId);
         if (!room) return;
 
+        // forward classroom events to all other peers in the room
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
