@@ -5,21 +5,21 @@ import { logger } from "./lib/logger.js";
 /**
  * Attach WebSocket servers to the existing HTTP server.
  *
- * /ws/prep       → WebRTC signaling (video)
- * /ws/classroom  → Classroom events (resource sync, annotations, etc.)
+ * We use the "noServer" pattern and handle the HTTP upgrade manually so that
+ * proxies (like Render) can't interfere with the path matching.
  */
 export function setupWebRtcSignaling(httpServer) {
   // ─────────────────────────────────────────────
+  // Create two WS servers (noServer = true)
+  // ─────────────────────────────────────────────
+  const wssPrep = new WebSocketServer({ noServer: true });
+  const wssClassroom = new WebSocketServer({ noServer: true });
+
+  // ─────────────────────────────────────────────
   // 1) WebRTC signaling (/ws/prep) – 1:1 video
   // ─────────────────────────────────────────────
-  const wssPrep = new WebSocketServer({
-    server: httpServer,
-    path: "/ws/prep",
-  });
-
-  // roomId -> Set<WebSocket>
-  const videoRooms = new Map();
-  const MAX_VIDEO_PEERS = 2; // strictly 1:1
+  const videoRooms = new Map(); // roomId -> Set<WebSocket>
+  const MAX_VIDEO_PEERS = 2;
 
   function joinVideoRoom(ws, roomId) {
     let room = videoRooms.get(roomId);
@@ -48,7 +48,7 @@ export function setupWebRtcSignaling(httpServer) {
       })
     );
 
-    // Notify everyone that someone joined (for "peer-joined" in PrepVideoCall)
+    // notify everyone someone joined
     for (const peer of room) {
       if (peer.readyState === WebSocket.OPEN) {
         peer.send(
@@ -121,7 +121,7 @@ export function setupWebRtcSignaling(httpServer) {
         const room = videoRooms.get(roomId);
         if (!room) return;
 
-        // forward signaling data (offer/answer/candidate) to the other peer
+        // forward offer/answer/candidate to the other peer
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
@@ -146,17 +146,9 @@ export function setupWebRtcSignaling(httpServer) {
     });
   });
 
-  logger.info("[WebRTC] signaling server mounted at /ws/prep");
-
   // ─────────────────────────────────────────────
-  // 2) Classroom channel (/ws/classroom) a
-  //    – resource sync, annotations, etc.
+  // 2) Classroom channel (/ws/classroom)
   // ─────────────────────────────────────────────
-  const wssClassroom = new WebSocketServer({
-    server: httpServer,
-    path: "/ws/classroom",
-  });
-
   const classroomRooms = new Map(); // roomId -> Set<WebSocket>
 
   function joinClassroomRoom(ws, roomId) {
@@ -215,7 +207,7 @@ export function setupWebRtcSignaling(httpServer) {
         const room = classroomRooms.get(roomId);
         if (!room) return;
 
-        // forward classroom events to all other peers in the room
+        // forward classroom events to all other peers
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
@@ -240,5 +232,32 @@ export function setupWebRtcSignaling(httpServer) {
     });
   });
 
-  logger.info("[Classroom] signaling server mounted at /ws/classroom");
+  // ─────────────────────────────────────────────
+  // 3) Manual HTTP upgrade routing
+  // ─────────────────────────────────────────────
+  httpServer.on("upgrade", (request, socket, head) => {
+    let pathname = "/";
+    try {
+      const url = new URL(request.url || "", "http://localhost");
+      pathname = url.pathname || "/";
+    } catch {
+      // ignore and close
+    }
+
+    if (pathname === "/ws/prep") {
+      wssPrep.handleUpgrade(request, socket, head, (ws) => {
+        wssPrep.emit("connection", ws, request);
+      });
+    } else if (pathname === "/ws/classroom") {
+      wssClassroom.handleUpgrade(request, socket, head, (ws) => {
+        wssClassroom.emit("connection", ws, request);
+      });
+    } else {
+      // Not one of our WS paths
+      socket.destroy();
+    }
+  });
+
+  logger.info("[WebRTC] signaling server ready at /ws/prep");
+  logger.info("[Classroom] signaling server ready at /ws/classroom");
 }
