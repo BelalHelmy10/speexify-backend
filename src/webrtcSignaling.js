@@ -4,14 +4,9 @@ import { logger } from "./lib/logger.js";
 
 /**
  * Attach a WebSocket server to the existing HTTP server.
- *
  * Room model:
- * - roomId = sessionId (string)
- * - We now allow up to 4 sockets per room:
- *   - teacher video + teacher classroom channel
- *   - learner video + learner classroom channel
- *
- * Video is still logically 1:1 (one teacher, one learner).
+ * - roomId = resourceId (string)
+ * - max 2 peers per room
  */
 export function setupWebRtcSignaling(httpServer) {
   const wss = new WebSocketServer({
@@ -22,9 +17,6 @@ export function setupWebRtcSignaling(httpServer) {
   // roomId -> Set<WebSocket>
   const rooms = new Map();
 
-  // Allow 4 sockets per room: 2 clients x 2 connections (video + classroom)
-  const MAX_SOCKETS_PER_ROOM = 4;
-
   function joinRoom(ws, roomId) {
     let room = rooms.get(roomId);
     if (!room) {
@@ -32,7 +24,7 @@ export function setupWebRtcSignaling(httpServer) {
       rooms.set(roomId, room);
     }
 
-    if (room.size >= MAX_SOCKETS_PER_ROOM) {
+    if (room.size >= 2) {
       ws.send(JSON.stringify({ type: "room-full" }));
       ws.close();
       return;
@@ -52,9 +44,9 @@ export function setupWebRtcSignaling(httpServer) {
       })
     );
 
-    // Notify everyone that someone joined
+    // Notify everyone that someone joined:
     for (const peer of room) {
-      if (peer.readyState === WebSocket.OPEN) {
+      if (peer.readyState === peer.OPEN) {
         peer.send(
           JSON.stringify({
             type: "peer-joined",
@@ -73,16 +65,14 @@ export function setupWebRtcSignaling(httpServer) {
 
     room.delete(ws);
 
-    // notify remaining peers
+    // notify remaining peer
     for (const peer of room) {
-      if (peer.readyState === WebSocket.OPEN) {
-        peer.send(
-          JSON.stringify({
-            type: "peer-left",
-            roomId,
-          })
-        );
-      }
+      peer.send(
+        JSON.stringify({
+          type: "peer-left",
+          roomId,
+        })
+      );
     }
 
     if (room.size === 0) {
@@ -125,7 +115,7 @@ export function setupWebRtcSignaling(httpServer) {
         const room = rooms.get(roomId);
         if (!room) return;
 
-        // forward signaling data (offer/answer/candidate/classroom-event) to other peers
+        // forward signaling data to the other peer
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
             peer.send(
