@@ -1,4 +1,4 @@
-// api/index.js
+// src/app.js
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core: Express app, CORS, sessions, dotenv, axios, mail
@@ -10,22 +10,19 @@ import "dotenv/config";
 import axios from "axios";
 import { z } from "zod";
 import helmet from "helmet";
+import cors from "cors";
 
 // ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../src/lib/prisma.js";
 import crypto from "node:crypto";
 import {
-  isProd,
   PAYMOB_API_KEY,
   PAYMOB_INTEGRATION_ID,
   PAYMOB_IFRAME_ID,
   PAYMOB_HMAC_SECRET,
   ALLOWED_ORIGINS,
-  SESSION_SECRET,
-  COOKIE_DOMAIN,
 } from "./config/env.js";
-import { corsMiddleware } from "./middleware/cors.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import authRoutes from "./routes/auth.js";
 import paymentsRoutes from "./routes/payments.js";
@@ -52,7 +49,6 @@ const app = express();
 // Initialize Sentry BEFORE other middlewares
 initSentry(app);
 
-const prisma = new PrismaClient();
 axios.defaults.withCredentials = true;
 
 // Base URL for Paymob APIs
@@ -76,8 +72,39 @@ if (
 app.use(express.json());
 app.set("trust proxy", 1);
 app.use(helmet());
-app.use(corsMiddleware);
-app.options(/.*/, corsMiddleware);
+
+// CORS configured from ALLOWED_ORIGINS
+const allowedOrigins = ALLOWED_ORIGINS;
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        // e.g. curl, Postman, server-to-server
+        return callback(null, true);
+      }
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true, // allow cookies / auth headers
+  })
+);
+
+// Preflight handling (optional but nice)
+app.options(
+  "*",
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
+
 app.use(sessionMiddleware);
 
 // CSRF protection (middleware decides which paths to skip)

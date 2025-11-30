@@ -1,9 +1,8 @@
 // api/routes/packages.js
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 
-const prisma = new PrismaClient();
 const router = Router();
 
 /* Shared user shape for auth checks (matches app.js) */

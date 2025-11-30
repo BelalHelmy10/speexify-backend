@@ -2,11 +2,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../src/lib/prisma.js";
 import bcrypt from "bcryptjs";
 import app from "../src/app.js";
-
-const prisma = new PrismaClient();
 
 test("login and /api/auth/me flow works", async (t) => {
   const email = `testuser+${Date.now()}@example.com`;

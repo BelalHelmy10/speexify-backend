@@ -1,15 +1,17 @@
 // src/routes/auth.js
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { OAuth2Client } from "google-auth-library";
 import crypto from "node:crypto";
-import { isProd, COOKIE_DOMAIN } from "../config/env.js";
+import {
+  SESSION_COOKIE_NAME,
+  sessionCookieOptions,
+} from "../config/session.js";
 import { sendEmail } from "../services/emailService.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
 
-const prisma = new PrismaClient();
 const router = Router();
 
 // ---------------------------------------------------------------------------
@@ -42,9 +44,6 @@ const GOOGLE_CLIENT_ID =
   "";
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
-
-// ---- Cookies / session helpers ----
-const cookieDomain = COOKIE_DOMAIN || undefined;
 
 // ---- Public user fields (for /me) ----
 const publicUserSelect = {
@@ -225,12 +224,9 @@ router.post("/google", async (req, res) => {
 
 router.post("/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("speexify.sid", {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? "none" : "lax",
-      domain: cookieDomain,
-      path: "/",
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      ...sessionCookieOptions,
+      maxAge: undefined, // clear immediately
     });
     res.json({ ok: true });
   });

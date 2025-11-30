@@ -1,11 +1,10 @@
 // src/routes/onboarding-assessment.js
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
 
-const prisma = new PrismaClient();
 const router = Router();
 
 /* -------------------------------------------------------------------------- */

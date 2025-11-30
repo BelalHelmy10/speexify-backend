@@ -1,8 +1,6 @@
 // src/services/sessionsService.js
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
-
-const prisma = new PrismaClient();
 
 // Re-used in many places to check time overlaps
 export function overlapsFilter(startAt, endAt) {

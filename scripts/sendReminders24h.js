@@ -1,9 +1,7 @@
 // api/scripts/sendReminders24h.js
 import "dotenv/config";
 import nodemailer from "nodemailer";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { prisma } from "../src/lib/prisma";
 
 // Use your existing SMTP envs
 const transporter = nodemailer.createTransport({

@@ -1,6 +1,10 @@
 // src/middleware/session.js
 import session from "express-session";
-import { isProd, SESSION_SECRET, COOKIE_DOMAIN } from "../config/env.js";
+import { SESSION_SECRET } from "../config/env.js";
+import {
+  SESSION_COOKIE_NAME,
+  sessionCookieOptions,
+} from "../config/session.js";
 
 if (!SESSION_SECRET) {
   console.warn(
@@ -8,20 +12,14 @@ if (!SESSION_SECRET) {
   );
 }
 
-const cookieDomain = COOKIE_DOMAIN || undefined;
-console.log("Session cookie domain:", cookieDomain ?? "(host-only)");
-
 export const sessionMiddleware = session({
-  name: "speexify.sid",
+  name: SESSION_COOKIE_NAME,
   secret: SESSION_SECRET || "dev-secret",
   resave: false,
   saveUninitialized: false,
   cookie: {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
-    domain: cookieDomain,
-    path: "/",
-    maxAge: 1000 * 60 * 60 * 24, // 1 day
+    ...sessionCookieOptions,
+    // (optional) If you want server-controlled expiration:
+    // maxAge: 24 * 60 * 60 * 1000,
   },
 });

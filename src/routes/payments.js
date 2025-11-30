@@ -9,7 +9,7 @@
 import { Router } from "express";
 import axios from "axios";
 import crypto from "node:crypto";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import {
   PAYMOB_API_KEY,
   PAYMOB_IFRAME_ID,
@@ -19,7 +19,6 @@ import {
 import { logger } from "../lib/logger.js";
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Base URL for Paymob APIs
 const PAYMOB_BASE = "https://accept.paymob.com/api";
@@ -102,10 +101,13 @@ router.post("/create-intent", async (req, res) => {
             return m ? Number(m[1]) : null;
           })();
 
-    if (!amountCents || !orderId) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "amountCents & orderId are required" });
+    const amount = Number(amountCents);
+
+    if (!orderId || !amount || Number.isNaN(amount) || amount <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Valid amountCents & orderId are required",
+      });
     }
 
     const token = await paymobAuthToken();
@@ -115,7 +117,7 @@ router.post("/create-intent", async (req, res) => {
       {
         auth_token: token,
         delivery_needed: false,
-        amount_cents: Number(amountCents),
+        amount_cents: amount,
         currency,
         merchant_order_id: String(orderId),
         items: [],
@@ -126,7 +128,7 @@ router.post("/create-intent", async (req, res) => {
       `${PAYMOB_BASE}/acceptance/payment_keys`,
       {
         auth_token: token,
-        amount_cents: Number(amountCents),
+        amount_cents: amount,
         currency,
         order_id: order.id,
         billing_data: {
@@ -186,57 +188,81 @@ router.post("/webhook/paymob", async (req, res) => {
     const valid = verifyPaymobHmac(payload, hmac);
     if (!valid) return res.sendStatus(400);
 
-    const success = payload?.success === true;
+    const success = String(payload?.success).toLowerCase() === "true";
     const merchantOrderId = payload?.order?.merchant_order_id;
     const paymobOrderId = payload?.order?.id;
 
-    await prisma.order.update({
+    if (!merchantOrderId) {
+      logger.warn({ payload }, "Webhook missing merchant_order_id");
+      return res.sendStatus(200);
+    }
+
+    // Look up order
+    const existingOrder = await prisma.order.findUnique({
+      where: { id: String(merchantOrderId) },
+      select: {
+        id: true,
+        status: true,
+        userId: true,
+        packageId: true,
+      },
+    });
+
+    if (!existingOrder) {
+      logger.warn({ merchantOrderId }, "Webhook for unknown order");
+      // No order to update — don't keep retrying on Paymob side
+      return res.sendStatus(200);
+    }
+
+    // If already paid and we get another success webhook, do nothing (idempotent)
+    if (existingOrder.status === "paid" && success) {
+      logger.info({ merchantOrderId }, "Duplicate success webhook ignored");
+      return res.sendStatus(200);
+    }
+
+    // Update order status
+    const updatedOrder = await prisma.order.update({
       where: { id: String(merchantOrderId) },
       data: {
         status: success ? "paid" : "failed",
         pspOrderId: paymobOrderId,
       },
+      select: {
+        id: true,
+        status: true,
+        userId: true,
+        packageId: true,
+      },
     });
 
-    if (success) {
-      const ord = await prisma.order.findUnique({
-        where: { id: String(merchantOrderId) },
+    if (success && updatedOrder.userId && updatedOrder.packageId) {
+      const pkg = await prisma.package.findUnique({
+        where: { id: Number(updatedOrder.packageId) },
         select: {
           id: true,
-          userId: true,
-          packageId: true,
+          title: true,
+          sessionsPerPack: true,
+          durationMin: true,
         },
       });
 
-      if (ord?.userId && ord?.packageId) {
-        const pkg = await prisma.package.findUnique({
-          where: { id: Number(ord.packageId) },
-          select: {
-            id: true,
-            title: true,
-            sessionsPerPack: true,
-            durationMin: true,
-          },
-        });
+      if (pkg) {
+        const sessionsTotal = Number(pkg.sessionsPerPack || 0);
+        if (sessionsTotal > 0) {
+          const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
 
-        if (pkg) {
-          const sessionsTotal = Number(pkg.sessionsPerPack || 0);
-          if (sessionsTotal > 0) {
-            const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-
-            await prisma.userPackage.create({
-              data: {
-                userId: ord.userId,
-                packageId: pkg.id,
-                title: pkg.title,
-                minutesPerSession: pkg.durationMin || null,
-                sessionsTotal,
-                sessionsUsed: 0,
-                expiresAt,
-                status: "active",
-              },
-            });
-          }
+          await prisma.userPackage.create({
+            data: {
+              userId: updatedOrder.userId,
+              packageId: pkg.id,
+              title: pkg.title,
+              minutesPerSession: pkg.durationMin || null,
+              sessionsTotal,
+              sessionsUsed: 0,
+              expiresAt,
+              status: "active",
+            },
+          });
         }
       }
     }

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import {
   overlapsFilter,
@@ -14,7 +14,6 @@ import { csrfMiddleware } from "../middleware/csrf.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Simple audit stub to avoid ReferenceError and keep logs
 async function audit(userId, action, entity, entityId, meta = {}) {
