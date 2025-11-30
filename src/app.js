@@ -92,9 +92,9 @@ app.use(
   })
 );
 
-// Preflight handling (optional but nice)
+// Preflight handling
 app.options(
-  "*",
+  "/*", // ⬅️ was "*" before – this fixes the PathError
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
