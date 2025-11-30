@@ -28,9 +28,28 @@ export function setupWebRtcSignaling(httpServer) {
       videoRooms.set(roomId, room);
     }
 
+    // 🔹 If this socket was already in another room, leave it first
+    if (ws.videoRoomId && ws.videoRoomId !== roomId) {
+      leaveVideoRoom(ws);
+    }
+
+    // 🔹 Remove any dead sockets that never got cleaned up
+    for (const peer of Array.from(room)) {
+      if (peer.readyState !== WebSocket.OPEN) {
+        room.delete(peer);
+      }
+    }
+
+    // If this exact socket is already in the room, nothing to do
+    if (room.has(ws)) {
+      return;
+    }
+
+    // 🔹 Enforce max peers AFTER pruning dead connections
     if (room.size >= MAX_VIDEO_PEERS) {
       ws.send(JSON.stringify({ type: "room-full" }));
-      ws.close();
+      // NOTE: do NOT close the socket here – let the client decide.
+      // ws.close();
       return;
     }
 
@@ -48,36 +67,52 @@ export function setupWebRtcSignaling(httpServer) {
       })
     );
 
-    // notify everyone someone joined
+    // notify everyone someone joined (including this peer, as before)
     for (const peer of room) {
       if (peer.readyState === WebSocket.OPEN) {
-        peer.send(
-          JSON.stringify({
-            type: "peer-joined",
-            roomId,
-          })
-        );
+        try {
+          peer.send(
+            JSON.stringify({
+              type: "peer-joined",
+              roomId,
+            })
+          );
+        } catch (err) {
+          logger.warn({ err }, "[WebRTC] failed to send peer-joined");
+        }
       }
     }
+
+    logger.info({ roomId, size: room.size }, "[WebRTC] join /ws/prep room");
   }
 
   function leaveVideoRoom(ws) {
     const roomId = ws.videoRoomId;
     if (!roomId) return;
+
     const room = videoRooms.get(roomId);
-    if (!room) return;
+    if (!room) {
+      ws.videoRoomId = null;
+      return;
+    }
 
-    room.delete(ws);
+    if (room.has(ws)) {
+      room.delete(ws);
+    }
 
-    // notify remaining peer
+    // notify remaining peer(s)
     for (const peer of room) {
       if (peer.readyState === WebSocket.OPEN) {
-        peer.send(
-          JSON.stringify({
-            type: "peer-left",
-            roomId,
-          })
-        );
+        try {
+          peer.send(
+            JSON.stringify({
+              type: "peer-left",
+              roomId,
+            })
+          );
+        } catch (err) {
+          logger.warn({ err }, "[WebRTC] failed to send peer-left");
+        }
       }
     }
 
@@ -86,6 +121,8 @@ export function setupWebRtcSignaling(httpServer) {
     }
 
     ws.videoRoomId = null;
+
+    logger.info({ roomId, size: room.size }, "[WebRTC] leave /ws/prep room");
   }
 
   wssPrep.on("connection", (ws) => {
@@ -124,13 +161,20 @@ export function setupWebRtcSignaling(httpServer) {
         // forward offer/answer/candidate to the other peer
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
-            peer.send(
-              JSON.stringify({
-                type: "signal",
-                signalType: msg.signalType,
-                data: msg.data,
-              })
-            );
+            try {
+              peer.send(
+                JSON.stringify({
+                  type: "signal",
+                  signalType: msg.signalType,
+                  data: msg.data,
+                })
+              );
+            } catch (err) {
+              logger.warn(
+                { err },
+                "[WebRTC] failed to forward signal (/ws/prep)"
+              );
+            }
           }
         }
       }
@@ -165,7 +209,10 @@ export function setupWebRtcSignaling(httpServer) {
     const roomId = ws.classroomRoomId;
     if (!roomId) return;
     const room = classroomRooms.get(roomId);
-    if (!room) return;
+    if (!room) {
+      ws.classroomRoomId = null;
+      return;
+    }
 
     room.delete(ws);
     if (room.size === 0) {
@@ -210,13 +257,20 @@ export function setupWebRtcSignaling(httpServer) {
         // forward classroom events to all other peers
         for (const peer of room) {
           if (peer !== ws && peer.readyState === WebSocket.OPEN) {
-            peer.send(
-              JSON.stringify({
-                type: "signal",
-                signalType: msg.signalType,
-                data: msg.data,
-              })
-            );
+            try {
+              peer.send(
+                JSON.stringify({
+                  type: "signal",
+                  signalType: msg.signalType,
+                  data: msg.data,
+                })
+              );
+            } catch (err) {
+              logger.warn(
+                { err },
+                "[Classroom] failed to forward signal (/ws/classroom)"
+              );
+            }
           }
         }
       }
