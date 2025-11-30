@@ -74,6 +74,7 @@ app.set("trust proxy", 1);
 app.use(helmet());
 
 // CORS configured from ALLOWED_ORIGINS
+// CORS configured from ALLOWED_ORIGINS
 const allowedOrigins = ALLOWED_ORIGINS;
 
 app.use(
@@ -89,19 +90,6 @@ app.use(
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true, // allow cookies / auth headers
-  })
-);
-
-// Preflight handling
-app.options(
-  "/*", // ⬅️ was "*" before – this fixes the PathError
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
   })
 );
 
