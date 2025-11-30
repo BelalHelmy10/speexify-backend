@@ -1,14 +1,14 @@
 // src/config/session.js
-import { env } from "./env.js";
+import { isProd, COOKIE_DOMAIN } from "./env.js";
 
 export const SESSION_COOKIE_NAME = "speexify.sid";
 
 export const sessionCookieOptions = {
   httpOnly: true,
-  secure: env.isProd, // only secure in prod
-  sameSite: "lax", // "strict" if your flow allows it
-  domain: env.COOKIE_DOMAIN || undefined,
+  secure: isProd, // only secure in production
+  sameSite: "lax", // tighten to "strict" if your flow allows
+  domain: COOKIE_DOMAIN || undefined,
   path: "/",
-  // Set maxAge if you want fixed session lifetime, e.g. 7 days:
-  // maxAge: 7 * 24 * 60 * 60 * 1000,
+  // If you want a fixed session lifetime, uncomment:
+  // maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
