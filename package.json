@@ -7,6 +7,7 @@
     "build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
     "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
     "prisma:migrate": "node ./node_modules/prisma/build/index.js migrate deploy",
+    "prisma:studio": "prisma studio",
     "start": "node index.js",
     "test": "NODE_ENV=test node --test",
     "postinstall": "node ./node_modules/prisma/build/index.js generate",
