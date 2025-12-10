@@ -336,30 +336,34 @@ router.post("/password/reset/complete", async (req, res) => {
     const code = String(req.body?.code || "").trim();
     const newPassword = String(req.body?.newPassword || "");
 
-    if (!/^\S+@\S+\.\S+$/.test(email))
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
-
-    if (!/^\d{6}$/.test(code))
-      return res.status(400).json({ error: "A 6-digit code is required" });
-
-    if (newPassword.length < 8) {
-      return res
-        .status(400)
-        .json({ error: "New password must be at least 8 characters" });
     }
-    if (!/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      return res.status(400).json({
-        error: "New password must contain at least one letter and one number",
-      });
+
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: "A 6-digit code is required" });
+    }
+
+    // Reuse shared password validation
+    const pwError = validatePasswordStrength(newPassword, "New password");
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
     }
 
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(400).json({ error: "Invalid code" });
+    if (!user) {
+      // Don't leak whether the email exists in a detailed way
+      return res.status(400).json({ error: "Invalid code" });
+    }
 
     const pr = await prisma.passwordResetCode.findUnique({ where: { email } });
-    if (!pr) return res.status(400).json({ error: "Invalid or expired code" });
+    if (!pr) {
+      return res.status(400).json({ error: "Invalid or expired code" });
+    }
 
-    if (new Date() > pr.expiresAt) {
+    // Treat missing expiresAt as invalid/expired for safety
+    const now = new Date();
+    if (!pr.expiresAt || now >= pr.expiresAt) {
       await prisma.passwordResetCode.delete({ where: { email } });
       return res
         .status(400)
@@ -390,6 +394,7 @@ router.post("/password/reset/complete", async (req, res) => {
 
     await prisma.passwordResetCode.delete({ where: { email } });
 
+    // Log the user in immediately
     req.session.asUserId = null;
     req.session.user = {
       id: user.id,

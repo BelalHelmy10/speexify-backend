@@ -26,7 +26,8 @@ const CSRF_EXCLUDE_PREFIXES = [
   "/api/auth/google/callback",
 
   // ---- WEBHOOKS ----
-  "/payments/webhook",
+  "/api/payments/webhook", // ✅ real prefix
+  "/payments/webhook", // optional, keep for backward-compat
 ];
 
 // ------------------------------------------------------------
@@ -39,6 +40,10 @@ export function csrfMiddleware(req, res, next) {
   }
 
   const url = req.originalUrl || req.url || "";
+
+  if (url.startsWith("/api/payments/webhook")) {
+    return next();
+  }
 
   // CSRF Token endpoint MUST generate a valid token
   if (url.startsWith("/api/csrf-token")) {
