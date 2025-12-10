@@ -2,9 +2,9 @@
 /* ========================================================================== */
 /*                             PAYMENTS: PAYMOB                               */
 /*   Step 1: hosted checkout (iframe) flow                                    */
-/*   Routes:                                                                   */
-/*     POST /api/payments/create-intent  -> returns iframeUrl                  */
-/*     POST /api/payments/webhook/paymob -> Paymob webhook (verify HMAC)       */
+/*   Routes:                                                                  */
+/*     POST /api/payments/create-intent  -> returns iframeUrl                 */
+/*     POST /api/payments/webhook/paymob -> Paymob webhook (verify HMAC)      */
 /* ========================================================================== */
 import { Router } from "express";
 import axios from "axios";
@@ -108,6 +108,28 @@ router.post("/create-intent", async (req, res) => {
         ok: false,
         message: "Valid amountCents & orderId are required",
       });
+    }
+
+    // 🔒 Prevent ANY new purchase if the user already has an active package
+    if (buyerId) {
+      const now = new Date();
+
+      const existingActive = await prisma.userPackage.findFirst({
+        where: {
+          userId: buyerId,
+          status: "active",
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+
+      if (existingActive) {
+        return res.status(400).json({
+          ok: false,
+          code: "ALREADY_SUBSCRIBED",
+          message:
+            "You already have an active package. Please use your remaining sessions or contact support to change your plan.",
+        });
+      }
     }
 
     const token = await paymobAuthToken();
