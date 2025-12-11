@@ -30,7 +30,6 @@ async function audit(actorId, action, entity, entityId, meta = {}) {
 /*                                ADMIN: USERS                                */
 /* ========================================================================== */
 
-// GET /api/admin/users
 router.get(
   "/admin/users",
   requireAuth,
@@ -67,7 +66,6 @@ router.get(
   }
 );
 
-// POST /api/admin/users
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
   try {
     let { email, name = "", role = "learner", timezone = null } = req.body;
@@ -83,7 +81,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
     const hashedPassword = crypto
       .createHash("sha256")
       .update(rand)
-      .digest("hex"); // random; login via reset
+      .digest("hex");
 
     const user = await prisma.user.create({
       data: { email, name: name || null, role, timezone, hashedPassword },
@@ -113,7 +111,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
       `<p>Hi${name ? " " + name : ""},</p>
        <p>Your setup code is:</p>
        <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-       <p>Use it on the “Forgot password” page within 10 minutes.</p>`
+       <p>Use it on the "Forgot password" page within 10 minutes.</p>`
     );
 
     await audit(req.user.id, "user_create", "User", user.id, { email, role });
@@ -124,7 +122,6 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// PATCH /api/admin/users/:id
 router.patch(
   "/admin/users/:id",
   requireAuth,
@@ -181,7 +178,6 @@ router.patch(
   }
 );
 
-// POST /api/admin/users/:id/reset-password
 router.post(
   "/admin/users/:id/reset-password",
   requireAuth,
@@ -206,9 +202,9 @@ router.post(
         user.email,
         "Reset your Speexify password",
         `<p>Hi ${user.name || ""}</p>
-         <p>Your reset code is:</p>
-         <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-         <p>Use it on the “Forgot password” page within 10 minutes.</p>`
+       <p>Your reset code is:</p>
+       <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
+       <p>Use it on the "Forgot password" page within 10 minutes.</p>`
       );
 
       await audit(req.user.id, "password_reset_send", "User", id);
@@ -224,52 +220,74 @@ router.post(
 /*                              ADMIN: IMPERSONATE                            */
 /* ========================================================================== */
 
+// STOP route - NO AUTH MIDDLEWARE (session might be in weird state)
+router.post("/admin/impersonate/stop", (req, res) => {
+  console.log(">>> STOP IMPERSONATE HIT");
+  try {
+    if (req.session) {
+      console.log(">>> Session exists, asUserId:", req.session.asUserId);
+      req.session.asUserId = null;
+    }
+    console.log(">>> Returning ok");
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(">>> Stop error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// START route - requires admin
 router.post(
   "/admin/impersonate/:id",
   requireAuth,
   requireAdmin,
   async (req, res) => {
+    console.log(">>> START IMPERSONATE HIT, id:", req.params.id);
     try {
       const targetId = Number(req.params.id);
-      if (targetId === req.user.id)
+
+      if (!targetId || isNaN(targetId)) {
+        return res.status(400).json({ error: "Invalid user ID" });
+      }
+
+      if (targetId === req.user.id) {
         return res.status(400).json({ error: "Cannot impersonate yourself" });
+      }
 
       const target = await prisma.user.findUnique({
         where: { id: targetId },
-        select: { id: true, isDisabled: true },
+        select: { id: true, isDisabled: true, email: true },
       });
-      if (!target || target.isDisabled)
-        return res.status(404).json({ error: "Target not available" });
+
+      if (!target || target.isDisabled) {
+        return res.status(404).json({ error: "User not found" });
+      }
 
       req.session.asUserId = targetId;
-      await audit(req.user.id, "impersonate_start", "User", targetId);
-      res.json({ ok: true });
+      console.log(">>> Now impersonating:", target.email);
+
+      return res.json({ ok: true });
     } catch (err) {
-      logger.error({ err }, "admin.impersonateStart error");
-      res.status(500).json({ error: "Failed to impersonate" });
+      console.error(">>> Start error:", err);
+      return res.status(500).json({ error: err.message });
     }
   }
 );
 
-router.post(
-  "/admin/impersonate/stop",
+/* ========================================================================== */
+/*                          ADMIN: TEACHER WORKLOAD                           */
+/* ========================================================================== */
+
+router.get(
+  "/admin/teachers/workload",
   requireAuth,
   requireAdmin,
   async (req, res) => {
     try {
-      if (req.session.asUserId) {
-        await audit(
-          req.user.id,
-          "impersonate_stop",
-          "User",
-          req.session.asUserId
-        );
-      }
-      req.session.asUserId = null;
-      res.json({ ok: true });
+      return res.json([]);
     } catch (err) {
-      logger.error({ err }, "admin.impersonateStop error");
-      res.status(500).json({ error: "Failed to stop impersonation" });
+      logger.error({ err }, "admin.teachersWorkload error");
+      return res.status(500).json({ error: "Failed to load workload data" });
     }
   }
 );

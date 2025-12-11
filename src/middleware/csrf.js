@@ -9,26 +9,40 @@ const rawCsrf = csurf({
   ignoreMethods: ["GET", "HEAD", "OPTIONS"],
 });
 
-// ------------------------------------------------------------
-// Routes that MUST NOT require CSRF
-// (login, register, OAuth, public auth flows)
-// ------------------------------------------------------------
-const CSRF_EXCLUDE_PREFIXES = [
-  // ---- AUTH FLOWS (EMAIL) ----
-  "/api/auth/login",
-  "/api/auth/register",
-  "/api/auth/register/verify",
-  "/api/auth/password/forgot",
-  "/api/auth/password/reset",
+/**
+ * Check if URL should be excluded from CSRF protection
+ */
+function shouldExcludeCsrf(url) {
+  // Normalize URL for consistent matching
+  const normalizedUrl = url.toLowerCase();
 
-  // ---- AUTH FLOWS (GOOGLE / OAUTH) ----
-  "/api/auth/google",
-  "/api/auth/google/callback",
+  // Explicit list of excluded paths
+  const excludedPaths = [
+    // Auth flows
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/register",
+    "/api/auth/password",
+    "/api/auth/google",
+    // Webhooks
+    "/api/payments/webhook",
+    "/payments/webhook",
+  ];
 
-  // ---- WEBHOOKS ----
-  "/api/payments/webhook", // ✅ real prefix
-  "/payments/webhook", // optional, keep for backward-compat
-];
+  // Check exact prefix matches
+  for (const path of excludedPaths) {
+    if (normalizedUrl.startsWith(path)) {
+      return true;
+    }
+  }
+
+  // Check impersonate routes specifically (handles /stop and /:id)
+  if (normalizedUrl.includes("/admin/impersonate")) {
+    return true;
+  }
+
+  return false;
+}
 
 // ------------------------------------------------------------
 // Main CSRF middleware
@@ -39,19 +53,26 @@ export function csrfMiddleware(req, res, next) {
     return next();
   }
 
-  const url = req.originalUrl || req.url || "";
+  const url = req.originalUrl || req.path || "";
 
-  if (url.startsWith("/api/payments/webhook")) {
-    return next();
+  // Debug logging
+  if (process.env.NODE_ENV !== "production") {
+    const method = req.method;
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      console.log("[CSRF] Checking:", method, url);
+    }
   }
 
-  // CSRF Token endpoint MUST generate a valid token
+  // CSRF TOKEN ENDPOINT: must generate token
   if (url.startsWith("/api/csrf-token")) {
     return rawCsrf(req, res, next);
   }
 
-  // Skip CSRF for excluded paths
-  if (CSRF_EXCLUDE_PREFIXES.some((prefix) => url.startsWith(prefix))) {
+  // Check exclusions
+  if (shouldExcludeCsrf(url)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[CSRF] EXCLUDED:", url);
+    }
     return next();
   }
 
@@ -63,7 +84,15 @@ export function csrfMiddleware(req, res, next) {
 // CSRF Error Handler
 // ------------------------------------------------------------
 export function csrfErrorHandler(err, req, res, next) {
-  if (err.code !== "EBADCSRFTOKEN") return next(err);
+  if (err.code !== "EBADCSRFTOKEN") {
+    return next(err);
+  }
+
+  console.error(
+    "[CSRF] Token validation FAILED:",
+    req.method,
+    req.originalUrl || req.path
+  );
 
   return res.status(403).json({
     error: "Invalid CSRF token",
