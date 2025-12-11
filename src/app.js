@@ -45,10 +45,6 @@ import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 import { logger } from "./lib/logger.js";
 
 const app = express();
-app.use((req, res, next) => {
-  console.log("🔵 REQUEST:", req.method, req.originalUrl);
-  next();
-});
 
 // Initialize Sentry BEFORE other middlewares
 initSentry(app);
