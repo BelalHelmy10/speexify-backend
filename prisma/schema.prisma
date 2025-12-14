@@ -123,6 +123,8 @@ model SessionParticipant {
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   status    String   @default("booked")
+  attendedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -130,6 +132,7 @@ model SessionParticipant {
   @@index([userId])
   @@index([sessionId])
 }
+
 
 model SessionFeedback {
   id                String   @id @default(cuid())

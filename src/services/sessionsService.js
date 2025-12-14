@@ -26,8 +26,23 @@ export async function findSessionConflicts({
   };
 
   const clauses = [];
-  if (userId) clauses.push({ ...whereCommon, userId });
-  if (teacherId) clauses.push({ ...whereCommon, teacherId });
+
+  // Learner conflict: legacy userId OR participant membership
+  if (userId) {
+    clauses.push({
+      ...whereCommon,
+      OR: [
+        { userId: Number(userId) },
+        { participants: { some: { userId: Number(userId) } } },
+      ],
+    });
+  }
+
+  // Teacher conflict: teacherId still lives on Session
+  if (teacherId) {
+    clauses.push({ ...whereCommon, teacherId: Number(teacherId) });
+  }
+
   if (!clauses.length) return [];
 
   return prisma.session.findMany({
@@ -40,6 +55,7 @@ export async function findSessionConflicts({
       userId: true,
       teacherId: true,
       status: true,
+      type: true,
     },
     orderBy: { startAt: "asc" },
   });
@@ -118,18 +134,28 @@ const COMPLETION_GRACE_MIN = 2;
 
 export async function finalizeExpiredSessionsForUser(userId) {
   const cutoff = new Date(Date.now() - COMPLETION_GRACE_MIN * 60 * 1000);
+  const uid = Number(userId);
 
   const toFinalize = await prisma.session.findMany({
     where: {
-      userId: Number(userId),
       status: { not: "canceled" },
       NOT: { status: "completed" },
       OR: [
         { endAt: { lt: cutoff } },
         { AND: [{ endAt: null }, { startAt: { lt: cutoff } }] },
       ],
+      AND: [
+        {
+          OR: [{ userId: uid }, { participants: { some: { userId: uid } } }],
+        },
+      ],
     },
-    select: { id: true, userId: true },
+    select: {
+      id: true,
+      userId: true,
+      type: true,
+      participants: { select: { userId: true, status: true } },
+    },
     orderBy: { startAt: "asc" },
   });
 
@@ -139,13 +165,43 @@ export async function finalizeExpiredSessionsForUser(userId) {
         where: { id: s.id },
         data: { status: "completed" },
       });
-      try {
-        await consumeOneCredit(s.userId);
-      } catch (e) {
-        logger.error(
-          { err: e, sessionId: s.id },
-          "[finalize] credit consume failed for session"
-        );
+
+      // Billing A:
+      // ONE_ON_ONE: consume once (legacy userId if present, else participant list)
+      // GROUP: consume per participant seat (status !== canceled)
+      if (s.type === "GROUP") {
+        const seats = (s.participants || [])
+          .filter((p) => p.status !== "canceled")
+          .map((p) => p.userId);
+
+        for (const learnerId of seats) {
+          try {
+            await consumeOneCredit(learnerId);
+          } catch (e) {
+            logger.error(
+              { err: e, sessionId: s.id, userId: learnerId },
+              "[finalize] group credit consume failed"
+            );
+          }
+        }
+      } else {
+        // ONE_ON_ONE
+        const learnerId =
+          s.userId ||
+          (s.participants && s.participants.length
+            ? s.participants[0].userId
+            : null);
+
+        if (learnerId) {
+          try {
+            await consumeOneCredit(learnerId);
+          } catch (e) {
+            logger.error(
+              { err: e, sessionId: s.id, userId: learnerId },
+              "[finalize] credit consume failed"
+            );
+          }
+        }
       }
     } catch (e) {
       logger.error(
@@ -159,10 +215,11 @@ export async function finalizeExpiredSessionsForUser(userId) {
 // Same idea, but for teacher views
 export async function finalizeExpiredSessionsForTeacher(teacherId) {
   const cutoff = new Date(Date.now() - COMPLETION_GRACE_MIN * 60 * 1000);
+  const tid = Number(teacherId);
 
   const toFinalize = await prisma.session.findMany({
     where: {
-      teacherId: Number(teacherId),
+      teacherId: tid,
       status: { not: "canceled" },
       NOT: { status: "completed" },
       OR: [
@@ -170,7 +227,12 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
         { AND: [{ endAt: null }, { startAt: { lt: cutoff } }] },
       ],
     },
-    select: { id: true, userId: true },
+    select: {
+      id: true,
+      userId: true,
+      type: true,
+      participants: { select: { userId: true, status: true } },
+    },
     orderBy: { startAt: "asc" },
   });
 
@@ -180,13 +242,39 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
         where: { id: s.id },
         data: { status: "completed" },
       });
-      try {
-        await consumeOneCredit(s.userId);
-      } catch (e) {
-        logger.error(
-          { err: e, sessionId: s.id },
-          "[finalize-teacher] credit consume failed"
-        );
+
+      if (s.type === "GROUP") {
+        const seats = (s.participants || [])
+          .filter((p) => p.status !== "canceled")
+          .map((p) => p.userId);
+
+        for (const learnerId of seats) {
+          try {
+            await consumeOneCredit(learnerId);
+          } catch (e) {
+            logger.error(
+              { err: e, sessionId: s.id, userId: learnerId },
+              "[finalize-teacher] group credit consume failed"
+            );
+          }
+        }
+      } else {
+        const learnerId =
+          s.userId ||
+          (s.participants && s.participants.length
+            ? s.participants[0].userId
+            : null);
+
+        if (learnerId) {
+          try {
+            await consumeOneCredit(learnerId);
+          } catch (e) {
+            logger.error(
+              { err: e, sessionId: s.id, userId: learnerId },
+              "[finalize-teacher] credit consume failed"
+            );
+          }
+        }
       }
     } catch (e) {
       logger.error(

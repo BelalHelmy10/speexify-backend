@@ -342,13 +342,46 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
         data: { status: "completed" },
       });
       try {
-        if (s.userId) {
-          await consumeOneCredit(s.userId);
+        const full = await prisma.session.findUnique({
+          where: { id: s.id },
+          select: {
+            id: true,
+            type: true,
+            userId: true,
+            participants: { select: { userId: true, status: true } },
+          },
+        });
+
+        if (full?.type === "GROUP") {
+          const seats = (full.participants || [])
+            .filter((p) => p.status !== "canceled")
+            .map((p) => p.userId);
+
+          for (const learnerId of seats) {
+            try {
+              await consumeOneCredit(learnerId);
+            } catch (e) {
+              logger.error(
+                { err: e, userId: learnerId, sessionId: s.id },
+                "consumeOneCredit failed during group complete"
+              );
+            }
+          }
+        } else {
+          const learnerId =
+            full?.userId ||
+            (full?.participants && full.participants.length
+              ? full.participants[0].userId
+              : null);
+
+          if (learnerId) {
+            await consumeOneCredit(learnerId);
+          }
         }
       } catch (e) {
         logger.error(
-          { err: e, userId: s.userId || null, sessionId: s.id },
-          "consumeOneCredit failed during complete"
+          { err: e, sessionId: s.id },
+          "credit consumption failed during complete"
         );
       }
     }
@@ -362,47 +395,156 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
 router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const sessionRow = await prisma.session.findUnique({ where: { id } });
-    if (!sessionRow)
+
+    const sessionRow = await prisma.session.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        startAt: true,
+        userId: true,
+        teacherId: true,
+        participants: { select: { userId: true, status: true } },
+      },
+    });
+
+    if (!sessionRow) {
       return res.status(404).json({ error: "Session not found" });
+    }
 
-    const isOwner = sessionRow.userId === req.user.id;
-    const isTeacher = sessionRow.teacherId === req.user.id;
+    const viewerId = req.viewUserId;
     const isAdmin = req.user.role === "admin";
+    const isTeacher =
+      !!sessionRow.teacherId && sessionRow.teacherId === req.user.id;
 
-    if (!(isOwner || isTeacher || isAdmin)) {
+    const participant = (sessionRow.participants || []).find(
+      (p) => p.userId === viewerId
+    );
+    const isLegacyOwner = sessionRow.userId === viewerId;
+    const isLearner = !!participant || isLegacyOwner;
+
+    if (!(isAdmin || isTeacher || isLearner)) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    // Simple policy: refund if user cancels >= 12h before start
     const startsAt = new Date(sessionRow.startAt);
     const twelveHoursMs = 12 * 60 * 60 * 1000;
-    const eligibleForRefund =
-      isOwner && startsAt.getTime() - Date.now() >= twelveHoursMs;
+    const refundableByLearner =
+      startsAt.getTime() - Date.now() >= twelveHoursMs;
 
+    // ─────────────────────────────────────────────
+    // GROUP: learner cancels ONLY their seat
+    // ─────────────────────────────────────────────
+    if (sessionRow.type === "GROUP" && isLearner && !isAdmin && !isTeacher) {
+      // Mark this learner's participant row as canceled
+      await prisma.sessionParticipant.updateMany({
+        where: {
+          sessionId: sessionRow.id,
+          userId: viewerId,
+        },
+        data: { status: "canceled" },
+      });
+
+      // Refund only this learner if policy allows and session isn't completed
+      if (refundableByLearner && sessionRow.status !== "completed") {
+        try {
+          const r = await refundOneCredit(viewerId);
+          if (!r.ok) {
+            logger.warn(
+              { userId: viewerId, sessionId: sessionRow.id },
+              "[credits] group seat cancel refund not applied (none to refund)"
+            );
+          }
+        } catch (e) {
+          logger.error(
+            { err: e, userId: viewerId, sessionId: sessionRow.id },
+            "[credits] group seat cancel refund failed"
+          );
+        }
+      }
+
+      return res.json({
+        ok: true,
+        scope: "participant",
+        refunded: refundableByLearner && sessionRow.status !== "completed",
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // Otherwise: cancel the whole session (1:1 or group by teacher/admin)
+    // ─────────────────────────────────────────────
     const updated = await prisma.session.update({
-      where: { id },
+      where: { id: sessionRow.id },
       data: { status: "canceled" },
+      select: {
+        id: true,
+        status: true,
+        type: true,
+      },
     });
 
+    // Refund rules:
+    // - Learner cancel: refund only if >=12h
+    // - Teacher/Admin cancel: refund all seats if session not completed AND >=12h
+    const refundableWholeSession =
+      startsAt.getTime() - Date.now() >= twelveHoursMs &&
+      sessionRow.status !== "completed";
+
     try {
-      if (eligibleForRefund) {
-        const r = await refundOneCredit(sessionRow.userId);
-        if (!r.ok) {
-          logger.warn(
-            { userId: sessionRow.userId, sessionId: sessionRow.id },
-            "[credits] cancel refund not applied (none to refund)"
-          );
+      if (refundableWholeSession) {
+        if (sessionRow.type === "GROUP") {
+          const seats = (sessionRow.participants || [])
+            .filter((p) => p.status !== "canceled")
+            .map((p) => p.userId);
+
+          for (const learnerId of seats) {
+            try {
+              const r = await refundOneCredit(learnerId);
+              if (!r.ok) {
+                logger.warn(
+                  { userId: learnerId, sessionId: sessionRow.id },
+                  "[credits] group cancel refund not applied (none to refund)"
+                );
+              }
+            } catch (e) {
+              logger.error(
+                { err: e, userId: learnerId, sessionId: sessionRow.id },
+                "[credits] group cancel refund failed"
+              );
+            }
+          }
+        } else {
+          const learnerId =
+            sessionRow.userId ||
+            (sessionRow.participants && sessionRow.participants.length
+              ? sessionRow.participants[0].userId
+              : null);
+
+          if (learnerId) {
+            const r = await refundOneCredit(learnerId);
+            if (!r.ok) {
+              logger.warn(
+                { userId: learnerId, sessionId: sessionRow.id },
+                "[credits] cancel refund not applied (none to refund)"
+              );
+            }
+          }
         }
       }
     } catch (e) {
       logger.error(
-        { err: e, userId: sessionRow.userId, sessionId: sessionRow.id },
+        { err: e, sessionId: sessionRow.id },
         "[credits] cancel refund failed"
       );
     }
 
-    res.json({ ok: true, session: updated });
+    return res.json({
+      ok: true,
+      scope: "session",
+      refunded: refundableWholeSession,
+      session: updated,
+    });
   } catch (e) {
     logger.error({ err: e }, "Cancel failed");
     res.status(400).json({ error: "Failed to cancel session" });
@@ -800,131 +942,417 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
 router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const learnerId = Number(req.body.learnerId ?? req.body.userId);
-    const teacherId = Number(req.body.tutorId ?? req.body.teacherId);
-
-    const startStr = String(req.body.start ?? req.body.startAt ?? "");
-    const startAt = new Date(startStr);
-
-    const durationMin =
-      req.body.durationMin !== undefined && req.body.durationMin !== null
-        ? Number(req.body.durationMin)
-        : null;
-
-    const endAtStr =
-      req.body.endAt !== undefined && req.body.endAt !== null
-        ? String(req.body.endAt)
-        : null;
-    const endAt = endAtStr ? new Date(endAtStr) : null;
-
-    const title = (req.body.title ?? "").toString().trim() || "Lesson";
-    const meetingUrl = (req.body.meetingUrl ?? "").toString().trim() || null;
-
-    if (!learnerId)
-      return res.status(400).json({ error: "learnerId/userId is required" });
-
-    if (!startStr || Number.isNaN(startAt.getTime()))
-      return res
-        .status(400)
-        .json({ error: "start/startAt must be a valid ISO datetime" });
-
-    if (!durationMin && !endAt)
-      return res.status(400).json({ error: "Provide durationMin OR endAt" });
-
-    const finalEndAt =
-      endAt || new Date(startAt.getTime() + Number(durationMin) * 60 * 1000);
-
-    const [learner, teacher] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: learnerId },
-        select: { id: true, role: true, isDisabled: true },
-      }),
-      prisma.user.findUnique({
-        where: { id: teacherId },
-        select: { id: true, role: true, isDisabled: true },
-      }),
-    ]);
-
-    if (!learner) return res.status(404).json({ error: "Learner not found" });
-    if (!teacher) return res.status(404).json({ error: "Teacher not found" });
-    if (learner.isDisabled)
-      return res.status(400).json({ error: "Learner is disabled" });
-    if (teacher.isDisabled)
-      return res.status(400).json({ error: "Teacher is disabled" });
-
-    if (learner.role !== "learner" && learner.role !== "admin") {
-      return res
-        .status(400)
-        .json({ error: "learnerId must refer to a learner" });
-    }
-    if (teacherId) {
-      if (!teacher) return res.status(404).json({ error: "Teacher not found" });
-      if (teacher.isDisabled)
-        return res.status(400).json({ error: "Teacher is disabled" });
-      if (teacher.role !== "teacher")
-        return res
-          .status(400)
-          .json({ error: "tutorId/teacherId must refer to a teacher" });
-    }
-
-    const conflicts = await findSessionConflicts({
+    const {
+      type = "ONE_ON_ONE",
+      learnerId,
+      learnerIds,
+      teacherId,
+      capacity,
+      title = "Lesson",
       startAt,
-      endAt: finalEndAt,
-      userId: learnerId,
-      teacherId: teacherId || undefined,
-    });
-    if (conflicts.length) {
-      return res.status(409).json({ error: "Time conflict", conflicts });
+      durationMin,
+      endAt,
+      meetingUrl,
+      allowNoCredit = false,
+    } = req.body;
+
+    if (!startAt) {
+      return res.status(400).json({ error: "startAt is required" });
     }
 
-    const allowNoCredit = req.body.allowNoCredit === true;
-    const remainingCredits = await getRemainingCredits(learnerId);
+    const start = new Date(startAt);
+    if (Number.isNaN(start.getTime())) {
+      return res.status(400).json({ error: "Invalid startAt datetime" });
+    }
 
-    if (!allowNoCredit && remainingCredits <= 0) {
-      return res.status(422).json({
-        error: "no_credits",
-        message:
-          "Learner has 0 remaining credits. Add a package or pass allowNoCredit: true to override.",
-        remaining: 0,
+    const finalEndAt = endAt
+      ? new Date(endAt)
+      : new Date(start.getTime() + Number(durationMin || 60) * 60_000);
+
+    if (type === "ONE_ON_ONE") {
+      if (!learnerId) {
+        return res.status(400).json({ error: "learnerId is required" });
+      }
+
+      // conflict check
+      const conflicts = await findSessionConflicts({
+        startAt: start,
+        endAt: finalEndAt,
+        userId: learnerId,
+        teacherId,
+      });
+
+      if (conflicts.length) {
+        return res.status(409).json({ error: "Time conflict", conflicts });
+      }
+
+      // credit check
+      const remaining = await getRemainingCredits(learnerId);
+      if (!allowNoCredit && remaining <= 0) {
+        return res.status(422).json({
+          error: "no_credits",
+          message: "Learner has no remaining credits",
+        });
+      }
+
+      const session = await prisma.session.create({
+        data: {
+          type: "ONE_ON_ONE",
+          userId: learnerId,
+          teacherId,
+          title,
+          startAt: start,
+          endAt: finalEndAt,
+          joinUrl: meetingUrl || null,
+        },
+      });
+
+      await prisma.sessionParticipant.create({
+        data: {
+          sessionId: session.id,
+          userId: learnerId,
+        },
+      });
+
+      return res.status(201).json({ ok: true, session });
+    }
+
+    // ─────────────────────────────────────────────
+    // GROUP SESSION
+    // ─────────────────────────────────────────────
+
+    if (!Array.isArray(learnerIds) || learnerIds.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "learnerIds[] is required for GROUP sessions" });
+    }
+
+    if (capacity && learnerIds.length > capacity) {
+      return res.status(400).json({
+        error: "capacity_exceeded",
+        message: "learnerIds exceed session capacity",
       });
     }
 
-    const created = await prisma.session.create({
+    // conflict + credit checks PER learner
+    for (const uid of learnerIds) {
+      const conflicts = await findSessionConflicts({
+        startAt: start,
+        endAt: finalEndAt,
+        userId: uid,
+        teacherId,
+      });
+
+      if (conflicts.length) {
+        return res.status(409).json({
+          error: "Time conflict",
+          learnerId: uid,
+          conflicts,
+        });
+      }
+
+      const remaining = await getRemainingCredits(uid);
+      if (!allowNoCredit && remaining <= 0) {
+        return res.status(422).json({
+          error: "no_credits",
+          learnerId: uid,
+        });
+      }
+    }
+
+    const session = await prisma.session.create({
       data: {
-        userId: learnerId,
+        type: "GROUP",
+        capacity: capacity || null,
         teacherId,
         title,
-        startAt,
+        startAt: start,
         endAt: finalEndAt,
-        joinUrl: meetingUrl,
-        status: "scheduled",
-      },
-      select: {
-        id: true,
-        title: true,
-        userId: true,
-        teacherId: true,
-        startAt: true,
-        endAt: true,
-        joinUrl: true,
-        notes: true,
-        status: true,
+        joinUrl: meetingUrl || null,
       },
     });
 
-    await audit(req.user.id, "session_create", "Session", created.id, {
-      learnerId,
-      teacherId,
-      startAt,
-      endAt: finalEndAt,
+    await prisma.sessionParticipant.createMany({
+      data: learnerIds.map((uid) => ({
+        sessionId: session.id,
+        userId: uid,
+      })),
+      skipDuplicates: true,
     });
 
-    return res.status(201).json({ ok: true, session: created });
+    return res.status(201).json({ ok: true, session });
   } catch (e) {
     logger.error({ err: e }, "admin.createSession error");
     return res.status(500).json({ error: "Failed to create session" });
   }
 });
+
+// --------------------------------------------------------------------------
+// ADMIN: Add participant(s) to an existing GROUP session
+// POST /api/admin/sessions/:id/participants
+// body: { userId?: number, userIds?: number[], allowNoCredit?: boolean, allowOverCapacity?: boolean }
+// --------------------------------------------------------------------------
+router.post(
+  "/admin/sessions/:id/participants",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const sessionId = Number(req.params.id);
+      if (!sessionId || Number.isNaN(sessionId)) {
+        return res.status(400).json({ error: "Invalid session id" });
+      }
+
+      const {
+        userId,
+        userIds,
+        allowNoCredit = false,
+        allowOverCapacity = false,
+      } = req.body || {};
+
+      const idsRaw = Array.isArray(userIds) ? userIds : userId ? [userId] : [];
+      const ids = idsRaw
+        .map((x) => Number(x))
+        .filter((x) => x && !Number.isNaN(x));
+
+      if (!ids.length) {
+        return res.status(400).json({ error: "Provide userId or userIds[]" });
+      }
+
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          capacity: true,
+          startAt: true,
+          endAt: true,
+          teacherId: true,
+          participants: { select: { userId: true, status: true } },
+        },
+      });
+
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      if (session.type !== "GROUP") {
+        return res.status(400).json({
+          error: "Only GROUP sessions support participants management",
+        });
+      }
+      if (session.status === "canceled") {
+        return res
+          .status(400)
+          .json({ error: "Cannot add participants to a canceled session" });
+      }
+      if (session.status === "completed") {
+        return res
+          .status(400)
+          .json({ error: "Cannot add participants to a completed session" });
+      }
+
+      const existing = new Map(
+        (session.participants || []).map((p) => [p.userId, p.status])
+      );
+
+      // Deduplicate + remove already-active participants
+      const toAdd = ids.filter((uid) => {
+        const st = existing.get(uid);
+        return !st || st === "canceled";
+      });
+
+      if (!toAdd.length) {
+        return res.json({ ok: true, added: 0, alreadyInSession: ids });
+      }
+
+      // Capacity check (count non-canceled)
+      const activeCount = (session.participants || []).filter(
+        (p) => p.status !== "canceled"
+      ).length;
+      const nextCount = activeCount + toAdd.length;
+
+      if (
+        !allowOverCapacity &&
+        session.capacity &&
+        nextCount > session.capacity
+      ) {
+        return res.status(400).json({
+          error: "capacity_exceeded",
+          message: "Adding these learners exceeds session capacity",
+          capacity: session.capacity,
+          activeCount,
+          attemptingToAdd: toAdd.length,
+        });
+      }
+
+      // Validate each learner: exists + enabled + conflicts + credits
+      const startAt = new Date(session.startAt);
+      const endAt = session.endAt ? new Date(session.endAt) : null;
+
+      for (const uid of toAdd) {
+        const u = await prisma.user.findUnique({
+          where: { id: uid },
+          select: { id: true, role: true, isDisabled: true },
+        });
+        if (!u || u.isDisabled) {
+          return res
+            .status(404)
+            .json({ error: "User not found or disabled", userId: uid });
+        }
+        if (u.role !== "learner" && u.role !== "admin") {
+          return res
+            .status(400)
+            .json({ error: "userId must refer to a learner", userId: uid });
+        }
+
+        const conflicts = await findSessionConflicts({
+          startAt,
+          endAt,
+          userId: uid,
+          teacherId: session.teacherId || undefined,
+        });
+        if (conflicts.length) {
+          return res
+            .status(409)
+            .json({ error: "Time conflict", userId: uid, conflicts });
+        }
+
+        const remaining = await getRemainingCredits(uid);
+        if (!allowNoCredit && remaining <= 0) {
+          return res.status(422).json({
+            error: "no_credits",
+            userId: uid,
+            message: "Learner has no remaining credits",
+          });
+        }
+      }
+
+      // Insert/update participant rows
+      // If participant existed but was canceled, revive it. Otherwise create.
+      await prisma.$transaction(async (tx) => {
+        for (const uid of toAdd) {
+          const existedStatus = existing.get(uid);
+          if (existedStatus === "canceled") {
+            await tx.sessionParticipant.updateMany({
+              where: { sessionId, userId: uid },
+              data: { status: "booked" },
+            });
+          } else {
+            await tx.sessionParticipant.create({
+              data: { sessionId, userId: uid, status: "booked" },
+            });
+          }
+        }
+      });
+
+      return res
+        .status(201)
+        .json({ ok: true, added: toAdd.length, userIds: toAdd });
+    } catch (e) {
+      logger.error({ err: e }, "admin.sessions.addParticipants error");
+      return res.status(500).json({ error: "Failed to add participants" });
+    }
+  }
+);
+
+// --------------------------------------------------------------------------
+// ADMIN: Remove a participant from a GROUP session (cancel seat)
+// DELETE /api/admin/sessions/:id/participants/:userId?refund=1
+// - We cancel the participant row (do NOT delete) for audit/history.
+// - Refund rules: only if session not completed AND start is >= 12h away,
+//   and refund=1 is passed (so admin explicitly chooses refund).
+// --------------------------------------------------------------------------
+router.delete(
+  "/admin/sessions/:id/participants/:userId",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const sessionId = Number(req.params.id);
+      const targetUserId = Number(req.params.userId);
+      const refund = String(req.query.refund || "") === "1";
+
+      if (!sessionId || Number.isNaN(sessionId)) {
+        return res.status(400).json({ error: "Invalid session id" });
+      }
+      if (!targetUserId || Number.isNaN(targetUserId)) {
+        return res.status(400).json({ error: "Invalid user id" });
+      }
+
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          startAt: true,
+          participants: { select: { userId: true, status: true } },
+        },
+      });
+
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      if (session.type !== "GROUP") {
+        return res
+          .status(400)
+          .json({
+            error: "Only GROUP sessions support participants management",
+          });
+      }
+
+      const row = (session.participants || []).find(
+        (p) => p.userId === targetUserId
+      );
+      if (!row)
+        return res
+          .status(404)
+          .json({ error: "Participant not found in session" });
+
+      if (row.status === "canceled") {
+        return res.json({
+          ok: true,
+          removed: true,
+          alreadyCanceled: true,
+          refunded: false,
+        });
+      }
+
+      await prisma.sessionParticipant.updateMany({
+        where: { sessionId, userId: targetUserId },
+        data: { status: "canceled" },
+      });
+
+      let refunded = false;
+
+      if (refund && session.status !== "completed") {
+        const startsAt = new Date(session.startAt);
+        const twelveHoursMs = 12 * 60 * 60 * 1000;
+        const refundable = startsAt.getTime() - Date.now() >= twelveHoursMs;
+
+        if (refundable) {
+          try {
+            const r = await refundOneCredit(targetUserId);
+            refunded = !!r.ok;
+            if (!r.ok) {
+              logger.warn(
+                { userId: targetUserId, sessionId },
+                "[credits] admin remove seat refund not applied (none to refund)"
+              );
+            }
+          } catch (e) {
+            logger.error(
+              { err: e, userId: targetUserId, sessionId },
+              "[credits] admin remove seat refund failed"
+            );
+          }
+        }
+      }
+
+      return res.json({ ok: true, removed: true, refunded });
+    } catch (e) {
+      logger.error({ err: e }, "admin.sessions.removeParticipant error");
+      return res.status(500).json({ error: "Failed to remove participant" });
+    }
+  }
+);
 
 router.patch(
   "/admin/sessions/:id",
@@ -999,26 +1427,79 @@ router.patch(
       });
 
       try {
-        if (shouldConsume) {
-          const resUse = await consumeOneCredit(updated.userId);
-          if (!resUse.ok) {
-            logger.warn(
-              { userId: updated.userId, sessionId: updated.id },
-              "[credits] No active credits to consume for user"
-            );
-          }
-        } else if (shouldRefund) {
-          const resRef = await refundOneCredit(updated.userId);
-          if (!resRef.ok) {
-            logger.warn(
-              { userId: updated.userId, sessionId: updated.id },
-              "[credits] Nothing to refund for user"
-            );
+        if (shouldConsume || shouldRefund) {
+          const full = await prisma.session.findUnique({
+            where: { id: updated.id },
+            select: {
+              id: true,
+              type: true,
+              userId: true,
+              participants: { select: { userId: true, status: true } },
+            },
+          });
+
+          if (full?.type === "GROUP") {
+            const seats = (full.participants || [])
+              .filter((p) => p.status !== "canceled")
+              .map((p) => p.userId);
+
+            for (const learnerId of seats) {
+              try {
+                if (shouldConsume) {
+                  const resUse = await consumeOneCredit(learnerId);
+                  if (!resUse.ok) {
+                    logger.warn(
+                      { userId: learnerId, sessionId: updated.id },
+                      "[credits] No active credits to consume for user (group)"
+                    );
+                  }
+                } else if (shouldRefund) {
+                  const resRef = await refundOneCredit(learnerId);
+                  if (!resRef.ok) {
+                    logger.warn(
+                      { userId: learnerId, sessionId: updated.id },
+                      "[credits] Nothing to refund for user (group)"
+                    );
+                  }
+                }
+              } catch (e) {
+                logger.error(
+                  { err: e, userId: learnerId, sessionId: updated.id },
+                  "[credits] group accounting failure"
+                );
+              }
+            }
+          } else {
+            const learnerId =
+              full?.userId ||
+              (full?.participants && full.participants.length
+                ? full.participants[0].userId
+                : null);
+
+            if (learnerId) {
+              if (shouldConsume) {
+                const resUse = await consumeOneCredit(learnerId);
+                if (!resUse.ok) {
+                  logger.warn(
+                    { userId: learnerId, sessionId: updated.id },
+                    "[credits] No active credits to consume for user"
+                  );
+                }
+              } else if (shouldRefund) {
+                const resRef = await refundOneCredit(learnerId);
+                if (!resRef.ok) {
+                  logger.warn(
+                    { userId: learnerId, sessionId: updated.id },
+                    "[credits] Nothing to refund for user"
+                  );
+                }
+              }
+            }
           }
         }
       } catch (e) {
         logger.error(
-          { err: e, userId: updated.userId, sessionId: updated.id },
+          { err: e, sessionId: updated.id },
           "[credits] accounting failure"
         );
       }
