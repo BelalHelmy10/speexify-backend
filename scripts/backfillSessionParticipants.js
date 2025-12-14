@@ -4,10 +4,9 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  // Find sessions that have a legacy userId but no participant row yet
+  // Fetch sessions that have no participants yet
   const sessions = await prisma.session.findMany({
     where: {
-      NOT: { userId: null },
       participants: { none: {} },
     },
     select: {
@@ -16,14 +15,17 @@ async function main() {
     },
   });
 
-  if (!sessions.length) {
+  // Keep only legacy sessions that still have a userId
+  const legacy = sessions.filter((s) => s.userId !== null);
+
+  if (!legacy.length) {
     console.log("No sessions to backfill. ✅");
     return;
   }
 
-  const rows = sessions.map((s) => ({
+  const rows = legacy.map((s) => ({
     sessionId: s.id,
-    userId: s.userId, // guaranteed non-null by the WHERE clause
+    userId: s.userId, // non-null by filter above
     status: "booked",
   }));
 
@@ -33,7 +35,7 @@ async function main() {
   });
 
   console.log(
-    `Backfill done ✅ Inserted ${result.count} participant rows for ${sessions.length} sessions.`
+    `Backfill done ✅ Inserted ${result.count} participant rows for ${legacy.length} sessions.`
   );
 }
 

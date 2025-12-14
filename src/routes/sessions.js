@@ -61,13 +61,27 @@ router.get("/sessions/conflicts", requireAuth, async (req, res) => {
 
 router.get("/sessions", requireAuth, async (req, res) => {
   try {
+    const userId = req.viewUserId;
+
     const sessions = await prisma.session.findMany({
-      where: { userId: req.viewUserId },
+      where: {
+        participants: {
+          some: { userId },
+        },
+      },
       include: {
         teacher: { select: { id: true, name: true, email: true } },
+        participants: {
+          select: {
+            userId: true,
+            status: true,
+            user: { select: { id: true, name: true, email: true } },
+          },
+        },
       },
       orderBy: { startAt: "asc" },
     });
+
     res.json(sessions);
   } catch (err) {
     logger.error({ err }, "GET /sessions failed");
@@ -77,13 +91,26 @@ router.get("/sessions", requireAuth, async (req, res) => {
 
 router.get("/teacher/sessions", requireAuth, async (req, res) => {
   try {
+    const teacherId = req.viewUserId;
+
     const sessions = await prisma.session.findMany({
-      where: { teacherId: req.viewUserId },
+      where: { teacherId },
       include: {
+        // legacy 1:1 learner (may be null for group)
         user: { select: { id: true, email: true, name: true } },
+
+        // group learners
+        participants: {
+          select: {
+            userId: true,
+            status: true,
+            user: { select: { id: true, email: true, name: true } },
+          },
+        },
       },
       orderBy: { startAt: "asc" },
     });
+
     res.json(sessions);
   } catch (e) {
     logger.error({ err: e }, "GET /teacher/sessions failed");
@@ -105,8 +132,11 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
     const session = await prisma.session.findUnique({
       where: { id },
       include: {
-        user: true,
+        user: true, // legacy 1:1 learner (may be null)
         teacher: true,
+        participants: {
+          select: { userId: true, status: true },
+        },
       },
     });
 
@@ -114,8 +144,13 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Permission: learner, teacher or admin
-    const isLearner = session.userId === req.user.id;
+    const viewerId = req.viewUserId;
+    const isParticipant = session.participants.some(
+      (p) => p.userId === viewerId
+    );
+
+    // Permission: learner participant OR teacher OR admin
+    const isLearner = isParticipant || session.userId === viewerId;
     const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
 
@@ -128,7 +163,6 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       !!session.teacherFeedbackComments ||
       !!session.teacherFeedbackFutureSteps;
 
-    // ⭐ NEW: include isLearner / isTeacher / isAdmin flags for the frontend
     const shaped = {
       ...session,
       isLearner,
@@ -308,10 +342,12 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
         data: { status: "completed" },
       });
       try {
-        await consumeOneCredit(s.userId);
+        if (s.userId) {
+          await consumeOneCredit(s.userId);
+        }
       } catch (e) {
         logger.error(
-          { err: e, userId: s.userId, sessionId: s.id },
+          { err: e, userId: s.userId || null, sessionId: s.id },
           "consumeOneCredit failed during complete"
         );
       }
@@ -437,11 +473,23 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
-    // base filter: learner vs teacher
+    // membership base: learner sees sessions they participate in
+    // teacher sees sessions they teach OR sessions they participate in (keeps your old behavior)
     const whereBase =
       role === "teacher"
-        ? { OR: [{ userId }, { teacherId: userId }] }
-        : { userId };
+        ? {
+            OR: [
+              { teacherId: userId },
+              { participants: { some: { userId } } },
+              { userId }, // legacy fallback
+            ],
+          }
+        : {
+            OR: [
+              { participants: { some: { userId } } },
+              { userId }, // legacy fallback
+            ],
+          };
 
     const notCanceled = { status: { not: "canceled" } };
 
@@ -471,7 +519,6 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
     const orderBy = range === "past" ? { startAt: "desc" } : { startAt: "asc" };
 
-    // 1) Fetch raw sessions including the three feedback columns
     const rawSessions = await prisma.session.findMany({
       where,
       orderBy,
@@ -483,13 +530,23 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
+        type: true,
+        capacity: true,
+        teacherId: true,
+        teacher: { select: { id: true, name: true, email: true } },
+        participants: {
+          select: {
+            userId: true,
+            status: true,
+            user: { select: { id: true, name: true, email: true } },
+          },
+        },
         teacherFeedbackMessageToLearner: true,
         teacherFeedbackComments: true,
         teacherFeedbackFutureSteps: true,
       },
     });
 
-    // 2) Shape the feedback columns into a teacherFeedback object
     const sessions = rawSessions.map((s) => {
       const hasFeedback =
         !!s.teacherFeedbackMessageToLearner ||
@@ -511,8 +568,13 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         ...rest
       } = s;
 
+      const participantCount = Array.isArray(rest.participants)
+        ? rest.participants.filter((p) => p.status !== "canceled").length
+        : 0;
+
       return {
         ...rest,
+        participantCount,
         teacherFeedback,
       };
     });
@@ -540,18 +602,23 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
     const userId = req.viewUserId;
     const role = req.user.role || "learner";
 
-    // base filter: learner vs teacher
     const whereBase =
       role === "teacher"
-        ? { OR: [{ userId }, { teacherId: userId }] }
-        : { userId };
+        ? {
+            OR: [
+              { teacherId: userId },
+              { participants: { some: { userId } } },
+              { userId }, // legacy
+            ],
+          }
+        : {
+            OR: [{ participants: { some: { userId } } }, { userId }],
+          };
 
-    // build the full Prisma "where" object here
     const where = {
       AND: [
         whereBase,
         includeCanceled ? {} : { status: { not: "canceled" } },
-        // events that overlap with the [startAt, endAt] window
         { startAt: { lte: endAt } },
         { OR: [{ endAt: { gte: startAt } }, { endAt: null }] },
       ],
@@ -567,12 +634,12 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
-        // use the real relation name from Prisma
+        type: true,
+        capacity: true,
         feedback: { select: { id: true } },
       },
     });
 
-    // shape for the frontend: keep teacherFeedback key
     const shaped = sessions.map((s) => ({
       ...s,
       teacherFeedback: s.feedback,
@@ -595,8 +662,11 @@ router.get("/me/progress", requireAuth, async (req, res) => {
 
     const completedSessions = await prisma.session.findMany({
       where: {
-        userId,
         status: "completed",
+        OR: [
+          { participants: { some: { userId } } },
+          { userId }, // legacy
+        ],
       },
       orderBy: { startAt: "asc" },
       select: {

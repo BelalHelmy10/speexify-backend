@@ -393,10 +393,20 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
     await finalizeExpiredSessionsForUser(req.viewUserId);
 
     const role = req.user.role || "learner";
+    const userId = req.viewUserId;
+
     const whereBase =
       role === "teacher"
-        ? { OR: [{ userId: req.viewUserId }, { teacherId: req.viewUserId }] }
-        : { userId: req.viewUserId };
+        ? {
+            OR: [
+              { teacherId: userId },
+              { participants: { some: { userId } } },
+              { userId }, // legacy fallback
+            ],
+          }
+        : {
+            OR: [{ participants: { some: { userId } } }, { userId }],
+          };
 
     // "Upcoming" should include FUTURE and IN-PROGRESS, exclude canceled
     const inProgressOrFuture = {
