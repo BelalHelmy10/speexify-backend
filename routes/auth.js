@@ -6,19 +6,20 @@
 //   POST /api/auth/register/start    -> send code if email unused
 //   POST /api/auth/register/complete -> verify code and create user
 // ─────────────────────────────────────────────────────────────────────────────
-const express = require("express");
-const crypto = require("crypto");
+
+import express from "express";
+import crypto from "node:crypto";
+import bcrypt from "bcryptjs";
+import { prisma } from "../lib/prisma.js";
+
 const router = express.Router();
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
-const bcrypt = require("bcryptjs");
 
 // (Optional) email sender: uses Nodemailer if SMTP env is set; otherwise logs
 let transporter = null;
 try {
-  const nodemailer = require("nodemailer");
+  const nodemailer = await import("nodemailer");
   if (process.env.SMTP_HOST) {
-    transporter = nodemailer.createTransport({
+    transporter = nodemailer.default.createTransport({
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: false,
@@ -59,12 +60,14 @@ router.post("/register/start", async (req, res) => {
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing)
+    if (existing) {
       return res.status(409).json({ error: "Email is already registered" });
+    }
 
     const existingCode = await prisma.verificationCode.findUnique({
       where: { email },
     });
+
     // simple 60s cooldown using updatedAt
     if (
       existingCode &&
@@ -134,18 +137,22 @@ router.post("/register/complete", async (req, res) => {
     }
 
     const userExists = await prisma.user.findUnique({ where: { email } });
-    if (userExists)
+    if (userExists) {
       return res.status(409).json({ error: "Email is already registered" });
+    }
 
     const v = await prisma.verificationCode.findUnique({ where: { email } });
-    if (!v)
+    if (!v) {
       return res
         .status(400)
         .json({ error: "No verification code found for this email" });
+    }
+
     if (new Date() > v.expiresAt) {
       await prisma.verificationCode.delete({ where: { email } });
       return res.status(400).json({ error: "Verification code has expired" });
     }
+
     if (v.attempts >= 5) {
       await prisma.verificationCode.delete({ where: { email } });
       return res
@@ -165,7 +172,7 @@ router.post("/register/complete", async (req, res) => {
     // Create user (hash password)
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { email, name, password: passwordHash, role: "learner" },
+      data: { email, name, hashedPassword: passwordHash, role: "learner" },
       select: { id: true, email: true, name: true, role: true },
     });
 
@@ -181,4 +188,4 @@ router.post("/register/complete", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

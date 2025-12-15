@@ -292,4 +292,47 @@ router.get(
   }
 );
 
+// After existing routes (e.g., after the workload route)
+router.get(
+  "/admin/users/:id/packages",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const userId = Number(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ error: "Invalid user ID" });
+      }
+
+      // Fetch packages for the user, including related package details
+      const packages = await prisma.userPackage.findMany({
+        where: { userId },
+        include: {
+          package: {
+            select: {
+              title: true,
+              priceUSD: true, // Or priceType if needed
+              sessionsPerPack: true, // For verification
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" }, // Newest first
+      });
+
+      // Enhance with calculated remaining; handle nulls
+      const enhanced = packages.map((p) => ({
+        ...p,
+        remaining: (p.sessionsTotal || 0) - (p.sessionsUsed || 0),
+        packageTitle: p.package?.title || "Custom/Unknown Package",
+        packagePriceUSD: p.package?.priceUSD || null,
+      }));
+
+      res.json(enhanced);
+    } catch (err) {
+      logger.error({ err }, "admin.userPackages error");
+      res.status(500).json({ error: "Failed to load user packages" });
+    }
+  }
+);
+
 export default router;

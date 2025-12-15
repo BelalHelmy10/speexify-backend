@@ -14,7 +14,7 @@ import cors from "cors";
 
 // ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
-import { prisma } from "../src/lib/prisma.js";
+import { prisma } from "./lib/prisma.js";
 import crypto from "node:crypto";
 import {
   PAYMOB_API_KEY,
