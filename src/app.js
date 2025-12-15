@@ -31,11 +31,6 @@ import packagesRoutes from "./routes/packages.js";
 import adminRoutes from "./routes/admin.js";
 import onboardingAssessmentRoutes from "./routes/onboarding-assessment.js";
 import {
-  overlapsFilter,
-  findSessionConflicts,
-  getRemainingCredits,
-  consumeOneCredit,
-  refundOneCredit,
   finalizeExpiredSessionsForUser,
   finalizeExpiredSessionsForTeacher,
 } from "./services/sessionsService.js";
@@ -74,7 +69,6 @@ app.set("trust proxy", 1);
 app.use(helmet());
 
 // CORS configured from ALLOWED_ORIGINS
-// CORS configured from ALLOWED_ORIGINS
 const allowedOrigins = ALLOWED_ORIGINS;
 
 app.use(
@@ -107,7 +101,7 @@ app.get("/api/csrf-token", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api", sessionsRoutes);
-app.use("/api", packagesRoutes);
+app.use("/api", packagesRoutes); // FIX: packages route handles /api/packages
 app.use("/api", adminRoutes);
 app.use("/api", onboardingAssessmentRoutes);
 
@@ -133,48 +127,18 @@ function centsToDollars(cents) {
 /* ========================================================================== */
 
 app.get("/", (_req, res) => res.send("Hello from Speexify API 🚀"));
+app.get("/api/_which-app", (_req, res) => {
+  res.json({ ok: true, from: "src/app.js", ts: Date.now() });
+});
+
 app.get("/api/message", (_req, res) =>
   res.json({ message: "Hello from the backend 👋" })
 );
 
 /* ========================================================================== */
-/*                             PUBLIC: PACKAGES                                */
+/*                             PUBLIC: CONTACT                                */
 /* ========================================================================== */
-
-app.get("/api/packages", async (req, res) => {
-  try {
-    const aud = String(req.query?.audience || "").toUpperCase();
-    const where = { active: true };
-    if (aud === "INDIVIDUAL" || aud === "CORPORATE") where.audience = aud;
-
-    const packages = await prisma.package.findMany({
-      where,
-      orderBy: [{ sortOrder: "asc" }, { priceUSD: "asc" }],
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        priceUSD: true,
-        startingAtUSD: true,
-        priceType: true,
-        audience: true,
-        isPopular: true,
-        active: true,
-        sortOrder: true,
-        sessionsPerPack: true,
-        durationMin: true,
-        image: true,
-        features: true,
-      },
-    });
-
-    const mapped = packages.map((p) => ({ ...p, featuresRaw: p.features }));
-    res.json(mapped);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to fetch packages" });
-  }
-});
+// NOTE: /api/packages is now handled by packagesRoutes (removed duplicate)
 
 app.post("/api/contact", async (req, res) => {
   const { name, email, company, phone, role, topic, budget, message } =
@@ -255,18 +219,6 @@ if (ALLOW_LEGACY_REGISTER) {
 }
 
 /* ========================================================================== */
-/*                          PASSWORD RESET (2-step)                            */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/*                                   LOGIN                                    */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/*                   NEW AUTH: EMAIL VERIFICATION (RECOMMENDED)               */
-/* ========================================================================== */
-
-/* ========================================================================== */
 /*                              PROFILE (Step 2)                               */
 /* ========================================================================== */
 
@@ -316,10 +268,6 @@ app.patch("/api/me", requireAuth, async (req, res) => {
 });
 
 /* ========================================================================== */
-/*                        ADMIN: ONBOARDING + ASSESSMENTS                      */
-/* ========================================================================== */
-
-/* ========================================================================== */
 /*                          TEACHER SUMMARY (next)                            */
 /* ========================================================================== */
 app.get("/api/teacher/summary", requireAuth, async (req, res) => {
@@ -361,8 +309,22 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
         endAt: true,
         joinUrl: true,
         status: true,
+        type: true,
+        capacity: true,
+        participants: {
+          where: { status: { not: "canceled" } },
+          select: { userId: true },
+        },
       },
     });
+
+    // Add participant count to next session
+    const nextTeachShaped = nextTeach
+      ? {
+          ...nextTeach,
+          participantCount: nextTeach.participants?.length || 0,
+        }
+      : null;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -370,7 +332,7 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     });
 
     res.json({
-      nextTeach,
+      nextTeach: nextTeachShaped,
       upcomingTeachCount,
       taughtCount,
       timezone: user?.timezone || null,
@@ -389,7 +351,24 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
   const now = new Date();
 
   try {
-    // Make sure any ended sessions are marked completed and credits consumed
+    logger.info(
+      {
+        role: req.user?.role,
+        userId: req.user?.id,
+        viewUserId: req.viewUserId,
+      },
+      "HIT /api/me/summary"
+    );
+
+    if (req.user?.role === "admin") {
+      logger.info("ADMIN SUMMARY -> returning zeros");
+      return res.json({
+        nextSession: null,
+        upcomingCount: 0,
+        completedCount: 0,
+      });
+    }
+
     await finalizeExpiredSessionsForUser(req.viewUserId);
 
     const role = req.user.role || "learner";
@@ -401,21 +380,20 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
             OR: [
               { teacherId: userId },
               { participants: { some: { userId } } },
-              { userId }, // legacy fallback
+              { userId },
             ],
           }
         : {
             OR: [{ participants: { some: { userId } } }, { userId }],
           };
 
-    // "Upcoming" should include FUTURE and IN-PROGRESS, exclude canceled
     const inProgressOrFuture = {
       OR: [
-        { startAt: { gte: now } }, // future
+        { startAt: { gte: now } },
         {
           AND: [
-            { startAt: { lte: now } }, // started
-            { OR: [{ endAt: { gte: now } }, { endAt: null }] }, // not ended
+            { startAt: { lte: now } },
+            { OR: [{ endAt: { gte: now } }, { endAt: null }] },
           ],
         },
       ],
@@ -433,10 +411,29 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
       where: { ...whereBase, status: "completed" },
     });
 
-    res.json({ nextSession: null, upcomingCount, completedCount });
+    const nextSession = await prisma.session.findFirst({
+      where: {
+        ...whereBase,
+        status: { not: "canceled" },
+        ...inProgressOrFuture,
+      },
+      orderBy: { startAt: "asc" },
+      select: {
+        id: true,
+        title: true,
+        startAt: true,
+        endAt: true,
+        joinUrl: true,
+        status: true,
+        type: true,
+        teacher: { select: { id: true, name: true } },
+      },
+    });
+
+    return res.json({ nextSession, upcomingCount, completedCount });
   } catch (err) {
-    console.error("GET /api/me/summary failed:", err);
-    res.status(500).json({ error: "Failed to load summary" });
+    logger.error({ err }, "GET /api/me/summary failed");
+    return res.status(500).json({ error: "Failed to load summary" });
   }
 });
 
@@ -446,8 +443,13 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 app.get("/api/me/packages", requireAuth, async (req, res) => {
   try {
+    if (req.user.role === "admin") {
+      return res.json([]);
+    }
+
     const rows = await prisma.userPackage.findMany({
       where: { userId: req.viewUserId },
+
       orderBy: [{ status: "asc" }, { createdAt: "desc" }],
       select: {
         id: true,
@@ -497,6 +499,44 @@ app.get("/api/users", requireAuth, async (req, res) => {
     orderBy: { email: "asc" },
   });
   res.json(users);
+});
+
+// Get learners specifically (for admin session creation)
+app.get("/api/learners", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { q = "", active = "1" } = req.query;
+
+    const where = { role: "learner" };
+
+    if (active === "1") {
+      where.isDisabled = false;
+    }
+
+    if (q) {
+      where.OR = [
+        { email: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const learners = await prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        isDisabled: true,
+        timezone: true,
+      },
+      orderBy: [{ name: "asc" }, { email: "asc" }],
+      take: 100,
+    });
+
+    res.json(learners);
+  } catch (e) {
+    console.error("GET /api/learners failed:", e);
+    res.status(500).json({ error: "Failed to load learners" });
+  }
 });
 
 app.get("/api/teachers", requireAuth, async (req, res) => {

@@ -2,7 +2,6 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import {
-  overlapsFilter,
   findSessionConflicts,
   getRemainingCredits,
   consumeOneCredit,
@@ -10,7 +9,6 @@ import {
   finalizeExpiredSessionsForUser,
   finalizeExpiredSessionsForTeacher,
 } from "../services/sessionsService.js";
-import { csrfMiddleware } from "../middleware/csrf.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -24,6 +22,9 @@ async function audit(userId, action, entity, entityId, meta = {}) {
 /*                             SESSIONS (LESSONS)                             */
 /* ========================================================================== */
 
+// --------------------------------------------------------------------------
+// GET /api/sessions/conflicts - Check for scheduling conflicts
+// --------------------------------------------------------------------------
 router.get("/sessions/conflicts", requireAuth, async (req, res) => {
   const startParam = String(req.query.start || "");
   const endParam = req.query.end ? String(req.query.end) : null;
@@ -59,18 +60,25 @@ router.get("/sessions/conflicts", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/sessions - List sessions for current user (learner view)
+// FIX: Include both participants AND legacy userId field
+// --------------------------------------------------------------------------
 router.get("/sessions", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId;
 
     const sessions = await prisma.session.findMany({
       where: {
-        participants: {
-          some: { userId },
-        },
+        // FIX: Check BOTH participant membership AND legacy userId
+        OR: [
+          { participants: { some: { userId } } },
+          { userId }, // Legacy 1:1 sessions
+        ],
       },
       include: {
         teacher: { select: { id: true, name: true, email: true } },
+        user: { select: { id: true, name: true, email: true } }, // Legacy learner
         participants: {
           select: {
             userId: true,
@@ -89,21 +97,34 @@ router.get("/sessions", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/teacher/sessions - List sessions for teacher
+// --------------------------------------------------------------------------
 router.get("/teacher/sessions", requireAuth, async (req, res) => {
   try {
     const teacherId = req.viewUserId;
 
+    // Finalize any expired sessions first
+    try {
+      await finalizeExpiredSessionsForTeacher(teacherId);
+    } catch (e) {
+      logger.error(
+        { err: e, teacherId },
+        "finalizeExpiredSessionsForTeacher failed"
+      );
+    }
+
     const sessions = await prisma.session.findMany({
       where: { teacherId },
       include: {
-        // legacy 1:1 learner (may be null for group)
+        // Legacy 1:1 learner (may be null for group)
         user: { select: { id: true, email: true, name: true } },
-
-        // group learners
+        // Group learners
         participants: {
           select: {
             userId: true,
             status: true,
+            attendedAt: true,
             user: { select: { id: true, email: true, name: true } },
           },
         },
@@ -111,17 +132,34 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
       orderBy: { startAt: "asc" },
     });
 
-    res.json(sessions);
+    // Shape response with participant counts
+    const shaped = sessions.map((s) => {
+      const activeParticipants = (s.participants || []).filter(
+        (p) => p.status !== "canceled"
+      );
+      return {
+        ...s,
+        participantCount: activeParticipants.length,
+        // For GROUP sessions, provide a learners array
+        learners:
+          s.type === "GROUP"
+            ? activeParticipants.map((p) => p.user)
+            : s.user
+            ? [s.user]
+            : [],
+      };
+    });
+
+    res.json(shaped);
   } catch (e) {
     logger.error({ err: e }, "GET /teacher/sessions failed");
     res.status(500).json({ error: "Failed to load teacher sessions" });
   }
 });
 
-/**
- * GET /api/sessions/:id
- * Returns full details for a single session (only to learner, teacher, or admin).
- */
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id - Get single session details
+// --------------------------------------------------------------------------
 router.get("/sessions/:id", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -132,11 +170,17 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
     const session = await prisma.session.findUnique({
       where: { id },
       include: {
-        user: true, // legacy 1:1 learner (may be null)
-        teacher: true,
+        user: { select: { id: true, name: true, email: true } }, // Legacy 1:1 learner
+        teacher: { select: { id: true, name: true, email: true } },
         participants: {
-          select: { userId: true, status: true },
+          select: {
+            userId: true,
+            status: true,
+            attendedAt: true,
+            user: { select: { id: true, name: true, email: true } },
+          },
         },
+        feedback: true, // FIX: Use correct relation name
       },
     });
 
@@ -149,7 +193,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       (p) => p.userId === viewerId
     );
 
-    // Permission: learner participant OR teacher OR admin
+    // Permission: learner participant OR legacy owner OR teacher OR admin
     const isLearner = isParticipant || session.userId === viewerId;
     const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
@@ -158,24 +202,56 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const hasFeedback =
+    // Build teacher feedback from either new relation or legacy fields
+    const feedbackFromRelation = session.feedback;
+    const hasLegacyFeedback =
       !!session.teacherFeedbackMessageToLearner ||
       !!session.teacherFeedbackComments ||
       !!session.teacherFeedbackFutureSteps;
+
+    const teacherFeedback = feedbackFromRelation
+      ? {
+          messageToLearner: feedbackFromRelation.messageToLearner || "",
+          commentsOnSession: feedbackFromRelation.commentsOnSession || "",
+          futureSteps: feedbackFromRelation.futureSteps || "",
+        }
+      : hasLegacyFeedback
+      ? {
+          messageToLearner: session.teacherFeedbackMessageToLearner || "",
+          commentsOnSession: session.teacherFeedbackComments || "",
+          futureSteps: session.teacherFeedbackFutureSteps || "",
+        }
+      : null;
+
+    // Calculate participant info
+    const activeParticipants = (session.participants || []).filter(
+      (p) => p.status !== "canceled"
+    );
 
     const shaped = {
       ...session,
       isLearner,
       isTeacher,
       isAdmin,
-      teacherFeedback: hasFeedback
-        ? {
-            messageToLearner: session.teacherFeedbackMessageToLearner || "",
-            commentsOnSession: session.teacherFeedbackComments || "",
-            futureSteps: session.teacherFeedbackFutureSteps || "",
-          }
-        : null,
+      teacherFeedback,
+      participantCount: activeParticipants.length,
+      // For GROUP sessions, list all learners
+      learners:
+        session.type === "GROUP"
+          ? activeParticipants.map((p) => ({
+              ...p.user,
+              status: p.status,
+              attendedAt: p.attendedAt,
+            }))
+          : session.user
+          ? [{ ...session.user, status: "booked" }]
+          : [],
     };
+
+    // Remove redundant fields from response
+    delete shaped.teacherFeedbackMessageToLearner;
+    delete shaped.teacherFeedbackComments;
+    delete shaped.teacherFeedbackFutureSteps;
 
     return res.json({ session: shaped });
   } catch (err) {
@@ -185,29 +261,62 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// GET /sessions/:id/feedback - Get detailed teacher feedback
+// GET /api/sessions/:id/feedback - Get detailed teacher feedback
+// FIX: Use correct relation name and handle both sources
 // --------------------------------------------------------------------------
 router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const s = await prisma.session.findUnique({
+    const session = await prisma.session.findUnique({
       where: { id },
-      include: {
-        teacherFeedback: true,
+      select: {
+        id: true,
+        userId: true,
+        teacherId: true,
+        participants: { select: { userId: true } },
+        feedback: true, // FIX: Correct relation name
+        // Also get legacy fields as fallback
+        teacherFeedbackMessageToLearner: true,
+        teacherFeedbackComments: true,
+        teacherFeedbackFutureSteps: true,
       },
     });
 
-    if (!s) return res.status(404).json({ error: "Session not found" });
+    if (!session) return res.status(404).json({ error: "Session not found" });
 
-    const isLearner = s.userId === req.user.id;
-    const isTeacher = s.teacherId === req.user.id;
+    // Check permissions
+    const viewerId = req.viewUserId;
+    const isParticipant = session.participants.some(
+      (p) => p.userId === viewerId
+    );
+    const isLearner = isParticipant || session.userId === viewerId;
+    const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
 
     if (!(isLearner || isTeacher || isAdmin)) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    res.json(s.teacherFeedback || null);
+    // Return feedback from relation or legacy fields
+    if (session.feedback) {
+      return res.json(session.feedback);
+    }
+
+    // Fallback to legacy fields
+    const hasLegacy =
+      session.teacherFeedbackMessageToLearner ||
+      session.teacherFeedbackComments ||
+      session.teacherFeedbackFutureSteps;
+
+    if (hasLegacy) {
+      return res.json({
+        messageToLearner: session.teacherFeedbackMessageToLearner || "",
+        commentsOnSession: session.teacherFeedbackComments || "",
+        futureSteps: session.teacherFeedbackFutureSteps || "",
+      });
+    }
+
+    res.json(null);
   } catch (e) {
     logger.error({ err: e }, "GET /sessions/:id/feedback error");
     res.status(500).json({ error: "Failed to load feedback" });
@@ -215,20 +324,20 @@ router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// POST /sessions/:id/feedback - Create/update detailed teacher feedback
+// POST /api/sessions/:id/feedback - Create/update detailed teacher feedback
 // --------------------------------------------------------------------------
 router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const s = await prisma.session.findUnique({
+    const session = await prisma.session.findUnique({
       where: { id },
       select: { id: true, userId: true, teacherId: true, startAt: true },
     });
 
-    if (!s) return res.status(404).json({ error: "Session not found" });
+    if (!session) return res.status(404).json({ error: "Session not found" });
 
     // Only the teacher assigned to this session (or admin) can write feedback
-    const isTeacher = s.teacherId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
 
     if (!(isTeacher || isAdmin)) {
@@ -237,9 +346,9 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
         .json({ error: "Only the teacher can give feedback" });
     }
 
-    // Optional: only allow after the session has started
+    // Only allow after the session has started
     const now = new Date();
-    if (new Date(s.startAt) > now) {
+    if (new Date(session.startAt) > now) {
       return res
         .status(400)
         .json({ error: "You can only leave feedback after the session" });
@@ -250,15 +359,14 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
     const futureSteps = String(req.body?.futureSteps || "").trim();
 
     const feedback = await prisma.sessionFeedback.upsert({
-      where: { sessionId: s.id },
+      where: { sessionId: session.id },
       update: {
         messageToLearner,
         commentsOnSession,
         futureSteps,
-        teacherId: req.user.id,
       },
       create: {
-        sessionId: s.id,
+        sessionId: session.id,
         teacherId: req.user.id,
         messageToLearner,
         commentsOnSession,
@@ -273,7 +381,9 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
   }
 });
 
-// POST /sessions/:id/feedback/teacher
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/feedback/teacher - Legacy feedback endpoint
+// --------------------------------------------------------------------------
 router.post(
   "/sessions/:id/feedback/teacher",
   requireAuth,
@@ -318,14 +428,13 @@ router.post(
       return res.json({ session: updated });
     } catch (err) {
       logger.error({ err }, "Teacher feedback save failed");
-      return next(err); // your global error handler will send 500
+      return next(err);
     }
   }
 );
 
 // --------------------------------------------------------------------------
-// POST /sessions/:id/attendance
-// Teacher/Admin marks attendance per participant
+// POST /api/sessions/:id/attendance - Mark attendance per participant
 // --------------------------------------------------------------------------
 router.post("/sessions/:id/attendance", requireAuth, async (req, res) => {
   try {
@@ -396,75 +505,108 @@ router.post("/sessions/:id/attendance", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/complete - Mark session as completed
+// FIX: Unified credit consumption - consume for ALL non-canceled participants
+// --------------------------------------------------------------------------
 router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const s = await prisma.session.findUnique({ where: { id } });
-    if (!s) return res.status(404).json({ error: "Not found" });
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        userId: true,
+        teacherId: true,
+        participants: { select: { userId: true, status: true } },
+      },
+    });
+
+    if (!session) return res.status(404).json({ error: "Not found" });
 
     const canComplete =
       req.user.role === "admin" ||
-      req.user.id === s.teacherId ||
-      req.user.id === s.userId;
+      req.user.id === session.teacherId ||
+      req.user.id === session.userId;
 
     if (!canComplete) return res.status(403).json({ error: "Forbidden" });
 
-    if (s.status !== "completed") {
-      await prisma.session.update({
-        where: { id },
-        data: { status: "completed" },
-      });
-      try {
-        const full = await prisma.session.findUnique({
-          where: { id: s.id },
-          select: {
-            id: true,
-            type: true,
-            userId: true,
-            participants: { select: { userId: true, status: true } },
-          },
-        });
+    // Already completed - do nothing
+    if (session.status === "completed") {
+      return res.json({ ok: true, alreadyCompleted: true });
+    }
 
-        if (full?.type === "GROUP") {
-          const seats = (full.participants || [])
-            .filter((p) => p.status === "attended")
-            .map((p) => p.userId);
+    // Update status to completed
+    await prisma.session.update({
+      where: { id },
+      data: { status: "completed" },
+    });
 
-          for (const learnerId of seats) {
-            try {
-              await consumeOneCredit(learnerId);
-            } catch (e) {
-              logger.error(
-                { err: e, userId: learnerId, sessionId: s.id },
-                "consumeOneCredit failed during group complete"
-              );
-            }
+    // Consume credits for all non-canceled participants
+    const creditResults = [];
+
+    if (session.type === "GROUP") {
+      // GROUP: consume one credit per non-canceled participant
+      const activeSeats = (session.participants || [])
+        .filter((p) => p.status !== "canceled")
+        .map((p) => p.userId);
+
+      for (const learnerId of activeSeats) {
+        try {
+          const result = await consumeOneCredit(learnerId);
+          creditResults.push({ learnerId, consumed: result.ok });
+          if (!result.ok) {
+            logger.warn(
+              { userId: learnerId, sessionId: id },
+              "[credits] No active credits to consume for user (group)"
+            );
           }
-        } else {
-          const learnerId =
-            full?.userId ||
-            (full?.participants && full.participants.length
-              ? full.participants[0].userId
-              : null);
-
-          if (learnerId) {
-            await consumeOneCredit(learnerId);
-          }
+        } catch (e) {
+          logger.error(
+            { err: e, userId: learnerId, sessionId: id },
+            "[credits] consumeOneCredit failed during group complete"
+          );
+          creditResults.push({ learnerId, consumed: false, error: e.message });
         }
-      } catch (e) {
-        logger.error(
-          { err: e, sessionId: s.id },
-          "credit consumption failed during complete"
-        );
+      }
+    } else {
+      // ONE_ON_ONE: consume from legacy userId or first participant
+      const learnerId =
+        session.userId ||
+        (session.participants?.length ? session.participants[0].userId : null);
+
+      if (learnerId) {
+        try {
+          const result = await consumeOneCredit(learnerId);
+          creditResults.push({ learnerId, consumed: result.ok });
+          if (!result.ok) {
+            logger.warn(
+              { userId: learnerId, sessionId: id },
+              "[credits] No active credits to consume for user"
+            );
+          }
+        } catch (e) {
+          logger.error(
+            { err: e, userId: learnerId, sessionId: id },
+            "[credits] consumeOneCredit failed during complete"
+          );
+          creditResults.push({ learnerId, consumed: false, error: e.message });
+        }
       }
     }
-    res.json({ ok: true });
+
+    res.json({ ok: true, creditResults });
   } catch (e) {
     logger.error({ err: e }, "complete error");
     res.status(500).json({ error: "Failed to complete session" });
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/cancel - Cancel session or participant seat
+// --------------------------------------------------------------------------
 router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -520,9 +662,11 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
       });
 
       // Refund only this learner if policy allows and session isn't completed
+      let refunded = false;
       if (refundableByLearner && sessionRow.status !== "completed") {
         try {
           const r = await refundOneCredit(viewerId);
+          refunded = r.ok;
           if (!r.ok) {
             logger.warn(
               { userId: viewerId, sessionId: sessionRow.id },
@@ -540,7 +684,7 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
       return res.json({
         ok: true,
         scope: "participant",
-        refunded: refundableByLearner && sessionRow.status !== "completed",
+        refunded,
       });
     }
 
@@ -558,11 +702,12 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
     });
 
     // Refund rules:
-    // - Learner cancel: refund only if >=12h
-    // - Teacher/Admin cancel: refund all seats if session not completed AND >=12h
+    // - Teacher/Admin cancel: refund all seats if session not completed AND >=12h away
     const refundableWholeSession =
       startsAt.getTime() - Date.now() >= twelveHoursMs &&
       sessionRow.status !== "completed";
+
+    const refundResults = [];
 
     try {
       if (refundableWholeSession) {
@@ -574,6 +719,7 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
           for (const learnerId of seats) {
             try {
               const r = await refundOneCredit(learnerId);
+              refundResults.push({ learnerId, refunded: r.ok });
               if (!r.ok) {
                 logger.warn(
                   { userId: learnerId, sessionId: sessionRow.id },
@@ -585,22 +731,26 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
                 { err: e, userId: learnerId, sessionId: sessionRow.id },
                 "[credits] group cancel refund failed"
               );
+              refundResults.push({ learnerId, refunded: false });
             }
           }
         } else {
           const learnerId =
             sessionRow.userId ||
-            (sessionRow.participants && sessionRow.participants.length
+            (sessionRow.participants?.length
               ? sessionRow.participants[0].userId
               : null);
 
           if (learnerId) {
-            const r = await refundOneCredit(learnerId);
-            if (!r.ok) {
-              logger.warn(
-                { userId: learnerId, sessionId: sessionRow.id },
-                "[credits] cancel refund not applied (none to refund)"
+            try {
+              const r = await refundOneCredit(learnerId);
+              refundResults.push({ learnerId, refunded: r.ok });
+            } catch (e) {
+              logger.error(
+                { err: e, userId: learnerId, sessionId: sessionRow.id },
+                "[credits] cancel refund failed"
               );
+              refundResults.push({ learnerId, refunded: false });
             }
           }
         }
@@ -616,6 +766,7 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
       ok: true,
       scope: "session",
       refunded: refundableWholeSession,
+      refundResults,
       session: updated,
     });
   } catch (e) {
@@ -624,6 +775,10 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/reschedule - Reschedule a session
+// FIX: Check conflicts for ALL participants in GROUP sessions
+// --------------------------------------------------------------------------
 router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -631,35 +786,73 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 
     if (!startAt) return res.status(400).json({ error: "startAt is required" });
 
-    const s = await prisma.session.findUnique({
+    const session = await prisma.session.findUnique({
       where: { id },
-      select: { id: true, userId: true, teacherId: true, status: true },
+      select: {
+        id: true,
+        type: true,
+        userId: true,
+        teacherId: true,
+        status: true,
+        participants: { select: { userId: true, status: true } },
+      },
     });
-    if (!s) return res.status(404).json({ error: "Not found" });
 
-    const isOwner = s.userId === req.user.id;
-    const isTeacher = s.teacherId === req.user.id;
+    if (!session) return res.status(404).json({ error: "Not found" });
+
+    const isOwner = session.userId === req.user.id;
+    const isTeacher = session.teacherId === req.user.id;
     const isAdmin = req.user.role === "admin";
     if (!(isOwner || isTeacher || isAdmin)) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const conflicts = await findSessionConflicts({
-      startAt: new Date(startAt),
-      endAt: endAt ? new Date(endAt) : null,
-      userId: s.userId,
-      teacherId: s.teacherId,
-      excludeId: id,
-    });
-    if (conflicts.length) {
-      return res.status(409).json({ error: "Time conflict", conflicts });
+    const newStart = new Date(startAt);
+    const newEnd = endAt ? new Date(endAt) : null;
+
+    // FIX: Check conflicts for ALL active participants in GROUP sessions
+    if (session.type === "GROUP") {
+      const activeParticipants = (session.participants || [])
+        .filter((p) => p.status !== "canceled")
+        .map((p) => p.userId);
+
+      for (const participantId of activeParticipants) {
+        const conflicts = await findSessionConflicts({
+          startAt: newStart,
+          endAt: newEnd,
+          userId: participantId,
+          teacherId: session.teacherId,
+          excludeId: id,
+        });
+
+        if (conflicts.length) {
+          return res.status(409).json({
+            error: "Time conflict",
+            conflictingUserId: participantId,
+            conflicts,
+          });
+        }
+      }
+    } else {
+      // ONE_ON_ONE: check legacy userId
+      const conflicts = await findSessionConflicts({
+        startAt: newStart,
+        endAt: newEnd,
+        userId: session.userId,
+        teacherId: session.teacherId,
+        excludeId: id,
+      });
+
+      if (conflicts.length) {
+        return res.status(409).json({ error: "Time conflict", conflicts });
+      }
     }
 
     const updated = await prisma.session.update({
       where: { id },
       data: {
-        startAt: new Date(startAt),
-        endAt: endAt ? new Date(endAt) : null,
+        startAt: newStart,
+        endAt: newEnd,
         status: "scheduled",
       },
     });
@@ -671,8 +864,16 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/me/sessions - List sessions for current user
+// --------------------------------------------------------------------------
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
+    // ✅ Admin dashboard should not use "my sessions"
+    if (req.user.role === "admin") {
+      return res.json([]);
+    }
+
     // Best-effort finalization, don't break if it fails
     try {
       await finalizeExpiredSessionsForUser(req.viewUserId);
@@ -688,8 +889,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
-    // membership base: learner sees sessions they participate in
-    // teacher sees sessions they teach OR sessions they participate in (keeps your old behavior)
+    // Membership base: include both participants AND legacy userId
     const whereBase =
       role === "teacher"
         ? {
@@ -748,7 +948,9 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         type: true,
         capacity: true,
         teacherId: true,
+        userId: true,
         teacher: { select: { id: true, name: true, email: true } },
+        user: { select: { id: true, name: true, email: true } },
         participants: {
           select: {
             userId: true,
@@ -759,11 +961,13 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         teacherFeedbackMessageToLearner: true,
         teacherFeedbackComments: true,
         teacherFeedbackFutureSteps: true,
+        feedback: { select: { id: true } },
       },
     });
 
     const sessions = rawSessions.map((s) => {
       const hasFeedback =
+        !!s.feedback ||
         !!s.teacherFeedbackMessageToLearner ||
         !!s.teacherFeedbackComments ||
         !!s.teacherFeedbackFutureSteps;
@@ -780,17 +984,26 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         teacherFeedbackMessageToLearner,
         teacherFeedbackComments,
         teacherFeedbackFutureSteps,
+        feedback,
         ...rest
       } = s;
 
-      const participantCount = Array.isArray(rest.participants)
-        ? rest.participants.filter((p) => p.status !== "canceled").length
-        : 0;
+      const activeParticipants = (rest.participants || []).filter(
+        (p) => p.status !== "canceled"
+      );
 
       return {
         ...rest,
-        participantCount,
+        participantCount: activeParticipants.length,
+        // For GROUP sessions, include learner list
+        learners:
+          rest.type === "GROUP"
+            ? activeParticipants.map((p) => p.user)
+            : rest.user
+            ? [rest.user]
+            : [],
         teacherFeedback,
+        hasFeedback,
       };
     });
 
@@ -801,6 +1014,9 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/me/sessions-between - Get sessions in date range (calendar)
+// --------------------------------------------------------------------------
 router.get("/me/sessions-between", requireAuth, async (req, res) => {
   try {
     const startParam = String(req.query.start || "");
@@ -852,13 +1068,23 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
         type: true,
         capacity: true,
         feedback: { select: { id: true } },
+        participants: {
+          select: { userId: true, status: true },
+        },
       },
     });
 
-    const shaped = sessions.map((s) => ({
-      ...s,
-      teacherFeedback: s.feedback,
-    }));
+    const shaped = sessions.map((s) => {
+      const activeCount = (s.participants || []).filter(
+        (p) => p.status !== "canceled"
+      ).length;
+
+      return {
+        ...s,
+        participantCount: activeCount,
+        teacherFeedback: s.feedback,
+      };
+    });
 
     return res.json({ sessions: shaped });
   } catch (e) {
@@ -869,8 +1095,9 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/me/progress
-// Learner progress summary + simple monthly timeline
+// --------------------------------------------------------------------------
+// GET /api/me/progress - Learner progress summary
+// --------------------------------------------------------------------------
 router.get("/me/progress", requireAuth, async (req, res) => {
   try {
     const userId = req.viewUserId || req.user.id;
@@ -938,7 +1165,6 @@ router.get("/me/progress", requireAuth, async (req, res) => {
     });
   } catch (err) {
     logger.error({ err }, "GET /me/progress failed");
-    // send the real message to help debug if it ever breaks again
     return res
       .status(500)
       .json({ error: err?.message || "Failed to load progress" });
@@ -949,30 +1175,49 @@ router.get("/me/progress", requireAuth, async (req, res) => {
 /*                               ADMIN: SESSIONS                              */
 /* ========================================================================== */
 
+// --------------------------------------------------------------------------
+// GET /api/admin/sessions - List all sessions (admin)
+// --------------------------------------------------------------------------
 router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
     const {
       q = "",
       userId = "",
       teacherId = "",
+      type = "",
       range = "",
       limit = "100",
       offset = "0",
     } = req.query;
 
     const now = new Date();
-    const where = {
-      ...(userId ? { userId: Number(userId) } : {}),
-      ...(teacherId ? { teacherId: Number(teacherId) } : {}),
-      ...(q
-        ? {
-            OR: [
-              { title: { contains: q, mode: "insensitive" } },
-              { joinUrl: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    };
+    const where = {};
+
+    // Filter by legacy userId OR participant
+    if (userId) {
+      const uid = Number(userId);
+      where.OR = [{ userId: uid }, { participants: { some: { userId: uid } } }];
+    }
+
+    if (teacherId) {
+      where.teacherId = Number(teacherId);
+    }
+
+    if (type === "ONE_ON_ONE" || type === "GROUP") {
+      where.type = type;
+    }
+
+    if (q) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { title: { contains: q, mode: "insensitive" } },
+            { joinUrl: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      ];
+    }
 
     if (range === "upcoming") {
       where.AND = [
@@ -998,6 +1243,13 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         include: {
           user: { select: { id: true, name: true, email: true } },
           teacher: { select: { id: true, name: true, email: true } },
+          participants: {
+            select: {
+              userId: true,
+              status: true,
+              user: { select: { id: true, name: true, email: true } },
+            },
+          },
         },
         orderBy: [{ startAt: "desc" }, { id: "desc" }],
         take: Number(limit),
@@ -1006,13 +1258,39 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       prisma.session.count({ where }),
     ]);
 
-    res.json({ items, total });
+    // Shape response with participant info
+    const shaped = items.map((s) => {
+      const activeParticipants = (s.participants || []).filter(
+        (p) => p.status !== "canceled"
+      );
+      return {
+        ...s,
+        participantCount: activeParticipants.length,
+        learners:
+          s.type === "GROUP"
+            ? activeParticipants.map((p) => ({
+                ...p.user,
+                status: p.status,
+              }))
+            : s.user
+            ? [{ ...s.user, status: "booked" }]
+            : [],
+      };
+    });
+
+    res.json({ items: shaped, total });
   } catch (err) {
     logger.error({ err }, "admin.sessions.list error");
     res.status(500).json({ error: "Failed to load sessions" });
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/admin/sessions - Create new session (1:1 or GROUP)
+// --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// POST /api/admin/sessions - Create new session (1:1 or GROUP)
+// --------------------------------------------------------------------------
 router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
     const {
@@ -1025,7 +1303,9 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       startAt,
       durationMin,
       endAt,
+      joinUrl,
       meetingUrl,
+      notes,
       allowNoCredit = false,
     } = req.body;
 
@@ -1042,16 +1322,40 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       ? new Date(endAt)
       : new Date(start.getTime() + Number(durationMin || 60) * 60_000);
 
+    const finalJoinUrl = (joinUrl ?? meetingUrl ?? "").trim() || null;
+    const finalNotes = (notes ?? "").trim() || null;
+
+    // ─────────────────────────────────────────────
+    // ONE_ON_ONE SESSION
+    // ─────────────────────────────────────────────
     if (type === "ONE_ON_ONE") {
       if (!learnerId) {
         return res.status(400).json({ error: "learnerId is required" });
       }
 
-      // conflict check
+      const learner = await prisma.user.findUnique({
+        where: { id: Number(learnerId) },
+        select: { id: true, role: true, isDisabled: true },
+      });
+
+      if (!learner || learner.isDisabled) {
+        return res.status(404).json({
+          error: "User not found or disabled",
+          userId: Number(learnerId),
+        });
+      }
+      if (learner.role !== "learner" && learner.role !== "admin") {
+        return res.status(400).json({
+          error: "learnerId must refer to a learner",
+          userId: Number(learnerId),
+        });
+      }
+
+      // Conflict check
       const conflicts = await findSessionConflicts({
         startAt: start,
         endAt: finalEndAt,
-        userId: learnerId,
+        userId: Number(learnerId),
         teacherId,
       });
 
@@ -1059,32 +1363,41 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         return res.status(409).json({ error: "Time conflict", conflicts });
       }
 
-      // credit check
-      const remaining = await getRemainingCredits(learnerId);
+      // Credit check
+      const remaining = await getRemainingCredits(Number(learnerId));
       if (!allowNoCredit && remaining <= 0) {
         return res.status(422).json({
           error: "no_credits",
           message: "Learner has no remaining credits",
+          learnerId: Number(learnerId),
         });
       }
 
       const session = await prisma.session.create({
         data: {
           type: "ONE_ON_ONE",
-          userId: learnerId,
-          teacherId,
+          userId: Number(learnerId),
+          teacherId: teacherId || null,
           title,
           startAt: start,
           endAt: finalEndAt,
-          joinUrl: meetingUrl || null,
+          joinUrl: finalJoinUrl,
+          notes: finalNotes,
         },
       });
 
+      // Also create participant row for consistency
       await prisma.sessionParticipant.create({
         data: {
           sessionId: session.id,
-          userId: learnerId,
+          userId: Number(learnerId),
         },
+      });
+
+      await audit(req.user.id, "session_create", "Session", session.id, {
+        type: "ONE_ON_ONE",
+        learnerId: Number(learnerId),
+        teacherId,
       });
 
       return res.status(201).json({ ok: true, session });
@@ -1093,22 +1406,49 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     // ─────────────────────────────────────────────
     // GROUP SESSION
     // ─────────────────────────────────────────────
-
     if (!Array.isArray(learnerIds) || learnerIds.length === 0) {
       return res
         .status(400)
         .json({ error: "learnerIds[] is required for GROUP sessions" });
     }
 
-    if (capacity && learnerIds.length > capacity) {
+    const uniqueLearnerIds = Array.from(
+      new Set(
+        learnerIds.map((x) => Number(x)).filter((n) => n && !Number.isNaN(n))
+      )
+    );
+
+    if (!uniqueLearnerIds.length) {
+      return res
+        .status(400)
+        .json({ error: "learnerIds[] must contain valid ids" });
+    }
+
+    if (capacity && uniqueLearnerIds.length > capacity) {
       return res.status(400).json({
         error: "capacity_exceeded",
         message: "learnerIds exceed session capacity",
       });
     }
 
-    // conflict + credit checks PER learner
-    for (const uid of learnerIds) {
+    // Validate users + conflicts + credits PER learner
+    for (const uid of uniqueLearnerIds) {
+      const u = await prisma.user.findUnique({
+        where: { id: uid },
+        select: { id: true, role: true, isDisabled: true },
+      });
+
+      if (!u || u.isDisabled) {
+        return res
+          .status(404)
+          .json({ error: "User not found or disabled", learnerId: uid });
+      }
+      if (u.role !== "learner" && u.role !== "admin") {
+        return res
+          .status(400)
+          .json({ error: "learnerIds must refer to learners", learnerId: uid });
+      }
+
       const conflicts = await findSessionConflicts({
         startAt: start,
         endAt: finalEndAt,
@@ -1137,20 +1477,29 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       data: {
         type: "GROUP",
         capacity: capacity || null,
-        teacherId,
+        teacherId: teacherId || null,
         title,
         startAt: start,
         endAt: finalEndAt,
-        joinUrl: meetingUrl || null,
+        joinUrl: finalJoinUrl,
+        notes: finalNotes,
+        // No userId for GROUP sessions
       },
     });
 
     await prisma.sessionParticipant.createMany({
-      data: learnerIds.map((uid) => ({
+      data: uniqueLearnerIds.map((uid) => ({
         sessionId: session.id,
         userId: uid,
       })),
       skipDuplicates: true,
+    });
+
+    await audit(req.user.id, "session_create", "Session", session.id, {
+      type: "GROUP",
+      learnerIds: uniqueLearnerIds,
+      teacherId,
+      capacity,
     });
 
     return res.status(201).json({ ok: true, session });
@@ -1161,9 +1510,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// ADMIN: Add participant(s) to an existing GROUP session
-// POST /api/admin/sessions/:id/participants
-// body: { userId?: number, userIds?: number[], allowNoCredit?: boolean, allowOverCapacity?: boolean }
+// POST /api/admin/sessions/:id/participants - Add participants to GROUP session
 // --------------------------------------------------------------------------
 router.post(
   "/admin/sessions/:id/participants",
@@ -1300,7 +1647,6 @@ router.post(
       }
 
       // Insert/update participant rows
-      // If participant existed but was canceled, revive it. Otherwise create.
       await prisma.$transaction(async (tx) => {
         for (const uid of toAdd) {
           const existedStatus = existing.get(uid);
@@ -1317,6 +1663,16 @@ router.post(
         }
       });
 
+      await audit(
+        req.user.id,
+        "session_add_participants",
+        "Session",
+        sessionId,
+        {
+          addedUserIds: toAdd,
+        }
+      );
+
       return res
         .status(201)
         .json({ ok: true, added: toAdd.length, userIds: toAdd });
@@ -1328,11 +1684,7 @@ router.post(
 );
 
 // --------------------------------------------------------------------------
-// ADMIN: Remove a participant from a GROUP session (cancel seat)
-// DELETE /api/admin/sessions/:id/participants/:userId?refund=1
-// - We cancel the participant row (do NOT delete) for audit/history.
-// - Refund rules: only if session not completed AND start is >= 12h away,
-//   and refund=1 is passed (so admin explicitly chooses refund).
+// DELETE /api/admin/sessions/:id/participants/:userId - Remove participant
 // --------------------------------------------------------------------------
 router.delete(
   "/admin/sessions/:id/participants/:userId",
@@ -1417,6 +1769,17 @@ router.delete(
         }
       }
 
+      await audit(
+        req.user.id,
+        "session_remove_participant",
+        "Session",
+        sessionId,
+        {
+          removedUserId: targetUserId,
+          refunded,
+        }
+      );
+
       return res.json({ ok: true, removed: true, refunded });
     } catch (e) {
       logger.error({ err: e }, "admin.sessions.removeParticipant error");
@@ -1425,6 +1788,12 @@ router.delete(
   }
 );
 
+// --------------------------------------------------------------------------
+// PATCH /api/admin/sessions/:id - Update session
+// --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// PATCH /api/admin/sessions/:id - Update session
+// --------------------------------------------------------------------------
 router.patch(
   "/admin/sessions/:id",
   requireAuth,
@@ -1432,7 +1801,20 @@ router.patch(
   async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const existing = await prisma.session.findUnique({ where: { id } });
+      const existing = await prisma.session.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          startAt: true,
+          endAt: true,
+          userId: true,
+          teacherId: true,
+          participants: { select: { userId: true, status: true } },
+        },
+      });
+
       if (!existing) return res.status(404).json({ error: "Not found" });
 
       const patch = {};
@@ -1444,34 +1826,82 @@ router.patch(
         "endAt",
         "userId",
         "teacherId",
+        "capacity",
+        "notes",
       ];
       for (const k of allowed) {
         if (req.body[k] !== undefined) patch[k] = req.body[k];
       }
 
+      // Backward-compat: admin UI sends meetingUrl, but DB field is joinUrl
+      if (patch.joinUrl === undefined && req.body.meetingUrl !== undefined) {
+        patch.joinUrl = req.body.meetingUrl;
+      }
+
+      // Normalize simple string fields
+      if (patch.joinUrl !== undefined) {
+        patch.joinUrl = String(patch.joinUrl || "").trim() || null;
+      }
+      if (patch.notes !== undefined) {
+        patch.notes = String(patch.notes || "").trim() || null;
+      }
+
+      // Validate time/user changes for conflicts
       const start = patch.startAt ? new Date(patch.startAt) : existing.startAt;
       const end = patch.endAt ? new Date(patch.endAt) : existing.endAt;
-      const userId = patch.userId ? Number(patch.userId) : existing.userId;
-      const teacherId = patch.teacherId
-        ? Number(patch.teacherId)
-        : existing.teacherId;
+      const teacherId =
+        patch.teacherId !== undefined
+          ? Number(patch.teacherId)
+          : existing.teacherId;
 
-      if (patch.startAt || patch.endAt || patch.userId || patch.teacherId) {
-        const conflicts = await findSessionConflicts({
-          startAt: start,
-          endAt: end,
-          userId,
-          teacherId,
-          excludeId: id,
-        });
-        if (conflicts.length) {
-          return res.status(409).json({ error: "Time conflict", conflicts });
+      if (patch.startAt || patch.endAt || patch.teacherId) {
+        // Check conflicts for ALL participants if GROUP
+        if (existing.type === "GROUP") {
+          const activeParticipants = (existing.participants || [])
+            .filter((p) => p.status !== "canceled")
+            .map((p) => p.userId);
+
+          for (const participantId of activeParticipants) {
+            const conflicts = await findSessionConflicts({
+              startAt: start,
+              endAt: end,
+              userId: participantId,
+              teacherId,
+              excludeId: id,
+            });
+            if (conflicts.length) {
+              return res.status(409).json({
+                error: "Time conflict",
+                conflictingUserId: participantId,
+                conflicts,
+              });
+            }
+          }
+        } else {
+          // ONE_ON_ONE
+          const userId =
+            patch.userId !== undefined ? Number(patch.userId) : existing.userId;
+
+          const conflicts = await findSessionConflicts({
+            startAt: start,
+            endAt: end,
+            userId,
+            teacherId,
+            excludeId: id,
+          });
+          if (conflicts.length) {
+            return res.status(409).json({ error: "Time conflict", conflicts });
+          }
         }
       }
 
-      if (patch.userId !== undefined) patch.userId = Number(patch.userId);
+      // Type conversions
+      if (patch.userId !== undefined)
+        patch.userId = Number(patch.userId) || null;
       if (patch.teacherId !== undefined)
-        patch.teacherId = Number(patch.teacherId);
+        patch.teacherId = Number(patch.teacherId) || null;
+      if (patch.capacity !== undefined)
+        patch.capacity = Number(patch.capacity) || null;
       if (patch.startAt !== undefined) patch.startAt = new Date(patch.startAt);
       if (patch.endAt !== undefined)
         patch.endAt = patch.endAt ? new Date(patch.endAt) : null;
@@ -1494,89 +1924,115 @@ router.patch(
         include: {
           user: { select: { id: true, name: true, email: true } },
           teacher: { select: { id: true, name: true, email: true } },
+          participants: {
+            select: {
+              userId: true,
+              status: true,
+              user: { select: { id: true, name: true, email: true } },
+            },
+          },
         },
       });
 
-      try {
-        if (shouldConsume || shouldRefund) {
-          const full = await prisma.session.findUnique({
-            where: { id: updated.id },
-            select: {
-              id: true,
-              type: true,
-              userId: true,
-              participants: { select: { userId: true, status: true } },
-            },
-          });
+      // Handle credit consumption/refund on status change
+      const creditResults = [];
 
-          if (full?.type === "GROUP") {
-            const seats = (full.participants || [])
-              .filter((p) => p.status !== "canceled")
-              .map((p) => p.userId);
+      if (shouldConsume || shouldRefund) {
+        if (existing.type === "GROUP") {
+          const seats = (existing.participants || [])
+            .filter((p) => p.status !== "canceled")
+            .map((p) => p.userId);
 
-            for (const learnerId of seats) {
-              try {
-                if (shouldConsume) {
-                  const resUse = await consumeOneCredit(learnerId);
-                  if (!resUse.ok) {
-                    logger.warn(
-                      { userId: learnerId, sessionId: updated.id },
-                      "[credits] No active credits to consume for user (group)"
-                    );
-                  }
-                } else if (shouldRefund) {
-                  const resRef = await refundOneCredit(learnerId);
-                  if (!resRef.ok) {
-                    logger.warn(
-                      { userId: learnerId, sessionId: updated.id },
-                      "[credits] Nothing to refund for user (group)"
-                    );
-                  }
-                }
-              } catch (e) {
-                logger.error(
-                  { err: e, userId: learnerId, sessionId: updated.id },
-                  "[credits] group accounting failure"
-                );
-              }
-            }
-          } else {
-            const learnerId =
-              full?.userId ||
-              (full?.participants && full.participants.length
-                ? full.participants[0].userId
-                : null);
-
-            if (learnerId) {
+          for (const learnerId of seats) {
+            try {
               if (shouldConsume) {
                 const resUse = await consumeOneCredit(learnerId);
-                if (!resUse.ok) {
-                  logger.warn(
-                    { userId: learnerId, sessionId: updated.id },
-                    "[credits] No active credits to consume for user"
-                  );
-                }
+                creditResults.push({
+                  learnerId,
+                  action: "consume",
+                  ok: resUse.ok,
+                });
               } else if (shouldRefund) {
                 const resRef = await refundOneCredit(learnerId);
-                if (!resRef.ok) {
-                  logger.warn(
-                    { userId: learnerId, sessionId: updated.id },
-                    "[credits] Nothing to refund for user"
-                  );
-                }
+                creditResults.push({
+                  learnerId,
+                  action: "refund",
+                  ok: resRef.ok,
+                });
               }
+            } catch (e) {
+              logger.error(
+                { err: e, userId: learnerId, sessionId: updated.id },
+                "[credits] accounting failure"
+              );
+              creditResults.push({
+                learnerId,
+                action: shouldConsume ? "consume" : "refund",
+                ok: false,
+              });
+            }
+          }
+        } else {
+          // ONE_ON_ONE
+          const learnerId =
+            existing.userId ||
+            (existing.participants?.length
+              ? existing.participants[0].userId
+              : null);
+
+          if (learnerId) {
+            try {
+              if (shouldConsume) {
+                const resUse = await consumeOneCredit(learnerId);
+                creditResults.push({
+                  learnerId,
+                  action: "consume",
+                  ok: resUse.ok,
+                });
+              } else if (shouldRefund) {
+                const resRef = await refundOneCredit(learnerId);
+                creditResults.push({
+                  learnerId,
+                  action: "refund",
+                  ok: resRef.ok,
+                });
+              }
+            } catch (e) {
+              logger.error(
+                { err: e, userId: learnerId, sessionId: updated.id },
+                "[credits] accounting failure"
+              );
+              creditResults.push({
+                learnerId,
+                action: shouldConsume ? "consume" : "refund",
+                ok: false,
+              });
             }
           }
         }
-      } catch (e) {
-        logger.error(
-          { err: e, sessionId: updated.id },
-          "[credits] accounting failure"
-        );
       }
 
-      await audit(req.user.id, "session_update", "Session", id, patch);
-      res.json(updated);
+      await audit(req.user.id, "session_update", "Session", id, {
+        ...patch,
+        creditResults,
+      });
+
+      // Shape response
+      const activeParticipants = (updated.participants || []).filter(
+        (p) => p.status !== "canceled"
+      );
+
+      res.json({
+        ...updated,
+        participantCount: activeParticipants.length,
+        learners:
+          updated.type === "GROUP"
+            ? activeParticipants.map((p) => ({ ...p.user, status: p.status }))
+            : updated.user
+            ? [{ ...updated.user, status: "booked" }]
+            : [],
+        creditResults,
+      });
     } catch (err) {
       logger.error({ err }, "admin.sessions.patch error");
       res.status(500).json({ error: "Failed to update session" });
@@ -1584,6 +2040,9 @@ router.patch(
   }
 );
 
+// --------------------------------------------------------------------------
+// DELETE /api/admin/sessions/:id - Delete session
+// --------------------------------------------------------------------------
 router.delete(
   "/admin/sessions/:id",
   requireAuth,
