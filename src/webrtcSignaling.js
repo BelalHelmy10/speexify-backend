@@ -520,6 +520,9 @@ export function setupWebRtcSignaling(httpServer) {
     maxPayload: CONFIG.MAX_MESSAGE_SIZE_BYTES,
   });
 
+  // ✅ NEW: draining mode (reject new upgrades during deploy shutdown)
+  let isDraining = false;
+
   // ─────────────────────────────────────────────
   // Room Managers
   // ─────────────────────────────────────────────
@@ -580,6 +583,47 @@ export function setupWebRtcSignaling(httpServer) {
       });
     }, CONFIG.HEARTBEAT_INTERVAL_MS);
   }
+
+  if (CONFIG.HEARTBEAT_ENABLED) {
+    // Heartbeat for /ws/prep
+    heartbeatIntervalPrep = setInterval(() => {
+      wssPrep.clients.forEach((ws) => {
+        const meta = getMeta(ws);
+        if (!meta.isAlive) {
+          logger.info("[WebRTC] Terminating unresponsive connection");
+          videoRoomManager.leave(ws);
+          untrackConnection(ws);
+          return ws.terminate();
+        }
+        meta.isAlive = false;
+        ws.ping();
+      });
+    }, CONFIG.HEARTBEAT_INTERVAL_MS);
+
+    // Heartbeat for /ws/classroom
+    heartbeatIntervalClassroom = setInterval(() => {
+      wssClassroom.clients.forEach((ws) => {
+        const meta = getMeta(ws);
+        if (!meta.isAlive) {
+          logger.info("[Classroom] Terminating unresponsive connection");
+          classroomRoomManager.leave(ws);
+          untrackConnection(ws);
+          return ws.terminate();
+        }
+        meta.isAlive = false;
+        ws.ping();
+      });
+    }, CONFIG.HEARTBEAT_INTERVAL_MS);
+  }
+
+  // ✅ NEW: if a WS server closes, stop its heartbeat interval
+  wssPrep.on("close", () => {
+    if (heartbeatIntervalPrep) clearInterval(heartbeatIntervalPrep);
+  });
+
+  wssClassroom.on("close", () => {
+    if (heartbeatIntervalClassroom) clearInterval(heartbeatIntervalClassroom);
+  });
 
   // ─────────────────────────────────────────────
   // Message handler factory
@@ -758,6 +802,13 @@ export function setupWebRtcSignaling(httpServer) {
       return;
     }
 
+    // ✅ NEW: during shutdown/redeploy, reject new WS upgrades
+    if (isDraining) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     // Check if this is one of our paths
     if (pathname !== "/ws/prep" && pathname !== "/ws/classroom") {
       socket.destroy();
@@ -811,14 +862,17 @@ export function setupWebRtcSignaling(httpServer) {
 
   // ─────────────────────────────────────────────
   // Graceful shutdown handler
-  // ─────────────────────────────────────────────
   const shutdown = (signal) => {
+    // ✅ NEW: stop accepting new WS upgrades immediately
+    isDraining = true;
+
     logger.info({ signal }, "[Server] Graceful shutdown initiated");
 
     // Clear heartbeat intervals
     if (heartbeatIntervalPrep) {
       clearInterval(heartbeatIntervalPrep);
     }
+
     if (heartbeatIntervalClassroom) {
       clearInterval(heartbeatIntervalClassroom);
     }
