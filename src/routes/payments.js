@@ -175,8 +175,20 @@ router.post("/create-intent", async (req, res) => {
 
     const iframeUrl = paymobIframeUrl(paymentKey.token);
 
-    await prisma.order.create({
-      data: {
+    await prisma.order.upsert({
+      where: { id: String(orderId) },
+      update: {
+        amountCents: Number(amountCents),
+        currency,
+        status: "pending",
+        psp: "paymob",
+        pspOrderId: order.id,
+        userId: buyerId,
+        packageId: packageId,
+        customerEmail: customer?.email || null,
+        customerPhone: customer?.phone || null,
+      },
+      create: {
         id: String(orderId),
         amountCents: Number(amountCents),
         currency,
@@ -213,81 +225,95 @@ router.post("/webhook/paymob", async (req, res) => {
     const success = String(payload?.success).toLowerCase() === "true";
     const merchantOrderId = payload?.order?.merchant_order_id;
     const paymobOrderId = payload?.order?.id;
+    const paymobTxnId = payload?.id ? Number(payload.id) : null;
 
     if (!merchantOrderId) {
       logger.warn({ payload }, "Webhook missing merchant_order_id");
       return res.sendStatus(200);
     }
 
-    // Look up order
-    const existingOrder = await prisma.order.findUnique({
-      where: { id: String(merchantOrderId) },
-      select: {
-        id: true,
-        status: true,
-        userId: true,
-        packageId: true,
-      },
-    });
+    const orderId = String(merchantOrderId);
 
-    if (!existingOrder) {
-      logger.warn({ merchantOrderId }, "Webhook for unknown order");
-      // No order to update — don't keep retrying on Paymob side
-      return res.sendStatus(200);
-    }
-
-    // If already paid and we get another success webhook, do nothing (idempotent)
-    if (existingOrder.status === "paid" && success) {
-      logger.info({ merchantOrderId }, "Duplicate success webhook ignored");
-      return res.sendStatus(200);
-    }
-
-    // Update order status
-    const updatedOrder = await prisma.order.update({
-      where: { id: String(merchantOrderId) },
-      data: {
-        status: success ? "paid" : "failed",
-        pspOrderId: paymobOrderId,
-      },
-      select: {
-        id: true,
-        status: true,
-        userId: true,
-        packageId: true,
-      },
-    });
-
-    if (success && updatedOrder.userId && updatedOrder.packageId) {
-      const pkg = await prisma.package.findUnique({
-        where: { id: Number(updatedOrder.packageId) },
+    await prisma.$transaction(async (tx) => {
+      // 1) Load order
+      const existingOrder = await tx.order.findUnique({
+        where: { id: orderId },
         select: {
           id: true,
-          title: true,
-          sessionsPerPack: true,
-          durationMin: true,
+          status: true,
+          userId: true,
+          packageId: true,
         },
       });
 
-      if (pkg) {
-        const sessionsTotal = Number(pkg.sessionsPerPack || 0);
-        if (sessionsTotal > 0) {
-          const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-
-          await prisma.userPackage.create({
-            data: {
-              userId: updatedOrder.userId,
-              packageId: pkg.id,
-              title: pkg.title,
-              minutesPerSession: pkg.durationMin || null,
-              sessionsTotal,
-              sessionsUsed: 0,
-              expiresAt,
-              status: "active",
-            },
-          });
-        }
+      if (!existingOrder) {
+        logger.warn({ orderId }, "Webhook for unknown order");
+        return; // respond 200 outside
       }
-    }
+
+      // 2) Update order status (idempotent)
+      //    If already paid and we get success again, keep it paid.
+      const nextStatus = success
+        ? "paid"
+        : existingOrder.status === "paid"
+        ? "paid"
+        : "failed";
+
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: nextStatus,
+          pspOrderId: paymobOrderId ?? undefined,
+          paymobTxnId: paymobTxnId ?? undefined,
+        },
+        select: {
+          id: true,
+          status: true,
+          userId: true,
+          packageId: true,
+        },
+      });
+
+      // 3) Grant entitlement exactly once (tied to orderId)
+      //    Even if webhook is called multiple times, upsert on unique orderId prevents duplicates.
+      if (success && updatedOrder.userId && updatedOrder.packageId) {
+        const pkg = await tx.package.findUnique({
+          where: { id: Number(updatedOrder.packageId) },
+          select: {
+            id: true,
+            title: true,
+            sessionsPerPack: true,
+            durationMin: true,
+          },
+        });
+
+        if (!pkg) return;
+
+        const sessionsTotal = Number(pkg.sessionsPerPack || 0);
+        if (sessionsTotal <= 0) return;
+
+        const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+        await tx.userPackage.upsert({
+          where: { orderId },
+          update: {
+            // If it already exists, keep it active and ensure it’s attached correctly
+            status: "active",
+          },
+          create: {
+            orderId,
+            userId: updatedOrder.userId,
+            packageId: pkg.id,
+            title: pkg.title,
+            minutesPerSession: pkg.durationMin || null,
+            sessionsTotal,
+            sessionsUsed: 0,
+            expiresAt,
+            status: "active",
+          },
+        });
+      }
+    });
 
     return res.sendStatus(200);
   } catch (e) {
