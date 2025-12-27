@@ -544,60 +544,10 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
       data: { status: "completed" },
     });
 
-    // Consume credits for all non-canceled participants
-    const creditResults = [];
+    // Credits are consumed on booking, not on completion
+    // No credit operations needed here
 
-    if (session.type === "GROUP") {
-      // GROUP: consume one credit per non-canceled participant
-      const activeSeats = (session.participants || [])
-        .filter((p) => p.status !== "canceled")
-        .map((p) => p.userId);
-
-      for (const learnerId of activeSeats) {
-        try {
-          const result = await consumeOneCredit(learnerId);
-          creditResults.push({ learnerId, consumed: result.ok });
-          if (!result.ok) {
-            logger.warn(
-              { userId: learnerId, sessionId: id },
-              "[credits] No active credits to consume for user (group)"
-            );
-          }
-        } catch (e) {
-          logger.error(
-            { err: e, userId: learnerId, sessionId: id },
-            "[credits] consumeOneCredit failed during group complete"
-          );
-          creditResults.push({ learnerId, consumed: false, error: e.message });
-        }
-      }
-    } else {
-      // ONE_ON_ONE: consume from legacy userId or first participant
-      const learnerId =
-        session.userId ||
-        (session.participants?.length ? session.participants[0].userId : null);
-
-      if (learnerId) {
-        try {
-          const result = await consumeOneCredit(learnerId);
-          creditResults.push({ learnerId, consumed: result.ok });
-          if (!result.ok) {
-            logger.warn(
-              { userId: learnerId, sessionId: id },
-              "[credits] No active credits to consume for user"
-            );
-          }
-        } catch (e) {
-          logger.error(
-            { err: e, userId: learnerId, sessionId: id },
-            "[credits] consumeOneCredit failed during complete"
-          );
-          creditResults.push({ learnerId, consumed: false, error: e.message });
-        }
-      }
-    }
-
-    res.json({ ok: true, creditResults });
+    res.json({ ok: true });
   } catch (e) {
     logger.error({ err: e }, "complete error");
     res.status(500).json({ error: "Failed to complete session" });
@@ -1394,10 +1344,48 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         },
       });
 
+      // Consume credit on booking (not on completion)
+      // Consume credit on booking (not on completion)
+      let creditResult = null;
+      console.log("========== CREDIT DEBUG ==========");
+      console.log("learnerId:", Number(learnerId));
+      console.log(
+        "allowNoCredit:",
+        allowNoCredit,
+        "type:",
+        typeof allowNoCredit
+      );
+      if (!allowNoCredit) {
+        console.log(">>> ENTERING credit consumption");
+        try {
+          creditResult = await consumeOneCredit(Number(learnerId));
+          console.log(
+            ">>> consumeOneCredit result:",
+            JSON.stringify(creditResult)
+          );
+          if (!creditResult.ok) {
+            logger.warn(
+              { userId: Number(learnerId), sessionId: session.id },
+              "[credits] Failed to consume credit on booking"
+            );
+          }
+        } catch (e) {
+          console.log(">>> EXCEPTION:", e.message);
+          logger.error(
+            { err: e, userId: Number(learnerId), sessionId: session.id },
+            "[credits] consumeOneCredit failed on session create"
+          );
+        }
+      } else {
+        console.log(">>> SKIPPED - allowNoCredit is truthy");
+      }
+      console.log("========== END DEBUG ==========");
+
       await audit(req.user.id, "session_create", "Session", session.id, {
         type: "ONE_ON_ONE",
         learnerId: Number(learnerId),
         teacherId,
+        creditConsumed: creditResult?.ok || false,
       });
 
       return res.status(201).json({ ok: true, session });
@@ -1495,11 +1483,35 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       skipDuplicates: true,
     });
 
+    // Consume credit for each learner on booking (not on completion)
+    const creditResults = [];
+    if (!allowNoCredit) {
+      for (const uid of uniqueLearnerIds) {
+        try {
+          const result = await consumeOneCredit(uid);
+          creditResults.push({ learnerId: uid, consumed: result.ok });
+          if (!result.ok) {
+            logger.warn(
+              { userId: uid, sessionId: session.id },
+              "[credits] Failed to consume credit on GROUP booking"
+            );
+          }
+        } catch (e) {
+          logger.error(
+            { err: e, userId: uid, sessionId: session.id },
+            "[credits] consumeOneCredit failed on GROUP session create"
+          );
+          creditResults.push({ learnerId: uid, consumed: false });
+        }
+      }
+    }
+
     await audit(req.user.id, "session_create", "Session", session.id, {
       type: "GROUP",
       learnerIds: uniqueLearnerIds,
       teacherId,
       capacity,
+      creditResults,
     });
 
     return res.status(201).json({ ok: true, session });
@@ -1663,6 +1675,29 @@ router.post(
         }
       });
 
+      // Consume credit for each added learner on booking (not on completion)
+      const creditResults = [];
+      if (!allowNoCredit) {
+        for (const uid of toAdd) {
+          try {
+            const result = await consumeOneCredit(uid);
+            creditResults.push({ learnerId: uid, consumed: result.ok });
+            if (!result.ok) {
+              logger.warn(
+                { userId: uid, sessionId },
+                "[credits] Failed to consume credit when adding participant"
+              );
+            }
+          } catch (e) {
+            logger.error(
+              { err: e, userId: uid, sessionId },
+              "[credits] consumeOneCredit failed when adding participant"
+            );
+            creditResults.push({ learnerId: uid, consumed: false });
+          }
+        }
+      }
+
       await audit(
         req.user.id,
         "session_add_participants",
@@ -1670,6 +1705,7 @@ router.post(
         sessionId,
         {
           addedUserIds: toAdd,
+          creditResults,
         }
       );
 
@@ -1909,12 +1945,11 @@ router.patch(
       const prevStatus = existing.status;
       const nextStatus = patch.status ?? existing.status;
 
-      let shouldConsume = false;
+      // Credits are consumed on booking, not on completion
+      // Only refund when transitioning TO canceled status
       let shouldRefund = false;
 
-      if (prevStatus !== "completed" && nextStatus === "completed") {
-        shouldConsume = true;
-      } else if (prevStatus === "completed" && nextStatus !== "completed") {
+      if (prevStatus !== "canceled" && nextStatus === "canceled") {
         shouldRefund = true;
       }
 
@@ -1934,10 +1969,10 @@ router.patch(
         },
       });
 
-      // Handle credit consumption/refund on status change
+      // Handle credit refund when canceling via admin PATCH
       const creditResults = [];
 
-      if (shouldConsume || shouldRefund) {
+      if (shouldRefund) {
         if (existing.type === "GROUP") {
           const seats = (existing.participants || [])
             .filter((p) => p.status !== "canceled")
@@ -1945,29 +1980,20 @@ router.patch(
 
           for (const learnerId of seats) {
             try {
-              if (shouldConsume) {
-                const resUse = await consumeOneCredit(learnerId);
-                creditResults.push({
-                  learnerId,
-                  action: "consume",
-                  ok: resUse.ok,
-                });
-              } else if (shouldRefund) {
-                const resRef = await refundOneCredit(learnerId);
-                creditResults.push({
-                  learnerId,
-                  action: "refund",
-                  ok: resRef.ok,
-                });
-              }
+              const resRef = await refundOneCredit(learnerId);
+              creditResults.push({
+                learnerId,
+                action: "refund",
+                ok: resRef.ok,
+              });
             } catch (e) {
               logger.error(
                 { err: e, userId: learnerId, sessionId: updated.id },
-                "[credits] accounting failure"
+                "[credits] refund failed on admin cancel"
               );
               creditResults.push({
                 learnerId,
-                action: shouldConsume ? "consume" : "refund",
+                action: "refund",
                 ok: false,
               });
             }
@@ -1982,29 +2008,20 @@ router.patch(
 
           if (learnerId) {
             try {
-              if (shouldConsume) {
-                const resUse = await consumeOneCredit(learnerId);
-                creditResults.push({
-                  learnerId,
-                  action: "consume",
-                  ok: resUse.ok,
-                });
-              } else if (shouldRefund) {
-                const resRef = await refundOneCredit(learnerId);
-                creditResults.push({
-                  learnerId,
-                  action: "refund",
-                  ok: resRef.ok,
-                });
-              }
+              const resRef = await refundOneCredit(learnerId);
+              creditResults.push({
+                learnerId,
+                action: "refund",
+                ok: resRef.ok,
+              });
             } catch (e) {
               logger.error(
                 { err: e, userId: learnerId, sessionId: updated.id },
-                "[credits] accounting failure"
+                "[credits] refund failed on admin cancel"
               );
               creditResults.push({
                 learnerId,
-                action: shouldConsume ? "consume" : "refund",
+                action: "refund",
                 ok: false,
               });
             }

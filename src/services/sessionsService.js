@@ -155,9 +155,8 @@ export async function refundOneCredit(userId) {
  * Auto-mark ended sessions as completed (lazy finalization) for a learner
  * This is called when a learner views their sessions.
  *
- * UNIFIED CREDIT LOGIC:
- * - Credits are consumed for ALL non-canceled participants
- * - This matches the behavior in /complete and admin PATCH
+ * UPDATED: Credits are now consumed on BOOKING, not on completion.
+ * This function only marks sessions as completed - no credit operations needed.
  */
 const COMPLETION_GRACE_MIN = 2;
 
@@ -196,49 +195,9 @@ export async function finalizeExpiredSessionsForUser(userId) {
         data: { status: "completed" },
       });
 
-      const creditResults = [];
-
-      // UNIFIED: Consume credits for all non-canceled participants
-      if (s.type === "GROUP") {
-        const activeSeats = (s.participants || [])
-          .filter((p) => p.status !== "canceled")
-          .map((p) => p.userId);
-
-        for (const learnerId of activeSeats) {
-          try {
-            const result = await consumeOneCredit(learnerId);
-            creditResults.push({ learnerId, consumed: result.ok });
-          } catch (e) {
-            logger.error(
-              { err: e, sessionId: s.id, userId: learnerId },
-              "[finalize] group credit consume failed"
-            );
-            creditResults.push({ learnerId, consumed: false });
-          }
-        }
-      } else {
-        // ONE_ON_ONE: legacy userId OR first participant
-        const learnerId =
-          s.userId ||
-          (s.participants && s.participants.length
-            ? s.participants[0].userId
-            : null);
-
-        if (learnerId) {
-          try {
-            const result = await consumeOneCredit(learnerId);
-            creditResults.push({ learnerId, consumed: result.ok });
-          } catch (e) {
-            logger.error(
-              { err: e, sessionId: s.id, userId: learnerId },
-              "[finalize] credit consume failed"
-            );
-            creditResults.push({ learnerId, consumed: false });
-          }
-        }
-      }
-
-      results.push({ sessionId: s.id, finalized: true, creditResults });
+      // Credits are consumed on booking, not on completion
+      // No credit operations needed here
+      results.push({ sessionId: s.id, finalized: true });
     } catch (e) {
       logger.error(
         { err: e, sessionId: s.id },
@@ -253,6 +212,9 @@ export async function finalizeExpiredSessionsForUser(userId) {
 
 /**
  * Same idea, but for teacher views
+ *
+ * UPDATED: Credits are now consumed on BOOKING, not on completion.
+ * This function only marks sessions as completed - no credit operations needed.
  */
 export async function finalizeExpiredSessionsForTeacher(teacherId) {
   const cutoff = new Date(Date.now() - COMPLETION_GRACE_MIN * 60 * 1000);
@@ -285,48 +247,9 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
         data: { status: "completed" },
       });
 
-      const creditResults = [];
-
-      // UNIFIED: Consume credits for all non-canceled participants
-      if (s.type === "GROUP") {
-        const activeSeats = (s.participants || [])
-          .filter((p) => p.status !== "canceled")
-          .map((p) => p.userId);
-
-        for (const learnerId of activeSeats) {
-          try {
-            const result = await consumeOneCredit(learnerId);
-            creditResults.push({ learnerId, consumed: result.ok });
-          } catch (e) {
-            logger.error(
-              { err: e, sessionId: s.id, userId: learnerId },
-              "[finalize-teacher] group credit consume failed"
-            );
-            creditResults.push({ learnerId, consumed: false });
-          }
-        }
-      } else {
-        const learnerId =
-          s.userId ||
-          (s.participants && s.participants.length
-            ? s.participants[0].userId
-            : null);
-
-        if (learnerId) {
-          try {
-            const result = await consumeOneCredit(learnerId);
-            creditResults.push({ learnerId, consumed: result.ok });
-          } catch (e) {
-            logger.error(
-              { err: e, sessionId: s.id, userId: learnerId },
-              "[finalize-teacher] credit consume failed"
-            );
-            creditResults.push({ learnerId, consumed: false });
-          }
-        }
-      }
-
-      results.push({ sessionId: s.id, finalized: true, creditResults });
+      // Credits are consumed on booking, not on completion
+      // No credit operations needed here
+      results.push({ sessionId: s.id, finalized: true });
     } catch (e) {
       logger.error(
         { err: e, sessionId: s.id },
