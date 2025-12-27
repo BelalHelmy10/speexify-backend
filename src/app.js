@@ -39,6 +39,7 @@ import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 import { logger } from "./lib/logger.js";
 import notificationsRoutes from "./routes/notifications.js";
+import devEmailTestRoutes from "./routes/devEmailTest.js";
 
 const app = express();
 
@@ -106,6 +107,7 @@ app.use("/api", packagesRoutes); // FIX: packages route handles /api/packages
 app.use("/api", adminRoutes);
 app.use("/api", onboardingAssessmentRoutes);
 app.use("/api", notificationsRoutes);
+app.use("/api", devEmailTestRoutes);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */

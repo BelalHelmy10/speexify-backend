@@ -12,34 +12,12 @@ import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
 
+// ✅ Use the shared email service (Resend)
+// NOTE: This path assumes: api/routes/auth.js  ->  src/services/emailService.js
+// If your structure differs, adjust the relative path.
+import { sendEmail } from "../../src/services/emailService.js";
+
 const router = express.Router();
-
-// (Optional) email sender: uses Nodemailer if SMTP env is set; otherwise logs
-let transporter = null;
-try {
-  const nodemailer = await import("nodemailer");
-  if (process.env.SMTP_HOST) {
-    transporter = nodemailer.default.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-  }
-} catch (_) {}
-
-async function sendEmail(to, subject, html) {
-  if (transporter) {
-    await transporter.sendMail({
-      from: process.env.EMAIL_FROM || "no-reply@speexify.local",
-      to,
-      subject,
-      html,
-    });
-  } else {
-    console.log(`\n[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${html}\n`);
-  }
-}
 
 // Helpers
 const now = () => Date.now();
@@ -54,7 +32,9 @@ const hashCode = (raw) => crypto.createHash("sha256").update(raw).digest("hex");
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/register/start", async (req, res) => {
   try {
-    const email = String(req.body?.email || "").toLowerCase();
+    const email = String(req.body?.email || "")
+      .toLowerCase()
+      .trim();
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
     }
@@ -96,6 +76,7 @@ router.post("/register/start", async (req, res) => {
       create: { ...data },
     });
 
+    // ✅ Send via Resend (through shared service)
     await sendEmail(
       email,
       "Your Speexify verification code",
@@ -119,10 +100,12 @@ router.post("/register/start", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/register/complete", async (req, res) => {
   try {
-    const email = String(req.body?.email || "").toLowerCase();
-    const code = String(req.body?.code || "");
+    const email = String(req.body?.email || "")
+      .toLowerCase()
+      .trim();
+    const code = String(req.body?.code || "").trim();
     const password = String(req.body?.password || "");
-    const name = String(req.body?.name || "");
+    const name = String(req.body?.name || "").trim();
 
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
@@ -160,7 +143,7 @@ router.post("/register/complete", async (req, res) => {
         .json({ error: "Too many attempts. Request a new code." });
     }
 
-    const isMatch = v.codeHash === hashCode(code.trim());
+    const isMatch = v.codeHash === hashCode(code);
     if (!isMatch) {
       await prisma.verificationCode.update({
         where: { email },
@@ -172,7 +155,12 @@ router.post("/register/complete", async (req, res) => {
     // Create user (hash password)
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { email, name, hashedPassword: passwordHash, role: "learner" },
+      data: {
+        email,
+        name: name || null,
+        hashedPassword: passwordHash,
+        role: "learner",
+      },
       select: { id: true, email: true, name: true, role: true },
     });
 
