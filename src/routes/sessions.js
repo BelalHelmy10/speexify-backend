@@ -558,6 +558,9 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/cancel - Cancel session or participant seat
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/cancel - Cancel session or participant seat
+// --------------------------------------------------------------------------
 router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -566,6 +569,7 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
       where: { id },
       select: {
         id: true,
+        title: true,
         type: true,
         status: true,
         startAt: true,
@@ -599,6 +603,31 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
     const refundableByLearner =
       startsAt.getTime() - Date.now() >= twelveHoursMs;
 
+    const sessionTitle = sessionRow.title || "Session";
+
+    // Helper: best-effort notification (never break cancel if notif fails)
+    async function notifyMany(userIds, { type, title, body, data }) {
+      const unique = Array.from(new Set((userIds || []).filter(Boolean)));
+      if (!unique.length) return;
+
+      try {
+        await prisma.notification.createMany({
+          data: unique.map((uid) => ({
+            userId: uid,
+            type,
+            title,
+            body,
+            data,
+          })),
+        });
+      } catch (e) {
+        logger.error(
+          { err: e, sessionId: sessionRow.id, userIds: unique },
+          "[notifications] failed to create cancel notifications"
+        );
+      }
+    }
+
     // ─────────────────────────────────────────────
     // GROUP: learner cancels ONLY their seat
     // ─────────────────────────────────────────────
@@ -631,6 +660,19 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
           );
         }
       }
+
+      // ✅ Notify BOTH: learner + teacher
+      await notifyMany([viewerId, sessionRow.teacherId], {
+        type: "session_canceled",
+        title: "Session canceled",
+        body: `A seat was canceled for "${sessionTitle}".`,
+        data: {
+          scope: "participant",
+          sessionId: sessionRow.id,
+          canceledBy: req.user.id,
+          startAt: sessionRow.startAt,
+        },
+      });
 
       return res.json({
         ok: true,
@@ -712,6 +754,37 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
         "[credits] cancel refund failed"
       );
     }
+
+    // ✅ Determine recipients for "whole session canceled"
+    const recipients = [];
+    if (sessionRow.type === "GROUP") {
+      const active = (sessionRow.participants || [])
+        .filter((p) => p.status !== "canceled")
+        .map((p) => p.userId);
+      recipients.push(...active);
+    } else {
+      const learnerId =
+        sessionRow.userId ||
+        (sessionRow.participants?.length
+          ? sessionRow.participants[0].userId
+          : null);
+      if (learnerId) recipients.push(learnerId);
+    }
+    // Always include teacher too
+    recipients.push(sessionRow.teacherId);
+
+    // ✅ Notify BOTH sides
+    await notifyMany(recipients, {
+      type: "session_canceled",
+      title: "Session canceled",
+      body: `The session "${sessionTitle}" was canceled.`,
+      data: {
+        scope: "session",
+        sessionId: sessionRow.id,
+        canceledBy: req.user.id,
+        startAt: sessionRow.startAt,
+      },
+    });
 
     return res.json({
       ok: true,
