@@ -9,6 +9,7 @@ import {
   finalizeExpiredSessionsForUser,
   finalizeExpiredSessionsForTeacher,
 } from "../services/sessionsService.js";
+import { createNotification } from "../services/notificationsService.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -1388,6 +1389,28 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         creditConsumed: creditResult?.ok || false,
       });
 
+      // ✅ In-app booking confirmation notification (do not fail the booking if this fails)
+      try {
+        await createNotification({
+          userId: Number(learnerId),
+          type: "booking_confirmed",
+          title: "Lesson booked",
+          body: `Your lesson is confirmed.`,
+          data: {
+            sessionId: session.id,
+            startAt: session.startAt,
+            endAt: session.endAt,
+            joinUrl: session.joinUrl,
+            sessionType: session.type,
+          },
+        });
+      } catch (e) {
+        logger.error(
+          { err: e, learnerId: Number(learnerId), sessionId: session.id },
+          "booking_confirmed notification failed"
+        );
+      }
+
       return res.status(201).json({ ok: true, session });
     }
 
@@ -1513,6 +1536,32 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       capacity,
       creditResults,
     });
+
+    // ✅ In-app booking confirmation notification for each learner (do not fail the booking if this fails)
+    try {
+      await Promise.all(
+        uniqueLearnerIds.map((uid) =>
+          createNotification({
+            userId: uid,
+            type: "booking_confirmed",
+            title: "Lesson booked",
+            body: `Your lesson is confirmed.`,
+            data: {
+              sessionId: session.id,
+              startAt: session.startAt,
+              endAt: session.endAt,
+              joinUrl: session.joinUrl,
+              sessionType: session.type,
+            },
+          })
+        )
+      );
+    } catch (e) {
+      logger.error(
+        { err: e, learnerIds: uniqueLearnerIds, sessionId: session.id },
+        "booking_confirmed notifications failed (group)"
+      );
+    }
 
     return res.status(201).json({ ok: true, session });
   } catch (e) {
