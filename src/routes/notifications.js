@@ -48,10 +48,6 @@ router.get("/notifications", requireAuth, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// POST /api/notifications/test
-// Creates a test notification for the logged-in user (dev sanity check)
-// --------------------------------------------------------------------------
-// --------------------------------------------------------------------------
 // GET /api/notifications/test
 // Creates a test notification for the logged-in user (dev sanity check)
 // Useful because browser address bar uses GET.
@@ -123,6 +119,27 @@ router.post("/notifications/:id/read", requireAuth, async (req, res) => {
     return res.json({ ok: true, updatedCount: updated.count });
   } catch (err) {
     return res.status(500).json({ error: "Failed to mark as read" });
+  }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/notifications/:id/delete
+// Deletes one notification (only if it belongs to the logged-in user)
+// --------------------------------------------------------------------------
+router.post("/notifications/:id/delete", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id))
+      return res.status(400).json({ error: "Invalid id" });
+
+    const deleted = await prisma.notification.deleteMany({
+      where: { id, userId },
+    });
+
+    return res.json({ ok: true, deletedCount: deleted.count });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to delete notification" });
   }
 });
 
