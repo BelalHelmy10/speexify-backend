@@ -437,36 +437,117 @@ export async function sendCompletionNotifications({
 }
 
 /**
- * Send notification when teacher leaves feedback
+ * Send notification + email when teacher leaves feedback
  */
-export async function sendFeedbackNotification({
+export async function sendFeedbackNotifications({
   session,
-  learnerId,
+  learnerIds,
   teacherId,
+  feedback,
 }) {
   const sessionTitle = session.title || "Session";
 
-  // Fetch teacher name
-  const teacher = await prisma.user.findUnique({
-    where: { id: teacherId },
-    select: { name: true },
-  });
+  // Fetch teacher and learners
+  const [teacher, learners] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: teacherId },
+      select: { id: true, name: true, email: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: learnerIds } },
+      select: { id: true, name: true, email: true, timezone: true },
+    }),
+  ]);
 
-  await createNotification({
-    userId: learnerId,
-    type: "feedback_received",
-    title: "New feedback from your teacher",
-    body: `${
-      teacher?.name || "Your teacher"
-    } left feedback for "${sessionTitle}".`,
-    data: {
-      sessionId: session.id,
-      teacherId,
-    },
-  });
+  const teacherName = teacher?.name || "Your teacher";
+
+  // ─────────────────────────────────────────────────────────────────
+  // In-app notifications
+  // ─────────────────────────────────────────────────────────────────
+
+  await Promise.all(
+    learnerIds.map((learnerId) =>
+      createNotification({
+        userId: learnerId,
+        type: "feedback_received",
+        title: "New feedback from your teacher",
+        body: `${teacherName} left feedback for "${sessionTitle}".`,
+        data: {
+          sessionId: session.id,
+          teacherId,
+        },
+      })
+    )
+  );
+
+  // ─────────────────────────────────────────────────────────────────
+  // Email notifications
+  // ─────────────────────────────────────────────────────────────────
+
+  await Promise.all(
+    learners.map(async (learner) => {
+      // Build feedback preview (truncate if too long)
+      const messagePreview = feedback?.messageToLearner
+        ? feedback.messageToLearner.length > 200
+          ? feedback.messageToLearner.substring(0, 200) + "..."
+          : feedback.messageToLearner
+        : null;
+
+      const feedbackSection = messagePreview
+        ? `
+          <div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:8px;padding:16px;margin:20px 0;">
+            <p style="margin:0 0 8px;font-weight:600;color:#166534;">Message from ${teacherName}:</p>
+            <p style="margin:0;color:#1a1a1a;font-style:italic;">"${messagePreview}"</p>
+          </div>
+        `
+        : "";
+
+      const html = `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;color:#1a1a1a;">
+          <h2 style="margin-bottom:8px;">💬 New Feedback Received!</h2>
+          
+          <p>Hi${learner.name ? ` ${learner.name}` : ""},</p>
+          
+          <p>${teacherName} has left feedback for your session <strong>"${sessionTitle}"</strong>.</p>
+          
+          ${feedbackSection}
+          
+          <p>
+            <a href="${
+              process.env.FRONTEND_URL || "https://app.speexify.com"
+            }/dashboard/sessions/${session.id}" 
+               style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
+              View Full Feedback
+            </a>
+          </p>
+          
+          <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e2e8f0;">
+            <p style="color:#64748b;font-size:13px;margin:0;">
+              💡 Reviewing feedback helps you track your progress and prepare for future sessions.
+            </p>
+          </div>
+          
+          <p style="margin-top:30px;color:#64748b;">— The Speexify Team</p>
+        </div>
+      `;
+
+      try {
+        await sendEmail(
+          learner.email,
+          `Speexify — ${teacherName} left you feedback! 💬`,
+          html
+        );
+      } catch (e) {
+        logger.error(
+          { err: e, sessionId: session.id, learnerId: learner.id },
+          "[notifications] failed to send feedback email to learner"
+        );
+      }
+    })
+  );
 
   logger.info(
-    { sessionId: session.id, learnerId, teacherId },
-    "Feedback notification sent"
+    { sessionId: session.id, learnerIds, teacherId },
+    "Feedback notifications sent"
   );
 }

@@ -13,6 +13,7 @@ import {
   createNotification,
   sendBookingNotifications,
   sendCancellationNotifications,
+  sendFeedbackNotifications, // ← ADD THIS
 } from "../services/notificationsService.js";
 import { logger } from "../lib/logger.js";
 
@@ -331,12 +332,23 @@ router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/feedback - Create/update detailed teacher feedback
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/feedback - Create/update detailed teacher feedback
+// --------------------------------------------------------------------------
 router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const session = await prisma.session.findUnique({
       where: { id },
-      select: { id: true, userId: true, teacherId: true, startAt: true },
+      select: {
+        id: true,
+        title: true,
+        userId: true,
+        teacherId: true,
+        startAt: true,
+        type: true,
+        participants: { select: { userId: true, status: true } },
+      },
     });
 
     if (!session) return res.status(404).json({ error: "Session not found" });
@@ -363,6 +375,13 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
     const commentsOnSession = String(req.body?.commentsOnSession || "").trim();
     const futureSteps = String(req.body?.futureSteps || "").trim();
 
+    // Check if feedback already exists (to know if this is new or update)
+    const existingFeedback = await prisma.sessionFeedback.findUnique({
+      where: { sessionId: session.id },
+    });
+
+    const isNewFeedback = !existingFeedback;
+
     const feedback = await prisma.sessionFeedback.upsert({
       where: { sessionId: session.id },
       update: {
@@ -378,6 +397,49 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
         futureSteps,
       },
     });
+
+    // ✅ Send notification + email only for NEW feedback (not updates)
+    if (isNewFeedback) {
+      try {
+        // Get learner IDs
+        const learnerIds = [];
+        if (session.type === "GROUP") {
+          const activeParticipants = (session.participants || [])
+            .filter((p) => p.status !== "canceled")
+            .map((p) => p.userId);
+          learnerIds.push(...activeParticipants);
+        } else {
+          // ONE_ON_ONE - check legacy userId or participants
+          if (session.userId) {
+            learnerIds.push(session.userId);
+          } else if (session.participants?.length) {
+            const active = session.participants
+              .filter((p) => p.status !== "canceled")
+              .map((p) => p.userId);
+            learnerIds.push(...active);
+          }
+        }
+
+        if (learnerIds.length > 0) {
+          await sendFeedbackNotifications({
+            session,
+            learnerIds,
+            teacherId: req.user.id,
+            feedback: {
+              messageToLearner,
+              commentsOnSession,
+              futureSteps,
+            },
+          });
+        }
+      } catch (e) {
+        logger.error(
+          { err: e, sessionId: session.id },
+          "feedback notifications failed"
+        );
+        // Don't fail the request if notifications fail
+      }
+    }
 
     res.json({ ok: true, feedback });
   } catch (e) {
