@@ -160,4 +160,49 @@ router.post("/notifications/read-all", requireAuth, async (req, res) => {
   }
 });
 
+// --------------------------------------------------------------------------
+// POST /api/notifications/clear-read
+// Deletes all READ notifications for the logged-in user
+// (This endpoint was MISSING and causing the "Clear read" button to fail!)
+// --------------------------------------------------------------------------
+router.post("/notifications/clear-read", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const deleted = await prisma.notification.deleteMany({
+      where: {
+        userId,
+        readAt: { not: null }, // Only delete notifications that have been read
+      },
+    });
+
+    return res.json({ ok: true, deletedCount: deleted.count });
+  } catch (err) {
+    return res
+      .status(500)
+      .json({ error: "Failed to clear read notifications" });
+  }
+});
+
+// --------------------------------------------------------------------------
+// DELETE /api/notifications/:id
+// Alternative REST-style delete endpoint
+// --------------------------------------------------------------------------
+router.delete("/notifications/:id", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id))
+      return res.status(400).json({ error: "Invalid id" });
+
+    const deleted = await prisma.notification.deleteMany({
+      where: { id, userId },
+    });
+
+    return res.json({ ok: true, deletedCount: deleted.count });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to delete notification" });
+  }
+});
+
 export default router;
