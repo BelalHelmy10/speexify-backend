@@ -513,12 +513,14 @@ export async function sendFeedbackNotifications({
           ${feedbackSection}
           
           <p>
-            <a href="${
-              process.env.FRONTEND_URL || "https://app.speexify.com"
-            }/dashboard/sessions/${session.id}" 
+            <a href="https://app.speexify.com/dashboard" 
                style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-              View Full Feedback
+              View in Dashboard
             </a>
+          </p>
+          
+          <p style="margin-top:16px;color:#64748b;font-size:13px;">
+            Log in and go to your past sessions to view the full feedback.
           </p>
           
           <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e2e8f0;">
