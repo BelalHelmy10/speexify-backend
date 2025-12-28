@@ -138,8 +138,9 @@ export function startSessionReminderScheduler({
     ];
 
     for (const t of targets) {
-      const start = new Date(now.getTime() + t.hours * 60 * 60 * 1000);
-      const end = new Date(start.getTime() + windowMinutes * 60 * 1000);
+      const target = new Date(now.getTime() + t.hours * 60 * 60 * 1000);
+      const start = new Date(target.getTime() - windowMinutes * 60 * 1000);
+      const end = new Date(target.getTime() + windowMinutes * 60 * 1000);
 
       const where = {
         status: "scheduled",
