@@ -5,6 +5,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
+import { supportUpload } from "../lib/supportUpload.js";
 
 const router = Router();
 
@@ -198,6 +199,60 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Failed to add message" });
   }
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/support/tickets/:id/attachments
+// Upload attachment for a ticket message
+// ---------------------------------------------------------------------------
+router.post(
+  "/tickets/:id/attachments",
+  requireAuth,
+  supportUpload.single("file"),
+  async (req, res) => {
+    const ticketId = Number(req.params.id);
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const viewerId = req.viewUserId;
+    const isAdmin = req.user?.role === "admin";
+
+    // Ensure ticket exists & permission
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, userId: true },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    if (!isAdmin && ticket.userId !== viewerId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // Create message + attachment
+    const message = await prisma.supportMessage.create({
+      data: {
+        ticketId,
+        authorId: viewerId,
+        body: "[Attachment]",
+        isStaff: isAdmin,
+        attachments: {
+          create: {
+            fileName: req.file.originalname,
+            filePath: req.file.filename,
+            mimeType: req.file.mimetype,
+            fileSize: req.file.size,
+          },
+        },
+      },
+      include: { attachments: true },
+    });
+
+    res.json({ ok: true, message });
+  }
+);
 
 // ---------------------------------------------------------------------------
 // ADMIN: PATCH /api/support/admin/tickets/:id

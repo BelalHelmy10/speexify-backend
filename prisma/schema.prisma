@@ -152,7 +152,26 @@ model SupportMessage {
 
   @@index([ticketId, createdAt])
   @@index([authorId, createdAt])
+
+  attachments SupportAttachment[]
 }
+
+model SupportAttachment {
+  id        Int      @id @default(autoincrement())
+
+  messageId Int
+  message   SupportMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  fileName  String
+  filePath  String
+  mimeType  String
+  fileSize  Int
+
+  createdAt DateTime @default(now())
+
+  @@index([messageId])
+}
+
 
 
 model Audit {

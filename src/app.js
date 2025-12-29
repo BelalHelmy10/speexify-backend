@@ -41,6 +41,7 @@ import { logger } from "./lib/logger.js";
 import notificationsRoutes from "./routes/notifications.js";
 import devEmailTestRoutes from "./routes/devEmailTest.js";
 import supportRoutes from "./routes/support.js";
+import path from "path";
 
 const app = express();
 
@@ -110,6 +111,11 @@ app.use("/api", onboardingAssessmentRoutes);
 app.use("/api", notificationsRoutes);
 app.use("/api", devEmailTestRoutes);
 app.use("/api/support", supportRoutes);
+
+app.use(
+  "/uploads/support",
+  express.static(path.join(process.cwd(), "uploads", "support"))
+);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */
