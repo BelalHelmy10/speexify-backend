@@ -306,4 +306,235 @@ router.patch(
   }
 );
 
+// ---------------------------------------------------------------------------
+// ADMIN: GET /api/support/admin/tickets
+// List all tickets for admin inbox (supports status + query search)
+// ---------------------------------------------------------------------------
+router.get("/admin/tickets", requireAuth, requireAdmin, async (req, res) => {
+  const status = req.query.status ? String(req.query.status) : null;
+  const q = req.query.q ? String(req.query.q).trim() : "";
+
+  // Keep aligned with your existing statuses
+  const allowedStatuses = ["OPEN", "IN_PROGRESS", "RESOLVED"];
+  const statusFilter =
+    status && allowedStatuses.includes(status) ? status : null;
+
+  try {
+    const where = {
+      ...(statusFilter ? { status: statusFilter } : {}),
+      ...(q
+        ? {
+            OR: [
+              { subject: { contains: q, mode: "insensitive" } },
+              { user: { email: { contains: q, mode: "insensitive" } } },
+              { user: { name: { contains: q, mode: "insensitive" } } },
+              {
+                messages: {
+                  some: { body: { contains: q, mode: "insensitive" } },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const tickets = await prisma.supportTicket.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        category: true,
+        subject: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        userId: true,
+        user: { select: { id: true, name: true, email: true } },
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            body: true,
+            createdAt: true,
+            isStaff: true,
+            authorId: true,
+          },
+        },
+      },
+    });
+
+    const normalized = tickets.map((t) => ({
+      ...t,
+      lastMessage: t.messages[0] || null,
+      messages: undefined,
+    }));
+
+    return res.json({ ok: true, tickets: normalized });
+  } catch (e) {
+    console.error("[support] admin list tickets error:", e);
+    return res.status(500).json({ error: "Failed to list tickets" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN: GET /api/support/admin/tickets/:id
+// Read any ticket thread (admin only)
+// ---------------------------------------------------------------------------
+router.get(
+  "/admin/tickets/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const ticketId = Number(req.params.id);
+    if (!Number.isFinite(ticketId)) {
+      return res.status(400).json({ error: "Invalid ticket id" });
+    }
+
+    try {
+      const ticket = await prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          messages: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              author: { select: { id: true, name: true, role: true } },
+              attachments: true,
+            },
+          },
+        },
+      });
+
+      if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+      return res.json({ ok: true, ticket });
+    } catch (e) {
+      console.error("[support] admin read ticket error:", e);
+      return res.status(500).json({ error: "Failed to read ticket" });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ADMIN: POST /api/support/admin/tickets/:id/reply
+// Add a staff reply message
+// ---------------------------------------------------------------------------
+router.post(
+  "/admin/tickets/:id/reply",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const ticketId = Number(req.params.id);
+    if (!Number.isFinite(ticketId)) {
+      return res.status(400).json({ error: "Invalid ticket id" });
+    }
+
+    const Body = z
+      .object({
+        message: z.string().trim().min(1).max(5000),
+      })
+      .strict();
+
+    const parsed = Body.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    const adminId = req.viewUserId;
+
+    try {
+      const ticket = await prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        select: { id: true, status: true },
+      });
+
+      if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+
+      const message = await prisma.supportMessage.create({
+        data: {
+          ticketId,
+          authorId: adminId,
+          body: parsed.data.message,
+          isStaff: true,
+        },
+        include: {
+          author: { select: { id: true, name: true, role: true } },
+          attachments: true,
+        },
+      });
+
+      // Move ticket into IN_PROGRESS when admin replies (unless already RESOLVED)
+      if (ticket.status === "OPEN") {
+        await prisma.supportTicket.update({
+          where: { id: ticketId },
+          data: { status: "IN_PROGRESS" },
+          select: { id: true },
+        });
+      } else {
+        // still touch updatedAt via an empty update
+        await prisma.supportTicket.update({
+          where: { id: ticketId },
+          data: {},
+          select: { id: true },
+        });
+      }
+
+      return res.json({ ok: true, message });
+    } catch (e) {
+      console.error("[support] admin reply error:", e);
+      return res.status(500).json({ error: "Failed to send reply" });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ADMIN: PATCH /api/support/admin/tickets/:id/status
+// Update ticket status (OPEN / IN_PROGRESS / RESOLVED)
+// ---------------------------------------------------------------------------
+router.patch(
+  "/admin/tickets/:id/status",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const ticketId = Number(req.params.id);
+    if (!Number.isFinite(ticketId)) {
+      return res.status(400).json({ error: "Invalid ticket id" });
+    }
+
+    const Body = z
+      .object({
+        status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED"]),
+      })
+      .strict();
+
+    const parsed = Body.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    try {
+      const status = parsed.data.status;
+
+      const ticket = await prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status,
+          resolvedAt: status === "RESOLVED" ? new Date() : null,
+        },
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          updatedAt: true,
+        },
+      });
+
+      return res.json({ ok: true, ticket });
+    } catch (e) {
+      console.error("[support] admin update status error:", e);
+      return res.status(500).json({ error: "Failed to update status" });
+    }
+  }
+);
+
 export default router;
