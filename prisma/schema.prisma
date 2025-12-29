@@ -63,13 +63,18 @@ model User {
   // Support tickets + messages
   supportTickets        SupportTicket[]
   supportMessages       SupportMessage[]
+  
+  // ✨ NEW: Support ticket assignment (admin can assign tickets to staff)
+  assignedSupportTickets SupportTicket[]       @relation("AssignedSupportTickets")
+  
+  // ✨ NEW: Internal notes authored by staff
+  supportInternalNotes   SupportInternalNote[] @relation("SupportNoteAuthor")
 
-  // ─── NEW: Learner feedback on sessions ───
+  // Learner feedback on sessions
   learnerFeedbacks      LearnerSessionFeedback[] @relation("LearnerFeedbacks")
 
   @@index([role])
 }
-
 
 model Notification {
   id        Int      @id @default(autoincrement())
@@ -90,9 +95,9 @@ model Notification {
   @@index([userId, readAt])
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Support: in-app chat-style support, backed by tickets + thread messages
+// ✨ ENHANCED with enterprise features
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum SupportCategory {
@@ -109,6 +114,14 @@ enum SupportStatus {
   RESOLVED
 }
 
+// ✨ NEW: Priority levels for ticket triage
+enum SupportPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
 model SupportTicket {
   id         Int             @id @default(autoincrement())
 
@@ -119,6 +132,13 @@ model SupportTicket {
   category   SupportCategory
   subject    String?
   status     SupportStatus   @default(OPEN)
+  
+  // ✨ NEW: Priority system (default NORMAL)
+  priority   SupportPriority @default(NORMAL)
+
+  // ✨ NEW: Ticket assignment (which staff member is handling this)
+  assignedToId Int?
+  assignedTo   User?         @relation("AssignedSupportTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
 
   // Soft resolution timestamps
   resolvedAt DateTime?
@@ -127,10 +147,15 @@ model SupportTicket {
   updatedAt  DateTime        @updatedAt
 
   messages   SupportMessage[]
+  
+  // ✨ NEW: Internal notes (staff-only collaboration)
+  internalNotes SupportInternalNote[]
 
   @@index([userId, updatedAt])
   @@index([status, updatedAt])
   @@index([category, updatedAt])
+  @@index([priority, updatedAt])        // ✨ NEW: Index for filtering by priority
+  @@index([assignedToId, updatedAt])    // ✨ NEW: Index for filtering by assignment
 }
 
 model SupportMessage {
@@ -172,7 +197,26 @@ model SupportAttachment {
   @@index([messageId])
 }
 
+// ✨ NEW: Internal notes for staff collaboration
+// These are NOT visible to customers, only to staff members
+model SupportInternalNote {
+  id        Int      @id @default(autoincrement())
 
+  ticketId  Int
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Staff member who wrote the note
+  authorId  Int
+  author    User     @relation("SupportNoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  body      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ticketId, createdAt])
+  @@index([authorId])
+}
 
 model Audit {
   id        Int      @id @default(autoincrement())
@@ -254,7 +298,6 @@ model SessionParticipant {
   @@index([userId])
   @@index([sessionId])
 }
-
 
 model SessionFeedback {
   id                String   @id @default(cuid())
