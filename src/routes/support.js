@@ -393,6 +393,167 @@ router.post(
 );
 
 // ============================================================================
+// COPY THIS ENTIRE SECTION INTO YOUR backend/routes/support.js
+// Add it BEFORE your existing admin routes
+// ============================================================================
+
+// ============================================================================
+// ADMIN: UPDATE PRIORITY
+// ============================================================================
+router.patch(
+  "/admin/tickets/:ticketId/priority",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { ticketId } = req.params;
+    const { priority } = req.body;
+
+    // Validate priority
+    const validPriorities = ["LOW", "NORMAL", "HIGH", "URGENT"];
+    if (!validPriorities.includes(priority)) {
+      return res.status(400).json({
+        error: "Invalid priority. Must be: LOW, NORMAL, HIGH, or URGENT",
+      });
+    }
+
+    try {
+      // Update ticket with new priority
+      const ticket = await prisma.supportTicket.update({
+        where: { id: parseInt(ticketId) },
+        data: { priority },
+        include: {
+          user: {
+            select: { id: true, name: true, email: true },
+          },
+          messages: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              attachments: true,
+            },
+          },
+          assignedTo: {
+            select: { id: true, name: true, email: true },
+          },
+          internalNotes: {
+            orderBy: { createdAt: "desc" },
+            include: {
+              author: {
+                select: { id: true, name: true, email: true },
+              },
+            },
+          },
+        },
+      });
+
+      console.log(`✅ Ticket #${ticketId} priority updated to ${priority}`);
+      res.json({ ticket });
+    } catch (error) {
+      console.error("❌ Failed to update ticket priority:", error);
+      res.status(500).json({ error: "Failed to update priority" });
+    }
+  }
+);
+
+// ============================================================================
+// ADMIN: ASSIGN TICKET TO STAFF
+// ============================================================================
+router.patch(
+  "/admin/tickets/:ticketId/assign",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { ticketId } = req.params;
+    const { assignedToId } = req.body;
+
+    try {
+      // Update ticket assignment
+      const ticket = await prisma.supportTicket.update({
+        where: { id: parseInt(ticketId) },
+        data: {
+          assignedToId: assignedToId ? parseInt(assignedToId) : null,
+        },
+        include: {
+          user: {
+            select: { id: true, name: true, email: true },
+          },
+          messages: {
+            orderBy: { createdAt: "asc" },
+            include: {
+              attachments: true,
+            },
+          },
+          assignedTo: {
+            select: { id: true, name: true, email: true },
+          },
+          internalNotes: {
+            orderBy: { createdAt: "desc" },
+            include: {
+              author: {
+                select: { id: true, name: true, email: true },
+              },
+            },
+          },
+        },
+      });
+
+      console.log(
+        `✅ Ticket #${ticketId} assigned to ${assignedToId || "unassigned"}`
+      );
+      res.json({ ticket });
+    } catch (error) {
+      console.error("❌ Failed to assign ticket:", error);
+      res.status(500).json({ error: "Failed to assign ticket" });
+    }
+  }
+);
+
+// ============================================================================
+// ADMIN: ADD INTERNAL NOTE (Staff-Only Collaboration)
+// ============================================================================
+router.post(
+  "/admin/tickets/:ticketId/notes",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { ticketId } = req.params;
+    const { note } = req.body;
+
+    // Validate note content
+    if (!note || !note.trim()) {
+      return res.status(400).json({ error: "Note content is required" });
+    }
+
+    try {
+      // Create internal note
+      const internalNote = await prisma.supportInternalNote.create({
+        data: {
+          ticketId: parseInt(ticketId),
+          authorId: req.user.id,
+          body: note.trim(),
+        },
+        include: {
+          author: {
+            select: { id: true, name: true, email: true },
+          },
+        },
+      });
+
+      console.log(
+        `✅ Internal note added to ticket #${ticketId} by ${req.user.email}`
+      );
+      res.json({ note: internalNote });
+    } catch (error) {
+      console.error("❌ Failed to add internal note:", error);
+      res.status(500).json({ error: "Failed to add internal note" });
+    }
+  }
+);
+
+// ============================================================================
+// YOUR EXISTING ADMIN ROUTES GO BELOW THIS
+// ============================================================================
+
+// ============================================================================
 // ADMIN ROUTES
 // ============================================================================
 
