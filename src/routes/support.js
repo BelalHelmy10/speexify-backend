@@ -127,7 +127,10 @@ router.get("/tickets/:id", requireAuth, async (req, res) => {
         user: { select: { id: true, name: true, email: true } },
         messages: {
           orderBy: { createdAt: "asc" },
-          include: { author: { select: { id: true, name: true, role: true } } },
+          include: {
+            author: { select: { id: true, name: true, role: true } },
+            attachments: true,
+          },
         },
       },
     });
