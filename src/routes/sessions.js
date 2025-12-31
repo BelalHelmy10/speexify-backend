@@ -914,7 +914,8 @@ router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
 router.get("/me/sessions", requireAuth, async (req, res) => {
   try {
     // ✅ Admin dashboard should not use "my sessions"
-    if (req.user.role === "admin") {
+    // BUT allow if admin is impersonating another user
+    if (req.user.role === "admin" && !req.session?.asUserId) {
       return res.json([]);
     }
 
@@ -929,7 +930,20 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     }
 
     const userId = req.viewUserId;
-    const role = req.user.role || "learner";
+    // When impersonating, get the impersonated user's role, not admin's role
+    const isImpersonating = !!req.session?.asUserId;
+    let role = req.user.role || "learner";
+
+    // If impersonating, fetch the impersonated user's role
+    if (isImpersonating && req.session.asUserId) {
+      const impersonatedUser = await prisma.user.findUnique({
+        where: { id: req.session.asUserId },
+        select: { role: true },
+      });
+      if (impersonatedUser) {
+        role = impersonatedUser.role;
+      }
+    }
     const { range = "upcoming", limit = 10 } = req.query;
     const now = new Date();
 
@@ -1075,7 +1089,20 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
     }
 
     const userId = req.viewUserId;
-    const role = req.user.role || "learner";
+
+    // When impersonating, get the impersonated user's role, not admin's role
+    const isImpersonating = !!req.session?.asUserId;
+    let role = req.user.role || "learner";
+
+    if (isImpersonating && req.session.asUserId) {
+      const impersonatedUser = await prisma.user.findUnique({
+        where: { id: req.session.asUserId },
+        select: { role: true },
+      });
+      if (impersonatedUser) {
+        role = impersonatedUser.role;
+      }
+    }
 
     const whereBase =
       role === "teacher"

@@ -368,11 +368,13 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
         role: req.user?.role,
         userId: req.user?.id,
         viewUserId: req.viewUserId,
+        isImpersonating: !!req.session?.asUserId,
       },
       "HIT /api/me/summary"
     );
 
-    if (req.user?.role === "admin") {
+    // Only block real admins who are NOT impersonating
+    if (req.user?.role === "admin" && !req.session?.asUserId) {
       logger.info("ADMIN SUMMARY -> returning zeros");
       return res.json({
         nextSession: null,
@@ -383,8 +385,21 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 
     await finalizeExpiredSessionsForUser(req.viewUserId);
 
-    const role = req.user.role || "learner";
     const userId = req.viewUserId;
+
+    // When impersonating, get the impersonated user's role
+    const isImpersonating = !!req.session?.asUserId;
+    let role = req.user.role || "learner";
+
+    if (isImpersonating && req.session.asUserId) {
+      const impersonatedUser = await prisma.user.findUnique({
+        where: { id: req.session.asUserId },
+        select: { role: true },
+      });
+      if (impersonatedUser) {
+        role = impersonatedUser.role;
+      }
+    }
 
     const whereBase =
       role === "teacher"
@@ -455,7 +470,8 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 app.get("/api/me/packages", requireAuth, async (req, res) => {
   try {
-    if (req.user.role === "admin") {
+    // Only block real admins who are NOT impersonating
+    if (req.user.role === "admin" && !req.session?.asUserId) {
       return res.json([]);
     }
 
