@@ -64,16 +64,62 @@ model User {
   supportTickets        SupportTicket[]
   supportMessages       SupportMessage[]
   
-  // ✨ NEW: Support ticket assignment (admin can assign tickets to staff)
+  // ✨ Support ticket assignment (admin can assign tickets to staff)
   assignedSupportTickets SupportTicket[]       @relation("AssignedSupportTickets")
   
-  // ✨ NEW: Internal notes authored by staff
+  // ✨ Internal notes authored by staff
   supportInternalNotes   SupportInternalNote[] @relation("SupportNoteAuthor")
 
   // Learner feedback on sessions
   learnerFeedbacks      LearnerSessionFeedback[] @relation("LearnerFeedbacks")
 
+  // ✨ NEW: User availability for scheduling
+  availabilities        Availability[]
+
   @@index([role])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✨ NEW: Availability - Users can set their available time slots
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Availability {
+  id        Int      @id @default(autoincrement())
+  
+  // The user who owns this availability slot
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+  // If null, this is a specific date slot rather than recurring
+  dayOfWeek Int?
+  
+  // For specific date availability (non-recurring)
+  specificDate DateTime?
+  
+  // Time range (stored as "HH:MM" in 24h format)
+  startTime String   // e.g., "09:00"
+  endTime   String   // e.g., "17:00"
+  
+  // Timezone for this availability (user's timezone at creation)
+  timezone  String?
+  
+  // Whether this is a recurring weekly slot or one-time
+  isRecurring Boolean @default(true)
+  
+  // Status: active, inactive (soft disable without deleting)
+  status    String   @default("active")
+  
+  // Optional note/label for the slot
+  note      String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([userId, status])
+  @@index([userId, dayOfWeek])
+  @@index([userId, specificDate])
+  @@index([status, dayOfWeek])
 }
 
 model Notification {
@@ -114,7 +160,7 @@ enum SupportStatus {
   RESOLVED
 }
 
-// ✨ NEW: Priority levels for ticket triage
+// ✨ Priority levels for ticket triage
 enum SupportPriority {
   LOW
   NORMAL
@@ -133,10 +179,10 @@ model SupportTicket {
   subject    String?
   status     SupportStatus   @default(OPEN)
   
-  // ✨ NEW: Priority system (default NORMAL)
+  // ✨ Priority system (default NORMAL)
   priority   SupportPriority @default(NORMAL)
 
-  // ✨ NEW: Ticket assignment (which staff member is handling this)
+  // ✨ Ticket assignment (which staff member is handling this)
   assignedToId Int?
   assignedTo   User?         @relation("AssignedSupportTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
 
@@ -148,14 +194,14 @@ model SupportTicket {
 
   messages   SupportMessage[]
   
-  // ✨ NEW: Internal notes (staff-only collaboration)
+  // ✨ Internal notes (staff-only collaboration)
   internalNotes SupportInternalNote[]
 
   @@index([userId, updatedAt])
   @@index([status, updatedAt])
   @@index([category, updatedAt])
-  @@index([priority, updatedAt])        // ✨ NEW: Index for filtering by priority
-  @@index([assignedToId, updatedAt])    // ✨ NEW: Index for filtering by assignment
+  @@index([priority, updatedAt])
+  @@index([assignedToId, updatedAt])
 }
 
 model SupportMessage {
@@ -197,8 +243,7 @@ model SupportAttachment {
   @@index([messageId])
 }
 
-// ✨ NEW: Internal notes for staff collaboration
-// These are NOT visible to customers, only to staff members
+// ✨ Internal notes for staff collaboration
 model SupportInternalNote {
   id        Int      @id @default(autoincrement())
 
@@ -268,7 +313,7 @@ model Session {
 
   feedback                        SessionFeedback?
 
-  // ─── NEW: Classroom Experience Fields ───
+  // ─── Classroom Experience Fields ───
   teacherNotes                    String?
   resourcesUsed                   Json?             @default("[]")
   resourcesUsedAt                 Json?             @default("{}")
@@ -312,7 +357,7 @@ model SessionFeedback {
   teacher           User     @relation(fields: [teacherId], references: [id])
 }
 
-// ─── NEW: Learner Session Feedback (post-session ratings/surveys) ───
+// ─── Learner Session Feedback (post-session ratings/surveys) ───
 model LearnerSessionFeedback {
   id              String   @id @default(cuid())
   sessionId       Int
