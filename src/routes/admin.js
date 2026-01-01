@@ -38,6 +38,7 @@ router.get(
     try {
       const { q = "", role = "" } = req.query;
       const where = {};
+
       if (q) {
         where.OR = [
           { email: { contains: q, mode: "insensitive" } },
@@ -56,9 +57,12 @@ router.get(
           timezone: true,
           isDisabled: true,
           createdAt: true,
+          rateHourlyCents: true,
+          ratePerSessionCents: true,
         },
         orderBy: { id: "asc" },
       });
+
       res.json(users);
     } catch (err) {
       next(err);
@@ -69,6 +73,7 @@ router.get(
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
   try {
     let { email, name = "", role = "learner", timezone = null } = req.body;
+
     email = String(email || "")
       .toLowerCase()
       .trim();
@@ -129,11 +134,24 @@ router.patch(
   async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const { role, isDisabled, name, timezone } = req.body;
+      const {
+        role,
+        isDisabled,
+        name,
+        timezone,
+        rateHourlyCents,
+        ratePerSessionCents,
+      } = req.body;
 
       const before = await prisma.user.findUnique({
         where: { id },
-        select: { id: true, role: true, isDisabled: true },
+        select: {
+          id: true,
+          role: true,
+          isDisabled: true,
+          rateHourlyCents: true,
+          ratePerSessionCents: true,
+        },
       });
       if (!before) return res.status(404).json({ error: "Not found" });
 
@@ -144,6 +162,28 @@ router.patch(
           ...(typeof isDisabled === "boolean" ? { isDisabled } : {}),
           ...(name !== undefined ? { name } : {}),
           ...(timezone !== undefined ? { timezone } : {}),
+
+          // ✅ teacher rate fields (allow null to clear)
+          ...(rateHourlyCents !== undefined
+            ? {
+                rateHourlyCents:
+                  rateHourlyCents === null || rateHourlyCents === ""
+                    ? null
+                    : Number.isFinite(Number(rateHourlyCents))
+                    ? Number(rateHourlyCents)
+                    : null,
+              }
+            : {}),
+          ...(ratePerSessionCents !== undefined
+            ? {
+                ratePerSessionCents:
+                  ratePerSessionCents === null || ratePerSessionCents === ""
+                    ? null
+                    : Number.isFinite(Number(ratePerSessionCents))
+                    ? Number(ratePerSessionCents)
+                    : null,
+              }
+            : {}),
         },
         select: {
           id: true,
@@ -152,6 +192,8 @@ router.patch(
           role: true,
           timezone: true,
           isDisabled: true,
+          rateHourlyCents: true,
+          ratePerSessionCents: true,
         },
       });
 
@@ -161,6 +203,7 @@ router.patch(
           to: role,
         });
       }
+
       if (typeof isDisabled === "boolean" && isDisabled !== before.isDisabled) {
         await audit(
           req.user.id,
@@ -168,6 +211,20 @@ router.patch(
           "User",
           id
         );
+      }
+
+      // ✅ Audit rate changes (store from -> to when provided)
+      if (rateHourlyCents !== undefined || ratePerSessionCents !== undefined) {
+        await audit(req.user.id, "teacher_rate_update", "User", id, {
+          from: {
+            rateHourlyCents: before.rateHourlyCents,
+            ratePerSessionCents: before.ratePerSessionCents,
+          },
+          to: {
+            rateHourlyCents: user.rateHourlyCents,
+            ratePerSessionCents: user.ratePerSessionCents,
+          },
+        });
       }
 
       res.json(user);
@@ -437,7 +494,10 @@ router.get(
   }
 );
 
-// After existing routes (e.g., after the workload route)
+/* ========================================================================== */
+/*                          ADMIN: USER PACKAGES                              */
+/* ========================================================================== */
+
 router.get(
   "/admin/users/:id/packages",
   requireAuth,
@@ -449,22 +509,20 @@ router.get(
         return res.status(400).json({ error: "Invalid user ID" });
       }
 
-      // Fetch packages for the user, including related package details
       const packages = await prisma.userPackage.findMany({
         where: { userId },
         include: {
           package: {
             select: {
               title: true,
-              priceUSD: true, // Or priceType if needed
-              sessionsPerPack: true, // For verification
+              priceUSD: true,
+              sessionsPerPack: true,
             },
           },
         },
-        orderBy: { createdAt: "desc" }, // Newest first
+        orderBy: { createdAt: "desc" },
       });
 
-      // Enhance with calculated remaining; handle nulls
       const enhanced = packages.map((p) => ({
         ...p,
         remaining: (p.sessionsTotal || 0) - (p.sessionsUsed || 0),
@@ -480,7 +538,10 @@ router.get(
   }
 );
 
-// GET /admin/users/:userId/attendance - attendance history for a learner
+/* ========================================================================== */
+/*                         ADMIN: USER ATTENDANCE                             */
+/* ========================================================================== */
+
 router.get(
   "/admin/users/:userId/attendance",
   requireAuth,
@@ -574,13 +635,14 @@ router.get(
         )
         .forEach((r) => {
           const month = new Date(r.session.startAt).toISOString().slice(0, 7); // YYYY-MM
-          if (!monthlyData[month])
+          if (!monthlyData[month]) {
             monthlyData[month] = {
               total: 0,
               attended: 0,
               noShow: 0,
               excused: 0,
             };
+          }
           monthlyData[month].total++;
           if (r.status === "attended") monthlyData[month].attended++;
           if (r.status === "no_show") monthlyData[month].noShow++;
