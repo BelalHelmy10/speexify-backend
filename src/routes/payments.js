@@ -17,6 +17,7 @@ import {
   PAYMOB_INTEGRATION_ID,
 } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { requireAuth } from "../middleware/auth-helpers.js";
 
 const router = Router();
 
@@ -206,6 +207,82 @@ router.post("/create-intent", async (req, res) => {
   } catch (err) {
     logger.error({ err }, "create-intent error");
     return res.status(500).json({ ok: false, message: "payment init failed" });
+  }
+});
+
+// TEMP MANUAL PAYMENT
+router.post("/manual/confirm", requireAuth, async (req, res) => {
+  try {
+    const { planId } = req.body;
+    if (!planId) {
+      return res.status(400).json({ ok: false, message: "planId required" });
+    }
+
+    const planCatalog = {
+      "1on1-4": { title: "Starter", sessionsTotal: 4, durationMin: 60 },
+      "1on1-12": { title: "Professional", sessionsTotal: 12, durationMin: 60 },
+      "1on1-24": { title: "Intensive", sessionsTotal: 24, durationMin: 60 },
+      "1on1-48": { title: "Master", sessionsTotal: 48, durationMin: 60 },
+
+      "group-4": { title: "Group Starter", sessionsTotal: 4, durationMin: 90 },
+      "group-12": {
+        title: "Group Professional",
+        sessionsTotal: 12,
+        durationMin: 90,
+      },
+      "group-24": {
+        title: "Group Intensive",
+        sessionsTotal: 24,
+        durationMin: 90,
+      },
+      "group-48": { title: "Group Master", sessionsTotal: 48, durationMin: 90 },
+    };
+
+    const plan = planCatalog[planId];
+    if (!plan) {
+      return res.status(404).json({ ok: false, message: "Unknown planId" });
+    }
+
+    const userId = req.user?.id || req.session?.user?.id;
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: "Not authenticated" });
+    }
+
+    const orderId = `manual_${Date.now()}_${userId}_${planId}`;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.order.create({
+        data: {
+          id: orderId,
+          userId,
+          status: "paid",
+          psp: "manual",
+          currency: "USD",
+          amountCents: 0,
+        },
+      });
+
+      await tx.userPackage.upsert({
+        where: { orderId },
+        update: { status: "active" },
+        create: {
+          userId,
+          orderId,
+          title: plan.title,
+          minutesPerSession: plan.durationMin,
+          sessionsTotal: plan.sessionsTotal,
+          sessionsUsed: 0,
+          status: "active",
+        },
+      });
+    });
+
+    return res.json({ ok: true, orderId });
+  } catch (e) {
+    logger.error({ err: e }, "manual confirm error");
+    return res
+      .status(500)
+      .json({ ok: false, message: "Manual confirm failed" });
   }
 });
 
