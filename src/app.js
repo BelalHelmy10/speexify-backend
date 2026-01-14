@@ -43,6 +43,8 @@ import devEmailTestRoutes from "./routes/devEmailTest.js";
 import supportRoutes from "./routes/support.js";
 import availabilityRoutes from "./routes/availability.js";
 import calendarRoutes from "./routes/calendar.js";
+import discountRoutes from "./routes/discounts.js";
+
 import path from "path";
 
 const app = express();
@@ -105,6 +107,7 @@ app.get("/api/csrf-token", (req, res) => {
 
 // Mount routes
 app.use("/api/auth", authRoutes);
+app.use("/api/discounts", discountRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api", sessionsRoutes);
 app.use("/api", packagesRoutes); // FIX: packages route handles /api/packages
