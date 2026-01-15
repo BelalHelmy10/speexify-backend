@@ -78,10 +78,15 @@ function toIcsUtc(dt) {
 async function loadUserSessions(userId) {
   return prisma.session.findMany({
     where: {
-      OR: [
-        { participants: { some: { userId } } },
-        { userId },
-        { teacherId: userId },
+      AND: [
+        {
+          OR: [
+            { participants: { some: { userId } } },
+            { userId },
+            { teacherId: userId },
+          ],
+        },
+        { status: { not: "CANCELLED" } }, // Exclude cancelled sessions
       ],
     },
     include: {
@@ -137,18 +142,14 @@ router.get("/calendar.ics", async (req, res) => {
     const end = s.endAt || new Date(new Date(start).getTime() + 60 * 60 * 1000);
 
     const uid = `speexify-session-${s.id}@speexify`;
-    const isCancelled = s.status === "CANCELLED";
-    const title = isCancelled
-      ? `❌ CANCELLED: ${s.title || "Session"}`
-      : s.title || "Session";
+    const title = s.title || "Session";
     const teacher = s.teacher?.name || s.teacher?.email || "";
     const joinUrl = s.joinUrl || "";
     const status = s.status || "CONFIRMED";
 
     const descParts = [];
     if (teacher) descParts.push(`Teacher: ${teacher}`);
-    if (isCancelled) descParts.push(`This session has been cancelled.`);
-    else if (status !== "CONFIRMED") descParts.push(`Status: ${status}`);
+    if (status !== "CONFIRMED") descParts.push(`Status: ${status}`);
     if (joinUrl) descParts.push(`Join: ${joinUrl}`);
     const description = descParts.join("\n");
 
@@ -158,14 +159,7 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push(`DTSTART:${toIcsUtc(start)}`);
     lines.push(`DTEND:${toIcsUtc(end)}`);
     lines.push(`SUMMARY:${icsEscape(title)}`);
-
-    // Set STATUS
-    const icsStatus = isCancelled ? "CANCELLED" : "CONFIRMED";
-    lines.push(`STATUS:${icsStatus}`);
-
-    // Set COLOR for visual dimming (light gray for cancelled)
-    const color = isCancelled ? "lightgray" : ""; // Or set a default color if desired
-    if (color) lines.push(`COLOR:${color}`);
+    lines.push(`STATUS:CONFIRMED`);
 
     if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
     if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
