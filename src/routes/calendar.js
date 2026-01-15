@@ -83,7 +83,6 @@ async function loadUserSessions(userId) {
         { userId },
         { teacherId: userId },
       ],
-      // Removed status filter to include all sessions (we'll handle cancellation in ICS)
     },
     include: {
       teacher: { select: { id: true, name: true, email: true } },
@@ -138,14 +137,18 @@ router.get("/calendar.ics", async (req, res) => {
     const end = s.endAt || new Date(new Date(start).getTime() + 60 * 60 * 1000);
 
     const uid = `speexify-session-${s.id}@speexify`;
-    const title = s.title || "Session";
+    const isCancelled = s.status === "CANCELLED";
+    const title = isCancelled
+      ? `❌ CANCELLED: ${s.title || "Session"}`
+      : s.title || "Session";
     const teacher = s.teacher?.name || s.teacher?.email || "";
     const joinUrl = s.joinUrl || "";
-    const status = s.status || "CONFIRMED"; // Default to CONFIRMED if not set
+    const status = s.status || "CONFIRMED";
 
     const descParts = [];
     if (teacher) descParts.push(`Teacher: ${teacher}`);
-    if (status && status !== "CONFIRMED") descParts.push(`Status: ${status}`); // Avoid redundant "CONFIRMED" in desc
+    if (isCancelled) descParts.push(`This session has been cancelled.`);
+    else if (status !== "CONFIRMED") descParts.push(`Status: ${status}`);
     if (joinUrl) descParts.push(`Join: ${joinUrl}`);
     const description = descParts.join("\n");
 
@@ -156,9 +159,13 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push(`DTEND:${toIcsUtc(end)}`);
     lines.push(`SUMMARY:${icsEscape(title)}`);
 
-    // Add STATUS property based on session status
-    const icsStatus = status === "CANCELLED" ? "CANCELLED" : "CONFIRMED";
+    // Set STATUS
+    const icsStatus = isCancelled ? "CANCELLED" : "CONFIRMED";
     lines.push(`STATUS:${icsStatus}`);
+
+    // Set COLOR for visual dimming (light gray for cancelled)
+    const color = isCancelled ? "lightgray" : ""; // Or set a default color if desired
+    if (color) lines.push(`COLOR:${color}`);
 
     if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
     if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
