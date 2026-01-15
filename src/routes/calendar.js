@@ -38,8 +38,8 @@ function verifyToken(token) {
   if (!token || typeof token !== "string") return null;
   const parts = token.split(".");
   if (parts.length !== 2) return null;
-  const [payload, sig] = parts;
 
+  const [payload, sig] = parts;
   const expected = base64url(
     crypto.createHmac("sha256", FEED_SECRET).update(payload).digest()
   );
@@ -69,20 +69,18 @@ function icsEscape(s) {
 }
 
 function toIcsUtc(dt) {
-  // YYYYMMDDTHHMMSSZ
-  const iso = new Date(dt).toISOString();
-  return iso.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  return new Date(dt)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
 }
 
 async function loadUserSessions(userId) {
   return prisma.session.findMany({
     where: {
       OR: [
-        // learner membership (new)
         { participants: { some: { userId } } },
-        // learner ownership (legacy)
         { userId },
-        // teacher
         { teacherId: userId },
       ],
     },
@@ -94,13 +92,10 @@ async function loadUserSessions(userId) {
 }
 
 // --------------------------------------------------------------------------
-// GET /api/calendar/export-link  (auth required)
-// Returns an https://... .ics URL and a webcal://... URL.
+// GET /api/calendar/export-link
 // --------------------------------------------------------------------------
 router.get("/calendar/export-link", requireAuth, async (req, res) => {
   const userId = req.viewUserId;
-
-  // 180 days
   const exp = Date.now() + 180 * 24 * 60 * 60 * 1000;
   const token = signToken({ userId, exp });
 
@@ -119,8 +114,7 @@ router.get("/calendar/export-link", requireAuth, async (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// GET /api/calendar.ics?token=...
-// Public ICS feed for syncing into Google/Apple/Outlook.
+// GET /api/calendar.ics
 // --------------------------------------------------------------------------
 router.get("/calendar.ics", async (req, res) => {
   const token = String(req.query.token || "");
@@ -140,10 +134,9 @@ router.get("/calendar.ics", async (req, res) => {
 
   for (const s of sessions) {
     const start = s.startAt;
-    const end =
-      s.endAt || new Date(new Date(s.startAt).getTime() + 60 * 60 * 1000);
-    const uid = `speexify-session-${s.id}@speexify`;
+    const end = s.endAt || new Date(new Date(start).getTime() + 60 * 60 * 1000);
 
+    const uid = `speexify-session-${s.id}@speexify`;
     const title = s.title || "Session";
     const teacher = s.teacher?.name || s.teacher?.email || "";
     const joinUrl = s.joinUrl || "";
@@ -160,9 +153,16 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push(`DTSTAMP:${toIcsUtc(new Date())}`);
     lines.push(`DTSTART:${toIcsUtc(start)}`);
     lines.push(`DTEND:${toIcsUtc(end)}`);
-    lines.push(`SUMMARY:${icsEscape(title)}`);
-    if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
-    if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
+
+    if (s.status === "CANCELLED") {
+      lines.push("STATUS:CANCELLED");
+      lines.push("SEQUENCE:1");
+    } else {
+      lines.push(`SUMMARY:${icsEscape(title)}`);
+      if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+      if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
+    }
+
     lines.push("END:VEVENT");
   }
 
