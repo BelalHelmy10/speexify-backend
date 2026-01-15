@@ -83,8 +83,7 @@ async function loadUserSessions(userId) {
         { userId },
         { teacherId: userId },
       ],
-      // Only fetch non-cancelled sessions
-      status: { not: "CANCELLED" },
+      // Removed status filter to include all sessions (we'll handle cancellation in ICS)
     },
     include: {
       teacher: { select: { id: true, name: true, email: true } },
@@ -142,11 +141,11 @@ router.get("/calendar.ics", async (req, res) => {
     const title = s.title || "Session";
     const teacher = s.teacher?.name || s.teacher?.email || "";
     const joinUrl = s.joinUrl || "";
-    const status = s.status || "";
+    const status = s.status || "CONFIRMED"; // Default to CONFIRMED if not set
 
     const descParts = [];
     if (teacher) descParts.push(`Teacher: ${teacher}`);
-    if (status) descParts.push(`Status: ${status}`);
+    if (status && status !== "CONFIRMED") descParts.push(`Status: ${status}`); // Avoid redundant "CONFIRMED" in desc
     if (joinUrl) descParts.push(`Join: ${joinUrl}`);
     const description = descParts.join("\n");
 
@@ -156,6 +155,10 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push(`DTSTART:${toIcsUtc(start)}`);
     lines.push(`DTEND:${toIcsUtc(end)}`);
     lines.push(`SUMMARY:${icsEscape(title)}`);
+
+    // Add STATUS property based on session status
+    const icsStatus = status === "CANCELLED" ? "CANCELLED" : "CONFIRMED";
+    lines.push(`STATUS:${icsStatus}`);
 
     if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
     if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
