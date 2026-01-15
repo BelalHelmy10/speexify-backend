@@ -83,6 +83,8 @@ async function loadUserSessions(userId) {
         { userId },
         { teacherId: userId },
       ],
+      // Only fetch non-cancelled sessions
+      status: { not: "CANCELLED" },
     },
     include: {
       teacher: { select: { id: true, name: true, email: true } },
@@ -153,18 +155,8 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push(`DTSTAMP:${toIcsUtc(new Date())}`);
     lines.push(`DTSTART:${toIcsUtc(start)}`);
     lines.push(`DTEND:${toIcsUtc(end)}`);
+    lines.push(`SUMMARY:${icsEscape(title)}`);
 
-    // Always include SUMMARY (title)
-    const summaryText =
-      s.status === "CANCELLED" ? `[CANCELLED] ${title}` : title;
-    lines.push(`SUMMARY:${icsEscape(summaryText)}`);
-
-    if (s.status === "CANCELLED") {
-      lines.push("STATUS:CANCELLED");
-      lines.push("SEQUENCE:1");
-    }
-
-    // Always include description and URL if available
     if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
     if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
 
