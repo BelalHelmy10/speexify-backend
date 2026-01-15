@@ -158,11 +158,19 @@ router.get("/calendar.ics", async (req, res) => {
     lines.push("BEGIN:VEVENT");
     lines.push(`UID:${icsEscape(uid)}`);
     lines.push(`DTSTAMP:${toIcsUtc(new Date())}`);
-    lines.push(`DTSTART:${toIcsUtc(start)}`);
-    lines.push(`DTEND:${toIcsUtc(end)}`);
-    lines.push(`SUMMARY:${icsEscape(title)}`);
-    if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
-    if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
+
+    if (s.status === "CANCELLED") {
+      lines.push("STATUS:CANCELLED");
+      lines.push("METHOD:CANCEL");
+      lines.push("SEQUENCE:1");
+    } else {
+      lines.push(`DTSTART:${toIcsUtc(start)}`);
+      lines.push(`DTEND:${toIcsUtc(end)}`);
+      lines.push(`SUMMARY:${icsEscape(title)}`);
+      if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+      if (joinUrl) lines.push(`URL:${icsEscape(joinUrl)}`);
+    }
+
     lines.push("END:VEVENT");
   }
 
