@@ -22,7 +22,7 @@ const CONFIG = {
   // Rate limiting
   RATE_LIMIT_ENABLED: true,
   RATE_LIMIT_WINDOW_MS: 1000, // 1 second window
-  RATE_LIMIT_MAX_MESSAGES: 50, // Max messages per window
+  RATE_LIMIT_MAX_MESSAGES: 200, // allow drag/resize streams
 
   // Connection limits
   MAX_CONNECTIONS_TOTAL: 10000,
@@ -34,7 +34,7 @@ const CONFIG = {
   MAX_CLASSROOM_PEERS: 100,
 
   // Message limits
-  MAX_MESSAGE_SIZE_BYTES: 65536, // 64KB (raw WebSocket frame limit)
+  MAX_MESSAGE_SIZE_BYTES: 1048576, // 1MB for classroom annotations
 
   // Room ID validation
   ROOM_ID_REGEX: /^[a-zA-Z0-9_-]{1,128}$/,
@@ -391,9 +391,14 @@ function createRoomManager(options) {
     const room = rooms.get(roomId);
     if (!room) return;
 
+    const payload = JSON.stringify(message); // Stringify once
     for (const peer of room) {
       if (peer !== ws && peer.readyState === WebSocket.OPEN) {
-        safeSend(peer, message);
+        try {
+          peer.send(payload);
+        } catch (err) {
+          logger.warn({ err }, "[WebRTC] Failed to send message");
+        }
       }
     }
   }
@@ -441,7 +446,8 @@ function createRoomManager(options) {
 function safeSend(ws, data) {
   if (ws.readyState !== WebSocket.OPEN) return false;
   try {
-    ws.send(JSON.stringify(data));
+    const payload = typeof data === "string" ? data : JSON.stringify(data);
+    ws.send(payload);
     return true;
   } catch (err) {
     logger.warn({ err }, "[WebRTC] Failed to send message");
@@ -551,38 +557,6 @@ export function setupWebRtcSignaling(httpServer) {
   // ─────────────────────────────────────────────
   let heartbeatIntervalPrep = null;
   let heartbeatIntervalClassroom = null;
-
-  if (CONFIG.HEARTBEAT_ENABLED) {
-    // Heartbeat for /ws/prep
-    heartbeatIntervalPrep = setInterval(() => {
-      wssPrep.clients.forEach((ws) => {
-        const meta = getMeta(ws);
-        if (!meta.isAlive) {
-          logger.info("[WebRTC] Terminating unresponsive connection");
-          videoRoomManager.leave(ws);
-          untrackConnection(ws);
-          return ws.terminate();
-        }
-        meta.isAlive = false;
-        ws.ping();
-      });
-    }, CONFIG.HEARTBEAT_INTERVAL_MS);
-
-    // Heartbeat for /ws/classroom
-    heartbeatIntervalClassroom = setInterval(() => {
-      wssClassroom.clients.forEach((ws) => {
-        const meta = getMeta(ws);
-        if (!meta.isAlive) {
-          logger.info("[Classroom] Terminating unresponsive connection");
-          classroomRoomManager.leave(ws);
-          untrackConnection(ws);
-          return ws.terminate();
-        }
-        meta.isAlive = false;
-        ws.ping();
-      });
-    }, CONFIG.HEARTBEAT_INTERVAL_MS);
-  }
 
   if (CONFIG.HEARTBEAT_ENABLED) {
     // Heartbeat for /ws/prep
