@@ -78,6 +78,8 @@ function toIcsUtc(dt) {
 async function loadUserSessions(userId) {
   return prisma.session.findMany({
     where: {
+      // ✅ Exclude cancelled sessions from calendar export
+      status: { not: "canceled" },
       OR: [
         { participants: { some: { userId } } },
         { userId },

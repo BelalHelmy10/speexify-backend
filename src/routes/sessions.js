@@ -148,8 +148,8 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
           s.type === "GROUP"
             ? activeParticipants.map((p) => p.user)
             : s.user
-            ? [s.user]
-            : [],
+              ? [s.user]
+              : [],
       };
     });
 
@@ -214,17 +214,17 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 
     const teacherFeedback = feedbackFromRelation
       ? {
-          messageToLearner: feedbackFromRelation.messageToLearner || "",
-          commentsOnSession: feedbackFromRelation.commentsOnSession || "",
-          futureSteps: feedbackFromRelation.futureSteps || "",
-        }
+        messageToLearner: feedbackFromRelation.messageToLearner || "",
+        commentsOnSession: feedbackFromRelation.commentsOnSession || "",
+        futureSteps: feedbackFromRelation.futureSteps || "",
+      }
       : hasLegacyFeedback
-      ? {
+        ? {
           messageToLearner: session.teacherFeedbackMessageToLearner || "",
           commentsOnSession: session.teacherFeedbackComments || "",
           futureSteps: session.teacherFeedbackFutureSteps || "",
         }
-      : null;
+        : null;
 
     // Calculate participant info
     const activeParticipants = (session.participants || []).filter(
@@ -242,13 +242,13 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
       learners:
         session.type === "GROUP"
           ? activeParticipants.map((p) => ({
-              ...p.user,
-              status: p.status,
-              attendedAt: p.attendedAt,
-            }))
+            ...p.user,
+            status: p.status,
+            attendedAt: p.attendedAt,
+          }))
           : session.user
-          ? [{ ...session.user, status: "booked" }]
-          : [],
+            ? [{ ...session.user, status: "booked" }]
+            : [],
     };
 
     // Remove redundant fields from response
@@ -951,18 +951,18 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
     const whereBase =
       role === "teacher"
         ? {
-            OR: [
-              { teacherId: userId },
-              { participants: { some: { userId } } },
-              { userId }, // legacy fallback
-            ],
-          }
+          OR: [
+            { teacherId: userId },
+            { participants: { some: { userId } } },
+            { userId }, // legacy fallback
+          ],
+        }
         : {
-            OR: [
-              { participants: { some: { userId } } },
-              { userId }, // legacy fallback
-            ],
-          };
+          OR: [
+            { participants: { some: { userId } } },
+            { userId }, // legacy fallback
+          ],
+        };
 
     const notCanceled = { status: { not: "canceled" } };
 
@@ -1032,10 +1032,10 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
 
       const teacherFeedback = hasFeedback
         ? {
-            messageToLearner: s.teacherFeedbackMessageToLearner || "",
-            commentsOnSession: s.teacherFeedbackComments || "",
-            futureSteps: s.teacherFeedbackFutureSteps || "",
-          }
+          messageToLearner: s.teacherFeedbackMessageToLearner || "",
+          commentsOnSession: s.teacherFeedbackComments || "",
+          futureSteps: s.teacherFeedbackFutureSteps || "",
+        }
         : null;
 
       const {
@@ -1058,8 +1058,8 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
           rest.type === "GROUP"
             ? activeParticipants.map((p) => p.user)
             : rest.user
-            ? [rest.user]
-            : [],
+              ? [rest.user]
+              : [],
         teacherFeedback,
         hasFeedback,
       };
@@ -1107,15 +1107,15 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
     const whereBase =
       role === "teacher"
         ? {
-            OR: [
-              { teacherId: userId },
-              { participants: { some: { userId } } },
-              { userId }, // legacy
-            ],
-          }
+          OR: [
+            { teacherId: userId },
+            { participants: { some: { userId } } },
+            { userId }, // legacy
+          ],
+        }
         : {
-            OR: [{ participants: { some: { userId } } }, { userId }],
-          };
+          OR: [{ participants: { some: { userId } } }, { userId }],
+        };
 
     const where = {
       AND: [
@@ -1337,12 +1337,12 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         learners:
           s.type === "GROUP"
             ? activeParticipants.map((p) => ({
-                ...p.user,
-                status: p.status,
-              }))
+              ...p.user,
+              status: p.status,
+            }))
             : s.user
-            ? [{ ...s.user, status: "booked" }]
-            : [],
+              ? [{ ...s.user, status: "booked" }]
+              : [],
       };
     });
 
@@ -1391,6 +1391,31 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     const finalNotes = (notes ?? "").trim() || null;
 
     // ─────────────────────────────────────────────
+    // VALIDATION: Ensure teacher is valid and not the same as learner
+    // ─────────────────────────────────────────────
+    if (teacherId) {
+      const teacher = await prisma.user.findUnique({
+        where: { id: Number(teacherId) },
+        select: { id: true, role: true, isDisabled: true },
+      });
+
+      if (!teacher || teacher.isDisabled) {
+        return res.status(404).json({
+          error: "Teacher not found or disabled",
+          teacherId: Number(teacherId),
+        });
+      }
+
+      if (teacher.role !== "teacher" && teacher.role !== "admin") {
+        return res.status(400).json({
+          error: "teacherId must refer to a teacher or admin",
+          teacherId: Number(teacherId),
+          actualRole: teacher.role,
+        });
+      }
+    }
+
+    // ─────────────────────────────────────────────
     // ONE_ON_ONE SESSION
     // ─────────────────────────────────────────────
     if (type === "ONE_ON_ONE") {
@@ -1413,6 +1438,15 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         return res.status(400).json({
           error: "learnerId must refer to a learner",
           userId: Number(learnerId),
+        });
+      }
+
+      // ✅ VALIDATION: Prevent teacher from being assigned as learner
+      if (teacherId && Number(teacherId) === Number(learnerId)) {
+        return res.status(400).json({
+          error: "Teacher cannot be the same as learner",
+          teacherId: Number(teacherId),
+          learnerId: Number(learnerId),
         });
       }
 
@@ -1539,6 +1573,14 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       return res
         .status(400)
         .json({ error: "learnerIds[] must contain valid ids" });
+    }
+
+    // ✅ VALIDATION: Prevent teacher from being in learnerIds
+    if (teacherId && uniqueLearnerIds.includes(Number(teacherId))) {
+      return res.status(400).json({
+        error: "Teacher cannot be a participant in the same session",
+        teacherId: Number(teacherId),
+      });
     }
 
     if (capacity && uniqueLearnerIds.length > capacity) {
@@ -2202,8 +2244,8 @@ router.patch(
           updated.type === "GROUP"
             ? activeParticipants.map((p) => ({ ...p.user, status: p.status }))
             : updated.user
-            ? [{ ...updated.user, status: "booked" }]
-            : [],
+              ? [{ ...updated.user, status: "booked" }]
+              : [],
         creditResults,
       });
     } catch (err) {
@@ -2388,7 +2430,7 @@ router.post("/sessions/:id/resources-used", requireAuth, async (req, res) => {
     try {
       resourcesUsedAt =
         typeof session.resourcesUsedAt === "object" &&
-        session.resourcesUsedAt !== null
+          session.resourcesUsedAt !== null
           ? session.resourcesUsedAt
           : JSON.parse(session.resourcesUsedAt || "{}");
     } catch {
@@ -2757,8 +2799,8 @@ router.get("/sessions/:id/summary", requireAuth, async (req, res) => {
         averageRating:
           ratings.length > 0
             ? Math.round(
-                (ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10
-              ) / 10
+              (ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10
+            ) / 10
             : null,
         feedbacks: session.learnerFeedbacks,
       };
@@ -2792,10 +2834,10 @@ router.get("/sessions/:id/summary", requireAuth, async (req, res) => {
       resourcesUsed,
       teacherFeedback: session.feedback
         ? {
-            messageToLearner: session.feedback.messageToLearner,
-            commentsOnSession: session.feedback.commentsOnSession,
-            futureSteps: session.feedback.futureSteps,
-          }
+          messageToLearner: session.feedback.messageToLearner,
+          commentsOnSession: session.feedback.commentsOnSession,
+          futureSteps: session.feedback.futureSteps,
+        }
         : null,
       learnerFeedback: feedbackSummary,
     };
