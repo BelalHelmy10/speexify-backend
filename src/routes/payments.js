@@ -1,401 +1,79 @@
 // src/routes/payments.js
-/* ========================================================================== */
-/*                             PAYMENTS: PAYMOB                               */
-/*   Step 1: hosted checkout (iframe) flow                                    */
-/*   Routes:                                                                  */
-/*     POST /api/payments/create-intent  -> returns iframeUrl                 */
-/*     POST /api/payments/webhook/paymob -> Paymob webhook (verify HMAC)      */
-/* ========================================================================== */
 import { Router } from "express";
-import axios from "axios";
-import crypto from "node:crypto";
-import { prisma } from "../lib/prisma.js";
-import {
-  PAYMOB_API_KEY,
-  PAYMOB_IFRAME_ID,
-  PAYMOB_HMAC_SECRET,
-  PAYMOB_INTEGRATION_ID,
-} from "../config/env.js";
-import { logger } from "../lib/logger.js";
+import { z } from "zod";
 import { requireAuth } from "../middleware/auth-helpers.js";
+import { logger } from "../lib/logger.js";
+import { createPaymentIntention } from "../services/paymobService.js";
 
 const router = Router();
 
-// Base URL for Paymob APIs
-const PAYMOB_BASE = "https://accept.paymob.com/api";
+// Schema for validating the payment request
+const createIntentSchema = z.object({
+  amountCents: z.number().positive(),
+  currency: z.string().default("EGP"),
+  orderId: z.string(),
+  // We expect billing data from frontend or we can pull it from user profile if needed
+  customer: z.object({
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+    email: z.string().email().optional(),
+    phone: z.string().optional(),
+  }),
+  packageId: z.number().optional(), // Just for our tracking
+});
 
-if (
-  !PAYMOB_API_KEY ||
-  !PAYMOB_INTEGRATION_ID ||
-  !PAYMOB_IFRAME_ID ||
-  !PAYMOB_HMAC_SECRET
-) {
-  logger.warn(
-    {},
-    "⚠️  Missing one or more Paymob env vars (PAYMOB_API_KEY, PAYMOB_INTEGRATION_ID, PAYMOB_IFRAME_ID, PAYMOB_HMAC_SECRET). Test mode will fail until set."
-  );
-}
-
-// -- helper: get Paymob auth token
-async function paymobAuthToken() {
-  const { data } = await axios.post(`${PAYMOB_BASE}/auth/tokens`, {
-    api_key: PAYMOB_API_KEY,
-  });
-  return data.token;
-}
-
-// -- helper: build iframe URL
-function paymobIframeUrl(paymentToken) {
-  return `${PAYMOB_BASE}/acceptance/iframes/${PAYMOB_IFRAME_ID}?payment_token=${paymentToken}`;
-}
-
-// -- helper: verify HMAC from Paymob webhook
-function verifyPaymobHmac(payloadObj, hmacFromPaymob) {
-  const FIELDS = [
-    "amount_cents",
-    "created_at",
-    "currency",
-    "error_occured",
-    "has_parent_transaction",
-    "id",
-    "integration_id",
-    "is_3d_secure",
-    "is_auth",
-    "is_capture",
-    "is_refunded",
-    "is_standalone_payment",
-    "is_voided",
-    "order.id",
-    "owner",
-    "pending",
-    "source_data.pan",
-    "source_data.sub_type",
-    "source_data.type",
-    "success",
-  ];
-  const get = (obj, path) =>
-    path
-      .split(".")
-      .reduce((o, k) => (o && o[k] !== undefined ? o[k] : ""), obj);
-  const concatenated = FIELDS.map((f) => String(get(payloadObj, f))).join("");
-  const computed = crypto
-    .createHmac("sha512", PAYMOB_HMAC_SECRET)
-    .update(concatenated)
-    .digest("hex");
-  return computed === hmacFromPaymob;
-}
-
-/**
- * POST /api/payments/create-intent
- */
-router.post("/create-intent", async (req, res) => {
+// POST /api/payments/create-intent
+router.post("/create-intent", requireAuth, async (req, res) => {
   try {
-    const { amountCents, orderId, customer, currency = "EGP" } = req.body || {};
+    // 1. Validate Input
+    const body = createIntentSchema.parse(req.body);
 
-    const buyerId = req.session?.user?.id || null;
+    const { amountCents, currency, orderId, customer } = body;
+    const userId = req.user.id;
 
-    const packageId =
-      typeof req.body?.packageId === "number"
-        ? req.body.packageId
-        : (() => {
-            const m = String(orderId).match(/_(\d+)_user/i);
-            return m ? Number(m[1]) : null;
-          })();
+    logger.info({ userId, orderId }, "Initiating Paymob Intention");
 
-    const amount = Number(amountCents);
-
-    if (!orderId || !amount || Number.isNaN(amount) || amount <= 0) {
-      return res.status(400).json({
-        ok: false,
-        message: "Valid amountCents & orderId are required",
-      });
-    }
-
-    // 🔒 Prevent ANY new purchase if the user already has an active package
-    if (buyerId) {
-      const now = new Date();
-
-      const existingActive = await prisma.userPackage.findFirst({
-        where: {
-          userId: buyerId,
-          status: "active",
-          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-        },
-      });
-
-      if (existingActive) {
-        return res.status(400).json({
-          ok: false,
-          code: "ALREADY_SUBSCRIBED",
-          message:
-            "You already have an active package. Please use your remaining sessions or contact support to change your plan.",
-        });
-      }
-    }
-
-    const token = await paymobAuthToken();
-
-    const { data: order } = await axios.post(
-      `${PAYMOB_BASE}/ecommerce/orders`,
-      {
-        auth_token: token,
-        delivery_needed: false,
-        amount_cents: amount,
-        currency,
-        merchant_order_id: String(orderId),
-        items: [],
-      }
-    );
-
-    const { data: paymentKey } = await axios.post(
-      `${PAYMOB_BASE}/acceptance/payment_keys`,
-      {
-        auth_token: token,
-        amount_cents: amount,
-        currency,
-        order_id: order.id,
-        billing_data: {
-          first_name: customer?.firstName || "NA",
-          last_name: customer?.lastName || "NA",
-          email: customer?.email || "na@example.com",
-          phone_number: customer?.phone || "01000000000",
-          apartment: "NA",
-          floor: "NA",
-          street: "NA",
-          building: "NA",
-          shipping_method: "NA",
-          postal_code: "NA",
-          city: "Cairo",
-          country: "EG",
-          state: "EG",
-        },
-        expiration: 3600,
-        integration_id: Number(PAYMOB_INTEGRATION_ID),
-      }
-    );
-
-    const iframeUrl = paymobIframeUrl(paymentKey.token);
-
-    await prisma.order.upsert({
-      where: { id: String(orderId) },
-      update: {
-        amountCents: Number(amountCents),
-        currency,
-        status: "pending",
-        psp: "paymob",
-        pspOrderId: order.id,
-        userId: buyerId,
-        packageId: packageId,
-        customerEmail: customer?.email || null,
-        customerPhone: customer?.phone || null,
-      },
-      create: {
-        id: String(orderId),
-        amountCents: Number(amountCents),
-        currency,
-        status: "pending",
-        psp: "paymob",
-        pspOrderId: order.id,
-        userId: buyerId,
-        packageId: packageId,
-        customerEmail: customer?.email || null,
-        customerPhone: customer?.phone || null,
-      },
+    // 2. Call Paymob Service
+    const intention = await createPaymentIntention({
+      amountCents,
+      currency,
+      orderId,
+      billingData: customer,
     });
 
-    return res.json({ ok: true, iframeUrl, paymobOrderId: order.id });
+    // 3. Return the Redirect URL to Frontend
+    return res.json({
+      ok: true,
+      iframeUrl: intention.checkoutUrl, // Keeping "iframeUrl" name for compatibility if frontend expects it, or just use checkoutUrl
+      intentionId: intention.intentionId,
+    });
   } catch (err) {
-    logger.error({ err }, "create-intent error");
-    return res.status(500).json({ ok: false, message: "payment init failed" });
+    logger.error({ err }, "Create Intent Error");
+    // Handle Zod validation errors nicely
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ ok: false, error: err.errors });
+    }
+    return res.status(500).json({ ok: false, message: "Payment init failed" });
   }
 });
 
-// TEMP MANUAL PAYMENT
-router.post("/manual/confirm", requireAuth, async (req, res) => {
+// POST /api/payments/callback
+// Paymob will call this URL to notify us of success/failure
+router.post("/callback", async (req, res) => {
   try {
-    const { planId } = req.body;
-    if (!planId) {
-      return res.status(400).json({ ok: false, message: "planId required" });
-    }
+    const data = req.body;
+    const query = req.query;
 
-    const planCatalog = {
-      "1on1-4": { title: "Starter", sessionsTotal: 4, durationMin: 60 },
-      "1on1-12": { title: "Professional", sessionsTotal: 12, durationMin: 60 },
-      "1on1-24": { title: "Intensive", sessionsTotal: 24, durationMin: 60 },
-      "1on1-48": { title: "Master", sessionsTotal: 48, durationMin: 60 },
+    logger.info({ query, body: data }, "Paymob Callback Received");
 
-      "group-4": { title: "Group Starter", sessionsTotal: 4, durationMin: 90 },
-      "group-12": {
-        title: "Group Professional",
-        sessionsTotal: 12,
-        durationMin: 90,
-      },
-      "group-24": {
-        title: "Group Intensive",
-        sessionsTotal: 24,
-        durationMin: 90,
-      },
-      "group-48": { title: "Group Master", sessionsTotal: 48, durationMin: 90 },
-    };
+    // TODO: Verify HMAC here to ensure authenticity
+    // TODO: Update order status in database based on 'success' flag
 
-    const plan = planCatalog[planId];
-    if (!plan) {
-      return res.status(404).json({ ok: false, message: "Unknown planId" });
-    }
-
-    const userId = req.user?.id || req.session?.user?.id;
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: "Not authenticated" });
-    }
-
-    const orderId = `manual_${Date.now()}_${userId}_${planId}`;
-
-    await prisma.$transaction(async (tx) => {
-      await tx.order.create({
-        data: {
-          id: orderId,
-          userId,
-          status: "paid",
-          psp: "manual",
-          currency: "USD",
-          amountCents: 0,
-        },
-      });
-
-      await tx.userPackage.upsert({
-        where: { orderId },
-        update: { status: "active" },
-        create: {
-          userId,
-          orderId,
-          title: plan.title,
-          minutesPerSession: plan.durationMin,
-          sessionsTotal: plan.sessionsTotal,
-          sessionsUsed: 0,
-          status: "active",
-        },
-      });
-    });
-
-    return res.json({ ok: true, orderId });
-  } catch (e) {
-    logger.error({ err: e }, "manual confirm error");
-    return res
-      .status(500)
-      .json({ ok: false, message: "Manual confirm failed" });
-  }
-});
-
-/**
- * POST /api/payments/webhook/paymob
- */
-router.post("/webhook/paymob", async (req, res) => {
-  try {
-    const hmac = req.query?.hmac || req.body?.hmac;
-    const payload = req.body?.obj || req.body;
-
-    if (!hmac || !payload) return res.sendStatus(400);
-
-    const valid = verifyPaymobHmac(payload, hmac);
-    if (!valid) return res.sendStatus(400);
-
-    const success = String(payload?.success).toLowerCase() === "true";
-    const merchantOrderId = payload?.order?.merchant_order_id;
-    const paymobOrderId = payload?.order?.id;
-    const paymobTxnId = payload?.id ? Number(payload.id) : null;
-
-    if (!merchantOrderId) {
-      logger.warn({ payload }, "Webhook missing merchant_order_id");
-      return res.sendStatus(200);
-    }
-
-    const orderId = String(merchantOrderId);
-
-    await prisma.$transaction(async (tx) => {
-      // 1) Load order
-      const existingOrder = await tx.order.findUnique({
-        where: { id: orderId },
-        select: {
-          id: true,
-          status: true,
-          userId: true,
-          packageId: true,
-        },
-      });
-
-      if (!existingOrder) {
-        logger.warn({ orderId }, "Webhook for unknown order");
-        return; // respond 200 outside
-      }
-
-      // 2) Update order status (idempotent)
-      //    If already paid and we get success again, keep it paid.
-      const nextStatus = success
-        ? "paid"
-        : existingOrder.status === "paid"
-        ? "paid"
-        : "failed";
-
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: {
-          status: nextStatus,
-          pspOrderId: paymobOrderId ?? undefined,
-          paymobTxnId: paymobTxnId ?? undefined,
-        },
-        select: {
-          id: true,
-          status: true,
-          userId: true,
-          packageId: true,
-        },
-      });
-
-      // 3) Grant entitlement exactly once (tied to orderId)
-      //    Even if webhook is called multiple times, upsert on unique orderId prevents duplicates.
-      if (success && updatedOrder.userId && updatedOrder.packageId) {
-        const pkg = await tx.package.findUnique({
-          where: { id: Number(updatedOrder.packageId) },
-          select: {
-            id: true,
-            title: true,
-            sessionsPerPack: true,
-            durationMin: true,
-          },
-        });
-
-        if (!pkg) return;
-
-        const sessionsTotal = Number(pkg.sessionsPerPack || 0);
-        if (sessionsTotal <= 0) return;
-
-        const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-
-        await tx.userPackage.upsert({
-          where: { orderId },
-          update: {
-            // If it already exists, keep it active and ensure it’s attached correctly
-            status: "active",
-          },
-          create: {
-            orderId,
-            userId: updatedOrder.userId,
-            packageId: pkg.id,
-            title: pkg.title,
-            minutesPerSession: pkg.durationMin || null,
-            sessionsTotal,
-            sessionsUsed: 0,
-            expiresAt,
-            status: "active",
-          },
-        });
-      }
-    });
-
-    return res.sendStatus(200);
-  } catch (e) {
-    logger.error({ err: e }, "webhook error");
-    return res.sendStatus(500);
+    // We just acknowledge for now
+    return res.json({ received: true });
+  } catch (err) {
+    logger.error({ err }, "Callback Error");
+    return res.status(500).json({ error: "Callback failed" });
   }
 });
 

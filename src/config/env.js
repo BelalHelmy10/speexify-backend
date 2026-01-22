@@ -41,6 +41,8 @@ export const PAYMOB_API_KEY = process.env.PAYMOB_API_KEY || "";
 export const PAYMOB_INTEGRATION_ID = process.env.PAYMOB_INTEGRATION_ID || "";
 export const PAYMOB_IFRAME_ID = process.env.PAYMOB_IFRAME_ID || "";
 export const PAYMOB_HMAC_SECRET = process.env.PAYMOB_HMAC_SECRET || "";
+export const PAYMOB_SECRET_KEY = process.env.PAYMOB_SECRET_KEY || "";
+export const PAYMOB_PUBLIC_KEY = process.env.PAYMOB_PUBLIC_KEY || "";
 
 // Log level (pino): "debug", "info", "warn", "error"
 export const LOG_LEVEL =
