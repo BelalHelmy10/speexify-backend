@@ -20,7 +20,7 @@ export const REDIS_URL = process.env.REDIS_URL || "";
 
 if (isProd && !REDIS_URL) {
   throw new Error(
-    "REDIS_URL must be set in production (required for sessions)"
+    "REDIS_URL must be set in production (required for sessions)",
   );
 }
 
@@ -37,12 +37,14 @@ export const ALLOWED_ORIGINS = rawAllowedOrigins
   .filter(Boolean);
 
 // Paymob config
-export const PAYMOB_API_KEY = process.env.PAYMOB_API_KEY || "";
-export const PAYMOB_INTEGRATION_ID = process.env.PAYMOB_INTEGRATION_ID || "";
-export const PAYMOB_IFRAME_ID = process.env.PAYMOB_IFRAME_ID || "";
-export const PAYMOB_HMAC_SECRET = process.env.PAYMOB_HMAC_SECRET || "";
-export const PAYMOB_SECRET_KEY = process.env.PAYMOB_SECRET_KEY || "";
-export const PAYMOB_PUBLIC_KEY = process.env.PAYMOB_PUBLIC_KEY || "";
+export const PAYMOB_API_KEY = (process.env.PAYMOB_API_KEY || "").trim();
+export const PAYMOB_INTEGRATION_ID = (
+  process.env.PAYMOB_INTEGRATION_ID || ""
+).trim();
+export const PAYMOB_IFRAME_ID = (process.env.PAYMOB_IFRAME_ID || "").trim();
+export const PAYMOB_HMAC_SECRET = (process.env.PAYMOB_HMAC_SECRET || "").trim();
+export const PAYMOB_SECRET_KEY = (process.env.PAYMOB_SECRET_KEY || "").trim();
+export const PAYMOB_PUBLIC_KEY = (process.env.PAYMOB_PUBLIC_KEY || "").trim();
 
 // Log level (pino): "debug", "info", "warn", "error"
 export const LOG_LEVEL =
