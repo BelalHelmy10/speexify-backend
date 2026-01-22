@@ -1,6 +1,6 @@
 // src/services/paymobService.js
 import axios from "axios";
-import { PAYMOB_SECRET_KEY, PAYMOB_PUBLIC_KEY } from "../config/env.js";
+import { PAYMOB_SECRET_KEY, PAYMOB_PUBLIC_KEY, PAYMOB_API_KEY, PAYMOB_INTEGRATION_ID } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
 const PAYMOB_API_URL = "https://accept.paymob.com/v1";
@@ -17,14 +17,14 @@ export async function createPaymentIntention({
 }) {
   try {
     // Basic env validation
-    if (!PAYMOB_API_KEY) throw new Error("PAYMOB_API_KEY is missing");
+    if (!PAYMOB_SECRET_KEY) throw new Error("PAYMOB_SECRET_KEY is missing");
     if (!PAYMOB_PUBLIC_KEY) throw new Error("PAYMOB_PUBLIC_KEY is missing");
 
     // 1) Prepare payload
     const payload = {
       amount: amountCents,
       currency,
-      payment_methods: paymentMethods.length > 0 ? paymentMethods : undefined,
+      payment_methods: paymentMethods.length > 0 ? paymentMethods : [parseInt(PAYMOB_INTEGRATION_ID, 10)],
       billing_data: {
         first_name: billingData?.firstName || "NA",
         last_name: billingData?.lastName || "NA",
@@ -47,17 +47,15 @@ export async function createPaymentIntention({
     // ✅ TEMP sanity log (safe preview) — remove later
     logger.info(
       {
-        hasApiKey: !!PAYMOB_API_KEY,
-        apiKeyLen: PAYMOB_API_KEY.length,
-        apiKeyPreview: `${PAYMOB_API_KEY.slice(0, 12)}...${PAYMOB_API_KEY.slice(
-          -6,
-        )}`,
+        hasSecretKey: !!PAYMOB_SECRET_KEY,
+        secretKeyLen: PAYMOB_SECRET_KEY.length,
+        secretKeyPreview: `${PAYMOB_SECRET_KEY.slice(0, 12)}...${PAYMOB_SECRET_KEY.slice(-6)}`,
       },
-      "Paymob API key loaded",
+      "Paymob secret key loaded",
     );
 
     // 2) Request Paymob Intention
-    const response = await axios.post(`${PAYMOB_API_URL}/intention/`, payload, {
+    const response = await axios.post(`${PAYMOB_API_URL}/intention`, payload, {
       headers: {
         // ✅ try API key for authorization
         Authorization: `Token ${PAYMOB_SECRET_KEY}`,
