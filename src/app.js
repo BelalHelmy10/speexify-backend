@@ -340,9 +340,9 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
     // Add participant count to next session
     const nextTeachShaped = nextTeach
       ? {
-          ...nextTeach,
-          participantCount: nextTeach.participants?.length || 0,
-        }
+        ...nextTeach,
+        participantCount: nextTeach.participants?.length || 0,
+      }
       : null;
 
     const user = await prisma.user.findUnique({
@@ -411,15 +411,15 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
     const whereBase =
       role === "teacher"
         ? {
-            OR: [
-              { teacherId: userId },
-              { participants: { some: { userId } } },
-              { userId },
-            ],
-          }
+          OR: [
+            { teacherId: userId },
+            { participants: { some: { userId } } },
+            { userId },
+          ],
+        }
         : {
-            OR: [{ participants: { some: { userId } } }, { userId }],
-          };
+          OR: [{ participants: { some: { userId } } }, { userId }],
+        };
 
     const inProgressOrFuture = {
       OR: [
@@ -435,9 +435,7 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 
     const upcomingCount = await prisma.session.count({
       where: {
-        ...whereBase,
-        status: { not: "canceled" },
-        ...inProgressOrFuture,
+        AND: [whereBase, { status: { not: "canceled" } }, inProgressOrFuture],
       },
     });
 
@@ -447,9 +445,7 @@ app.get("/api/me/summary", requireAuth, async (req, res) => {
 
     const nextSession = await prisma.session.findFirst({
       where: {
-        ...whereBase,
-        status: { not: "canceled" },
-        ...inProgressOrFuture,
+        AND: [whereBase, { status: { not: "canceled" } }, inProgressOrFuture],
       },
       orderBy: { startAt: "asc" },
       select: {
