@@ -26,7 +26,7 @@ import {
 import { sessionMiddleware } from "./middleware/session.js";
 import authRoutes from "./routes/auth.js";
 import paymentsRoutes from "./routes/payments.js";
-import sessionsRoutes from "./routes/sessions.js";
+import sessionsRoutes from "./routes/sessions/index.js";
 import packagesRoutes from "./routes/packages.js";
 import adminRoutes from "./routes/admin.js";
 import onboardingAssessmentRoutes from "./routes/onboarding-assessment.js";
