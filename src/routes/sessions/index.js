@@ -13,12 +13,14 @@ import lifecycleRouter from "./lifecycle.js";
 import learnerRouter from "./learner.js";
 import adminRouter from "./admin.js";
 import classroomRouter from "./classroom.js";
+import bulkCreateRouter from "./bulk-create.js";
 
 const router = Router();
 
 // Mount all sub-routers
 // Order matters for route matching - more specific routes should come first
 router.use(conflictsRouter);
+router.use(bulkCreateRouter); // Bulk create before admin (more specific)
 router.use(teacherRouter);
 router.use(feedbackRouter);
 router.use(attendanceRouter);
