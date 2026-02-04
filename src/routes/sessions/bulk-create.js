@@ -42,12 +42,14 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             defaultTitle = "Lesson",
             customTitles = [], // Array of titles corresponding to sessionDates
             allowNoCredit = false,
+            startDate, // Optional: specific start date (YYYY-MM-DD)
         } = req.body;
 
         // Validation
         if (!learnerId) {
             return res.status(400).json({ error: "learnerId is required" });
         }
+        // dayOfWeek is derived on frontend, but we still validate it loosely
         if (dayOfWeek === undefined || dayOfWeek < 0 || dayOfWeek > 6) {
             return res.status(400).json({ error: "dayOfWeek must be 0-6 (Sunday-Saturday)" });
         }
@@ -80,12 +82,19 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
 
         // Generate session dates
         const sessionDates = [];
-        const today = new Date();
-        let currentDate = new Date(today);
+        let currentDate;
 
-        // Find the next occurrence of the selected day
-        while (currentDate.getDay() !== Number(dayOfWeek)) {
-            currentDate.setDate(currentDate.getDate() + 1);
+        if (startDate) {
+            // Parse YYYY-MM-DD to local date object
+            const [y, m, d] = startDate.split("-").map(Number);
+            currentDate = new Date(y, m - 1, d);
+        } else {
+            // Legacy: Find next occurrence relative to today
+            const today = new Date();
+            currentDate = new Date(today);
+            while (currentDate.getDay() !== Number(dayOfWeek)) {
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
         }
 
         // Generate dates for each session
@@ -140,13 +149,11 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
                 sessionsToCreate.push({
                     type: "ONE_ON_ONE",
                     title: sessionTitle,
-                    learnerId: Number(learnerId),
+                    userId: Number(learnerId),
                     teacherId: teacherId ? Number(teacherId) : null,
                     startAt,
                     endAt,
-                    durationMin: Number(durationMin),
                     status: "scheduled",
-                    createdBy: req.user.id,
                 });
             }
         }
@@ -169,7 +176,7 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
                 const session = await tx.session.create({
                     data: sessionData,
                     include: {
-                        learner: { select: { id: true, name: true, email: true } },
+                        user: { select: { id: true, name: true, email: true } },
                         teacher: { select: { id: true, name: true, email: true } },
                     },
                 });
@@ -185,7 +192,7 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
         for (const session of createdSessions) {
             // Consume credit
             try {
-                await consumeOneCredit(session.learnerId, session.id);
+                await consumeOneCredit(session.userId, session.id);
                 creditsConsumed++;
             } catch (err) {
                 if (!allowNoCredit) {
@@ -226,7 +233,11 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
 
     } catch (err) {
         logger.error({ err }, "bulk-create recurring sessions error");
-        return res.status(500).json({ error: "Failed to create sessions" });
+        return res.status(500).json({
+            error: "Failed to create sessions",
+            details: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
     }
 });
 
