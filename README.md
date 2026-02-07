@@ -144,6 +144,10 @@ SESSION_SECRET=change-me-in-production
 COOKIE_DOMAIN=localhost
 ALLOWED_ORIGINS=http://localhost:3000
 
+# WebSocket security
+WS_AUTH_ENABLED=true
+WS_ALLOWED_ORIGINS=http://localhost:3000
+
 # CSRF
 CSRF_COOKIE_NAME=csrf-token
 CSRF_HEADER_NAME=x-csrf-token
@@ -167,6 +171,10 @@ SESSION_SECRET – Secret string used to sign session cookies (must be long & ra
 COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in production).
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
+
+WS_AUTH_ENABLED – Enables WebSocket auth for /ws/prep and /ws/classroom (set false only for local debugging).
+
+WS_ALLOWED_ORIGINS – Comma-separated allowlist for WebSocket upgrade origins (falls back to ALLOWED_ORIGINS when omitted).
 
 CSRF_COOKIE_NAME – Cookie name where the CSRF token is stored.
 
@@ -193,6 +201,10 @@ SESSION_SECRET – long random string
 COOKIE_DOMAIN – your domain (e.g. yourapp.com)
 
 ALLOWED_ORIGINS – e.g. https://your-frontend-domain.com
+
+WS_AUTH_ENABLED – keep true in production
+
+WS_ALLOWED_ORIGINS – e.g. https://your-frontend-domain.com
 
 Paymob variables if payments are enabled
 

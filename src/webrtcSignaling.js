@@ -1,23 +1,64 @@
 // src/webrtcSignaling.js
 import { WebSocketServer, WebSocket } from "ws";
+import { parse as parseCookieHeader } from "cookie";
+import { unsign as unsignCookieValue } from "cookie-signature";
 import { logger } from "./lib/logger.js";
+import {
+  ALLOWED_ORIGINS as HTTP_ALLOWED_ORIGINS,
+  SESSION_SECRET,
+  isProd,
+} from "./config/env.js";
+import { SESSION_COOKIE_NAME } from "./config/session.js";
+import { sessionMiddleware } from "./middleware/session.js";
+
+function parseBooleanEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function normalizeOrigin(origin) {
+  return String(origin || "")
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+function parseOriginsEnv(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const list = raw
+    .split(",")
+    .map((origin) => normalizeOrigin(origin))
+    .filter(Boolean);
+  return list.length ? list : null;
+}
+
+const wsAllowedOrigins =
+  parseOriginsEnv(process.env.WS_ALLOWED_ORIGINS) ||
+  HTTP_ALLOWED_ORIGINS.map((origin) => normalizeOrigin(origin)).filter(Boolean);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION - All security settings in one place
 // ═══════════════════════════════════════════════════════════════════════════════
 const CONFIG = {
-  // Authentication (set to null to disable - maintains backward compatibility)
-  AUTH_ENABLED: false,
+  // Authentication (override with WS_AUTH_ENABLED=false for local debugging only)
+  AUTH_ENABLED: parseBooleanEnv("WS_AUTH_ENABLED", true),
   AUTH_TOKEN_HEADER: "sec-websocket-protocol", // or use a custom header
   validateToken: async (token, request) => {
     // Override this function to implement your auth logic
     // Return { valid: true, userId: "..." } or { valid: false }
     // Example: return await verifyJWT(token);
-    return { valid: true, userId: "anonymous" };
+    return {
+      valid: false,
+      reason: "Token auth is not configured for this environment",
+    };
   },
 
-  // Origin validation (set to null/empty to disable - maintains backward compatibility)
-  ALLOWED_ORIGINS: [], // e.g., ["https://yourapp.com", "https://www.yourapp.com"]
+  // Origin validation (override with WS_ALLOWED_ORIGINS)
+  ALLOWED_ORIGINS: wsAllowedOrigins, // e.g., ["https://yourapp.com", "https://www.yourapp.com"]
 
   // Rate limiting
   RATE_LIMIT_ENABLED: true,
@@ -219,14 +260,12 @@ function validateSignalPayload(msg) {
 
 function validateOrigin(request) {
   if (!CONFIG.ALLOWED_ORIGINS || CONFIG.ALLOWED_ORIGINS.length === 0) {
-    return true; // Origin checking disabled
+    return !isProd; // In production, explicit allowlist is required.
   }
 
-  const origin = request.headers.origin;
+  const origin = normalizeOrigin(request.headers.origin);
   if (!origin) {
-    // No origin header - could be same-origin or non-browser client
-    // Decide based on your security requirements
-    return true;
+    return !isProd;
   }
 
   return CONFIG.ALLOWED_ORIGINS.includes(origin);
@@ -458,45 +497,109 @@ function safeSend(ws, data) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUTHENTICATION HELPER
 // ═══════════════════════════════════════════════════════════════════════════════
+function extractTokenFromRequest(request) {
+  // From subprotocol header (common for WebSocket auth)
+  const protocols = request.headers[CONFIG.AUTH_TOKEN_HEADER];
+  if (typeof protocols === "string" && protocols.trim()) {
+    const protocolList = protocols.split(",").map((p) => p.trim());
+    const candidate = protocolList.find((p) => p && p !== "websocket");
+    if (candidate) return candidate;
+  }
+
+  // From query string
+  try {
+    const url = new URL(request.url || "", "http://localhost");
+    const token = url.searchParams.get("token");
+    if (token) return token;
+  } catch {
+    // Ignore URL parsing errors
+  }
+
+  // From Authorization header (if custom headers are supported)
+  const authHeader = request.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  return null;
+}
+
+function getSessionIdFromRequest(request) {
+  const cookieHeader = request.headers.cookie;
+  if (!cookieHeader || typeof cookieHeader !== "string") return null;
+
+  let cookies;
+  try {
+    cookies = parseCookieHeader(cookieHeader);
+  } catch {
+    return null;
+  }
+
+  const rawCookie = cookies?.[SESSION_COOKIE_NAME];
+  if (!rawCookie) return null;
+
+  let decoded = rawCookie;
+  try {
+    decoded = decodeURIComponent(rawCookie);
+  } catch {
+    // Keep raw value when decoding fails.
+  }
+
+  if (!decoded.startsWith("s:")) {
+    return decoded || null;
+  }
+
+  if (!SESSION_SECRET) return null;
+
+  const unsigned = unsignCookieValue(decoded.slice(2), SESSION_SECRET);
+  if (!unsigned) return null;
+  return unsigned;
+}
+
+async function getSessionById(sessionId) {
+  if (!sessionId) return null;
+  const store = sessionMiddleware?.store;
+  if (!store || typeof store.get !== "function") return null;
+
+  return await new Promise((resolve) => {
+    store.get(sessionId, (err, sessionData) => {
+      if (err) {
+        logger.warn({ err }, "[Auth] Failed to load session for WebSocket");
+        return resolve(null);
+      }
+      resolve(sessionData || null);
+    });
+  });
+}
+
+async function authenticateFromSession(request) {
+  const sessionId = getSessionIdFromRequest(request);
+  if (!sessionId) return null;
+
+  const sessionData = await getSessionById(sessionId);
+  const sessionUser = sessionData?.user;
+  if (!sessionUser?.id) return null;
+
+  return { authenticated: true, userId: String(sessionUser.id) };
+}
+
 async function authenticateConnection(request) {
   if (!CONFIG.AUTH_ENABLED) {
     return { authenticated: true, userId: "anonymous" };
   }
 
   try {
-    // Try to get token from various sources
-    let token = null;
+    // Primary path: existing app session cookie.
+    const sessionAuth = await authenticateFromSession(request);
+    if (sessionAuth) return sessionAuth;
 
-    // From subprotocol header (common for WebSocket auth)
-    const protocols = request.headers["sec-websocket-protocol"];
-    if (protocols) {
-      const protocolList = protocols.split(",").map((p) => p.trim());
-      // Assume first non-standard protocol is the token
-      token = protocolList.find((p) => p !== "websocket");
-    }
-
-    // From query string
-    if (!token) {
-      try {
-        const url = new URL(request.url || "", "http://localhost");
-        token = url.searchParams.get("token");
-      } catch {
-        // Ignore URL parsing errors
-      }
-    }
-
-    // From Authorization header (if custom headers are supported)
-    if (!token) {
-      const authHeader = request.headers.authorization;
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        token = authHeader.slice(7);
-      }
-    }
+    // Fallback path: token-based auth (if caller passes token explicitly).
+    const token = extractTokenFromRequest(request);
 
     if (!token) {
       return {
         authenticated: false,
-        reason: "No authentication token provided",
+        reason: "No valid session or token provided",
       };
     }
 
@@ -901,6 +1004,18 @@ export function setupWebRtcSignaling(httpServer) {
     prepClients: wssPrep.clients.size,
     classroomClients: wssClassroom.clients.size,
   });
+
+  if (!CONFIG.AUTH_ENABLED) {
+    logger.warn(
+      "[Security] WebSocket auth is disabled (WS_AUTH_ENABLED=false). This should never be used in production."
+    );
+  }
+
+  if (CONFIG.ALLOWED_ORIGINS.length === 0) {
+    logger.warn(
+      "[Security] WebSocket origin allowlist is empty. Set WS_ALLOWED_ORIGINS or ALLOWED_ORIGINS."
+    );
+  }
 
   logger.info("[WebRTC] Signaling server ready at /ws/prep");
   logger.info("[Classroom] Signaling server ready at /ws/classroom");
