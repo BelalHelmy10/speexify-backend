@@ -20,7 +20,11 @@
     "send:reminders1h": "node scripts/sendReminders1h.js",
     "backup:create": "node scripts/backupCreate.js",
     "backup:restore": "node scripts/backupRestore.js",
-    "backup:drill": "node scripts/backupRecoveryDrill.js"
+    "backup:drill": "node scripts/backupRecoveryDrill.js",
+    "loadtest:10k": "node scripts/loadTestRunner.js 10k",
+    "loadtest:100k": "node scripts/loadTestRunner.js 100k",
+    "loadtest:1m": "node scripts/loadTestRunner.js 1m",
+    "loadtest:smoke": "LOADTEST_SCALE=0.2 LOADTEST_DURATION_SEC=30 LOADTEST_RAMP_SEC=8 LOADTEST_TIMEOUT_MS=3000 node scripts/loadTestRunner.js 10k"
   },
   "keywords": [],
   "author": "",

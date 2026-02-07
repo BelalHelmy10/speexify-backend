@@ -11,3 +11,6 @@ npm-debug.log*
 
 # local backup snapshots + recovery drill artifacts
 backups/
+
+# generated performance reports
+reports/

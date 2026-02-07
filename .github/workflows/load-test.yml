@@ -1,0 +1,54 @@
+name: Backend load tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Load profile to run"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - 10k
+          - 100k
+          - 1m
+      base_url:
+        description: "Target API base URL (staging/prod-like)"
+        required: true
+        default: "https://api-staging.speexify.com"
+      scale:
+        description: "Load scale multiplier (e.g. 0.5, 1)"
+        required: false
+        default: "1"
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run load profile
+        env:
+          LOADTEST_BASE_URL: ${{ github.event.inputs.base_url }}
+          LOADTEST_SCALE: ${{ github.event.inputs.scale }}
+        run: npm run loadtest:${{ github.event.inputs.scenario }}
+
+      - name: Upload load reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-reports-${{ github.run_number }}
+          path: reports/load/*.json
+          if-no-files-found: ignore

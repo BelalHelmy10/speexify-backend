@@ -32,6 +32,21 @@ Full CI gate runs compile + unit + integration + critical E2E:
 npm run ci:check
 ```
 
+## Load Testing
+
+Load profiles for `10k`, `100k`, and `1m` user-scale scenarios are available.
+
+```bash
+npm run loadtest:smoke
+npm run loadtest:10k
+npm run loadtest:100k
+npm run loadtest:1m
+```
+
+Full guide and SLO thresholds:
+
+- `docs/load-testing.md`
+
 ---
 
 ## Architecture overview
