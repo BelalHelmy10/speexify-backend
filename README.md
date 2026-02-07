@@ -218,12 +218,18 @@ Start command:
 bash
 Copy code
 node index.js
-This backend does not require any extra cron jobs by default.
-If you later add reminder scripts or scheduled jobs, you can:
+Session reminders now run in a separate worker process.
 
-Create a separate worker service that runs a script periodically, or
+Use this command in a dedicated worker service:
 
-Use an external cron service to hit a reminder endpoint.
+```bash
+npm run worker:session-reminders
+```
+
+Optional worker tuning env vars:
+
+- `REMINDER_INTERVAL_MS` (default `300000`)
+- `REMINDER_WINDOW_MINUTES` (default `6`)
 
 “How to…” – product usage
 This section explains how each role uses the product in simple terms.
