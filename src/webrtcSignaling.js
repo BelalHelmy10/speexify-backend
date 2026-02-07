@@ -866,6 +866,10 @@ export function setupWebRtcSignaling(httpServer) {
   // HTTP Upgrade handling with security checks
   // ─────────────────────────────────────────────
   httpServer.on("upgrade", async (request, socket, head) => {
+    if (request.__wsHandled) {
+      return;
+    }
+
     const ip = getClientIP(request);
 
     // Parse pathname
@@ -930,6 +934,7 @@ export function setupWebRtcSignaling(httpServer) {
     // Route to appropriate WebSocket server
     const wss = pathname === "/ws/prep" ? wssPrep : wssClassroom;
 
+    request.__wsHandled = true;
     wss.handleUpgrade(request, socket, head, (ws) => {
       // Store authenticated user ID
       getMeta(ws).userId = authResult.userId;

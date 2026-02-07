@@ -3,6 +3,7 @@ import http from "http";
 import app from "./src/app.js";
 import { logger } from "./src/lib/logger.js";
 import { setupWebRtcSignaling } from "./src/webrtcSignaling.js";
+import { setupSupportWebSocket } from "./src/services/supportWebSocket.js";
 import { startSessionReminderScheduler } from "./src/jobs/sessionReminders.js";
 
 console.log("[BOOT] REDIS_URL:", process.env.REDIS_URL ? "SET" : "MISSING");
@@ -10,6 +11,7 @@ console.log("[BOOT] REDIS_URL:", process.env.REDIS_URL ? "SET" : "MISSING");
 const PORT = Number(process.env.PORT || 5050);
 
 const server = http.createServer(app);
+setupSupportWebSocket(server);
 setupWebRtcSignaling(server);
 
 server.listen(PORT, "0.0.0.0", () => {

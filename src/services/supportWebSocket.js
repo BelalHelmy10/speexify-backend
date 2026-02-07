@@ -1,8 +1,20 @@
 // src/services/supportWebSocket.js
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseCookie } from "cookie";
+import { unsign as unsignCookieValue } from "cookie-signature";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { ALLOWED_ORIGINS, SESSION_SECRET, isProd } from "../config/env.js";
+import { SESSION_COOKIE_NAME } from "../config/session.js";
+import { sessionMiddleware } from "../middleware/session.js";
+
+const OPEN_STATE = WebSocket.OPEN;
+const MAX_MESSAGE_SIZE_BYTES = 1_048_576;
+const wsAllowedOrigins = ALLOWED_ORIGINS.map((origin) =>
+  String(origin || "")
+    .trim()
+    .replace(/\/+$/, "")
+).filter(Boolean);
 
 // Store active connections: Map<userId, Set<WebSocket>>
 const userConnections = new Map();
@@ -16,42 +28,60 @@ const adminConnections = new Set();
 export function setupSupportWebSocket(server) {
   const wss = new WebSocketServer({
     noServer: true,
-    path: "/ws/support",
+    maxPayload: MAX_MESSAGE_SIZE_BYTES,
   });
 
   // Handle upgrade requests
   server.on("upgrade", (request, socket, head) => {
-    const { pathname } = new URL(request.url, `http://${request.headers.host}`);
+    if (request.__wsHandled) return;
 
-    if (pathname === "/ws/support") {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, request);
-      });
+    let pathname = "/";
+    try {
+      const parsed = new URL(request.url || "", "http://localhost");
+      pathname = parsed.pathname || "/";
+    } catch {
+      socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+      socket.destroy();
+      return;
     }
+
+    if (pathname !== "/ws/support") {
+      return;
+    }
+
+    if (!validateOrigin(request)) {
+      logger.warn(
+        { origin: request.headers.origin },
+        "[Support WS] Origin validation failed"
+      );
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    request.__wsHandled = true;
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
   });
 
   wss.on("connection", async (ws, request) => {
+    let currentUser = null;
+    let isAdmin = false;
+
     try {
-      // Extract session from cookie
-      const cookies = parseCookie(request.headers.cookie || "");
-      const sessionId = cookies["speexify.sid"];
-
-      if (!sessionId) {
-        ws.close(1008, "No session");
+      const authResult = await authenticateFromSession(request);
+      if (!authResult.authenticated) {
+        ws.close(1008, authResult.reason || "Unauthorized");
         return;
       }
 
-      // Get user from session (you'll need to implement this based on your session store)
-      const user = await getUserFromSession(sessionId);
-
-      if (!user) {
-        ws.close(1008, "Invalid session");
-        return;
-      }
+      const { user, actorUserId, isImpersonating } = authResult;
+      currentUser = user;
+      isAdmin = user.role === "admin";
 
       // Track connection
-      const isAdmin = user.role === "admin";
-
       if (isAdmin) {
         adminConnections.add(ws);
       } else {
@@ -61,30 +91,37 @@ export function setupSupportWebSocket(server) {
         userConnections.get(user.id).add(ws);
       }
 
-      logger.info({ userId: user.id, isAdmin }, "Support WebSocket connected");
+      logger.info(
+        { userId: user.id, actorUserId, isAdmin, isImpersonating },
+        "Support WebSocket connected"
+      );
 
       // Send connection confirmation
-      ws.send(
-        JSON.stringify({
-          type: "connected",
-          userId: user.id,
-          isAdmin,
-        })
-      );
+      safeSend(ws, {
+        type: "connected",
+        userId: user.id,
+        isAdmin,
+      });
 
       // Handle incoming messages
       ws.on("message", async (data) => {
+        if (data.length > MAX_MESSAGE_SIZE_BYTES) {
+          safeSend(ws, {
+            type: "error",
+            error: "Message too large",
+          });
+          return;
+        }
+
         try {
           const message = JSON.parse(data.toString());
           await handleWebSocketMessage(ws, user, message);
         } catch (err) {
           logger.error({ err, userId: user.id }, "WebSocket message error");
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              error: "Invalid message format",
-            })
-          );
+          safeSend(ws, {
+            type: "error",
+            error: "Invalid message format",
+          });
         }
       });
 
@@ -101,6 +138,7 @@ export function setupSupportWebSocket(server) {
             }
           }
         }
+
         logger.info(
           { userId: user.id, isAdmin },
           "Support WebSocket disconnected"
@@ -113,10 +151,26 @@ export function setupSupportWebSocket(server) {
       });
     } catch (err) {
       logger.error({ err }, "WebSocket connection error");
+
+      if (currentUser) {
+        if (isAdmin) {
+          adminConnections.delete(ws);
+        } else {
+          const connections = userConnections.get(currentUser.id);
+          if (connections) {
+            connections.delete(ws);
+            if (connections.size === 0) {
+              userConnections.delete(currentUser.id);
+            }
+          }
+        }
+      }
+
       ws.close(1011, "Internal error");
     }
   });
 
+  logger.info("[Support WS] Real-time support server ready at /ws/support");
   return wss;
 }
 
@@ -124,27 +178,49 @@ export function setupSupportWebSocket(server) {
  * Handle WebSocket messages
  */
 async function handleWebSocketMessage(ws, user, message) {
-  const { type, data } = message;
+  const { type, data } = message || {};
 
   switch (type) {
     case "ping":
-      ws.send(JSON.stringify({ type: "pong" }));
+      safeSend(ws, { type: "pong" });
       break;
 
-    case "typing":
+    case "typing": {
+      const ticketId = Number(data?.ticketId);
+      if (!Number.isFinite(ticketId)) {
+        safeSend(ws, { type: "error", error: "Invalid ticketId" });
+        return;
+      }
+
+      const ticket = await getAuthorizedTicketForUser(user, ticketId);
+      if (!ticket) {
+        safeSend(ws, { type: "error", error: "Forbidden" });
+        return;
+      }
+
       // Broadcast typing indicator
-      if (data.ticketId) {
-        await broadcastTypingIndicator(data.ticketId, user, data.isTyping);
-      }
+      await broadcastTypingIndicator(ticket, user, Boolean(data?.isTyping));
       break;
+    }
 
-    case "subscribe":
-      // Subscribe to specific ticket updates
-      if (data.ticketId) {
-        ws.ticketSubscriptions = ws.ticketSubscriptions || new Set();
-        ws.ticketSubscriptions.add(data.ticketId);
+    case "subscribe": {
+      const ticketId = Number(data?.ticketId);
+      if (!Number.isFinite(ticketId)) {
+        safeSend(ws, { type: "error", error: "Invalid ticketId" });
+        return;
       }
+
+      const ticket = await getAuthorizedTicketForUser(user, ticketId);
+      if (!ticket) {
+        safeSend(ws, { type: "error", error: "Forbidden" });
+        return;
+      }
+
+      // Subscribe to specific ticket updates
+      ws.ticketSubscriptions = ws.ticketSubscriptions || new Set();
+      ws.ticketSubscriptions.add(ticket.id);
       break;
+    }
 
     default:
       logger.warn({ type, userId: user.id }, "Unknown WebSocket message type");
@@ -154,17 +230,10 @@ async function handleWebSocketMessage(ws, user, message) {
 /**
  * Broadcast typing indicator
  */
-async function broadcastTypingIndicator(ticketId, user, isTyping) {
-  const ticket = await prisma.supportTicket.findUnique({
-    where: { id: ticketId },
-    select: { userId: true },
-  });
-
-  if (!ticket) return;
-
+async function broadcastTypingIndicator(ticket, user, isTyping) {
   const message = JSON.stringify({
     type: "typing",
-    ticketId,
+    ticketId: ticket.id,
     userId: user.id,
     userName: user.name || user.email,
     isTyping,
@@ -173,21 +242,19 @@ async function broadcastTypingIndicator(ticketId, user, isTyping) {
   // Send to ticket owner
   const ownerConnections = userConnections.get(ticket.userId);
   if (ownerConnections) {
-    ownerConnections.forEach((ws) => {
-      if (ws.readyState === 1) ws.send(message);
-    });
+    sendToConnections(ownerConnections, message);
   }
 
   // Send to all admins
-  adminConnections.forEach((ws) => {
-    if (ws.readyState === 1) ws.send(message);
-  });
+  sendToConnections(adminConnections, message);
 }
 
 /**
  * Broadcast new message to relevant connections
  */
 export function broadcastNewMessage(ticketId, message, ticket) {
+  if (!ticket?.userId) return;
+
   const payload = JSON.stringify({
     type: "new_message",
     ticketId,
@@ -198,21 +265,19 @@ export function broadcastNewMessage(ticketId, message, ticket) {
   // Send to ticket owner
   const ownerConnections = userConnections.get(ticket.userId);
   if (ownerConnections) {
-    ownerConnections.forEach((ws) => {
-      if (ws.readyState === 1) ws.send(payload);
-    });
+    sendToConnections(ownerConnections, payload);
   }
 
   // Send to all admins
-  adminConnections.forEach((ws) => {
-    if (ws.readyState === 1) ws.send(payload);
-  });
+  sendToConnections(adminConnections, payload);
 }
 
 /**
  * Broadcast ticket status change
  */
 export function broadcastTicketStatusChange(ticketId, status, ticket) {
+  if (!ticket?.userId) return;
+
   const payload = JSON.stringify({
     type: "ticket_status_change",
     ticketId,
@@ -223,15 +288,11 @@ export function broadcastTicketStatusChange(ticketId, status, ticket) {
   // Send to ticket owner
   const ownerConnections = userConnections.get(ticket.userId);
   if (ownerConnections) {
-    ownerConnections.forEach((ws) => {
-      if (ws.readyState === 1) ws.send(payload);
-    });
+    sendToConnections(ownerConnections, payload);
   }
 
   // Send to all admins
-  adminConnections.forEach((ws) => {
-    if (ws.readyState === 1) ws.send(payload);
-  });
+  sendToConnections(adminConnections, payload);
 }
 
 /**
@@ -243,33 +304,152 @@ export function broadcastNewTicket(ticket) {
     ticket,
   });
 
-  adminConnections.forEach((ws) => {
-    if (ws.readyState === 1) ws.send(payload);
+  sendToConnections(adminConnections, payload);
+}
+
+function safeSend(ws, data) {
+  if (ws.readyState !== OPEN_STATE) return false;
+  try {
+    ws.send(typeof data === "string" ? data : JSON.stringify(data));
+    return true;
+  } catch (err) {
+    logger.warn({ err }, "[Support WS] Failed to send message");
+    return false;
+  }
+}
+
+function sendToConnections(connections, payload) {
+  for (const ws of Array.from(connections)) {
+    if (ws.readyState === OPEN_STATE) {
+      safeSend(ws, payload);
+      continue;
+    }
+    connections.delete(ws);
+  }
+}
+
+function validateOrigin(request) {
+  if (!wsAllowedOrigins.length) {
+    return !isProd;
+  }
+
+  const origin = String(request.headers.origin || "")
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!origin) {
+    return !isProd;
+  }
+
+  return wsAllowedOrigins.includes(origin);
+}
+
+function getSessionIdFromCookie(request) {
+  const cookieHeader = request.headers.cookie;
+  if (!cookieHeader || typeof cookieHeader !== "string") return null;
+
+  let cookies = {};
+  try {
+    cookies = parseCookie(cookieHeader);
+  } catch {
+    return null;
+  }
+
+  const raw = cookies?.[SESSION_COOKIE_NAME];
+  if (!raw) return null;
+
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Use raw cookie if decoding fails.
+  }
+
+  if (!decoded.startsWith("s:")) {
+    return decoded || null;
+  }
+
+  if (!SESSION_SECRET) return null;
+  const unsigned = unsignCookieValue(decoded.slice(2), SESSION_SECRET);
+  return unsigned || null;
+}
+
+async function getSessionData(sessionId) {
+  const store = sessionMiddleware?.store;
+  if (!store || typeof store.get !== "function") return null;
+
+  return await new Promise((resolve) => {
+    store.get(sessionId, (err, sessionData) => {
+      if (err) {
+        logger.warn({ err }, "[Support WS] Failed to load session");
+        return resolve(null);
+      }
+      resolve(sessionData || null);
+    });
   });
 }
 
-/**
- * Get user from session (implement based on your session store)
- */
-async function getUserFromSession(sessionId) {
-  // This is a placeholder - implement based on your session store
-  // For express-session with Redis:
-  try {
-    // You'll need to import your session store and decode the session
-    // For now, returning null to show the structure
-    // In production, decode the session ID and fetch from Redis
+async function authenticateFromSession(request) {
+  const sessionId = getSessionIdFromCookie(request);
+  if (!sessionId) {
+    return { authenticated: false, reason: "Missing session" };
+  }
 
-    // Example with connect-redis:
-    // const session = await redisClient.get(`sess:${sessionId}`);
-    // if (!session) return null;
-    // const parsed = JSON.parse(session);
-    // return parsed.user;
+  const sessionData = await getSessionData(sessionId);
+  const sessionUser = sessionData?.user;
+  if (!sessionUser?.id) {
+    return { authenticated: false, reason: "Invalid session" };
+  }
 
-    return null; // Implement this
-  } catch (err) {
-    logger.error({ err }, "Failed to get user from session");
+  const actorUserId = Number(sessionUser.id);
+  if (!Number.isFinite(actorUserId)) {
+    return { authenticated: false, reason: "Invalid user in session" };
+  }
+
+  let effectiveUserId = actorUserId;
+  const rawAsUserId = sessionData?.asUserId;
+
+  if (sessionUser.role === "admin" && rawAsUserId != null) {
+    const asUserId = Number(rawAsUserId);
+    if (Number.isFinite(asUserId)) {
+      effectiveUserId = asUserId;
+    }
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: effectiveUserId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isDisabled: true,
+    },
+  });
+
+  if (!user || user.isDisabled) {
+    return { authenticated: false, reason: "User is disabled or not found" };
+  }
+
+  return {
+    authenticated: true,
+    user,
+    actorUserId,
+    isImpersonating: effectiveUserId !== actorUserId,
+  };
+}
+
+async function getAuthorizedTicketForUser(user, ticketId) {
+  const ticket = await prisma.supportTicket.findUnique({
+    where: { id: ticketId },
+    select: { id: true, userId: true },
+  });
+
+  if (!ticket) return null;
+  if (user.role !== "admin" && ticket.userId !== user.id) {
     return null;
   }
+  return ticket;
 }
 
 // Export connection maps for testing/debugging
