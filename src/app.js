@@ -11,6 +11,7 @@ import axios from "axios";
 import { z } from "zod";
 import helmet from "helmet";
 import cors from "cors";
+import { performance } from "node:perf_hooks";
 
 // ─────────────────────────────────────────────────────────────────────────────
 import bcrypt from "bcryptjs";
@@ -22,6 +23,7 @@ import {
   PAYMOB_IFRAME_ID,
   PAYMOB_HMAC_SECRET,
   ALLOWED_ORIGINS,
+  OBS_METRICS_TOKEN,
 } from "./config/env.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import authRoutes from "./routes/auth.js";
@@ -45,6 +47,16 @@ import supportRoutes from "./routes/support.js";
 import availabilityRoutes from "./routes/availability.js";
 import calendarRoutes from "./routes/calendar.js";
 import discountRoutes from "./routes/discounts.js";
+import {
+  buildRequestContext,
+  runWithRequestContext,
+} from "./observability/requestContext.js";
+import {
+  getMetricsSnapshot,
+  recordHttpRequestEnd,
+  recordHttpRequestStart,
+  toPrometheusMetrics,
+} from "./observability/metrics.js";
 
 const app = express();
 
@@ -62,9 +74,38 @@ if (
   !PAYMOB_IFRAME_ID ||
   !PAYMOB_HMAC_SECRET
 ) {
-  console.warn(
+  logger.warn(
     "⚠️  Missing one or more Paymob env vars (PAYMOB_API_KEY, PAYMOB_INTEGRATION_ID, PAYMOB_IFRAME_ID, PAYMOB_HMAC_SECRET). Test mode will fail until set."
   );
+}
+
+function getRoutePattern(req) {
+  const routePath = req.route?.path;
+  if (routePath) {
+    const base = req.baseUrl || "";
+    return `${base}${routePath}`.replace(/\/+/g, "/");
+  }
+
+  const rawPath = req.path || req.originalUrl || "";
+  const pathOnly = String(rawPath).split("?")[0];
+  return pathOnly || "unknown";
+}
+
+function safeTokenCompare(given, expected) {
+  const givenBuf = Buffer.from(String(given || ""));
+  const expectedBuf = Buffer.from(String(expected || ""));
+  if (givenBuf.length !== expectedBuf.length) return false;
+  return crypto.timingSafeEqual(givenBuf, expectedBuf);
+}
+
+function isMetricsAuthorized(req) {
+  if (!OBS_METRICS_TOKEN) return true;
+  const candidate =
+    req.get("x-metrics-token") ||
+    req.query.token ||
+    req.query.metricsToken ||
+    "";
+  return safeTokenCompare(candidate, OBS_METRICS_TOKEN);
 }
 
 /* ========================================================================== */
@@ -74,6 +115,59 @@ if (
 app.use(express.json());
 app.set("trust proxy", 1);
 app.use(helmet());
+
+// Observability baseline: request context + structured access logs + metrics
+app.use((req, res, next) => {
+  const context = buildRequestContext(req);
+  const startedAt = performance.now();
+  let finalized = false;
+
+  res.setHeader("x-request-id", context.requestId);
+  res.setHeader("x-trace-id", context.traceId);
+
+  recordHttpRequestStart();
+
+  const finalize = (reason) => {
+    if (finalized) return;
+    finalized = true;
+
+    const durationMs = Number((performance.now() - startedAt).toFixed(2));
+    const statusCode =
+      reason === "close" && !res.writableEnded ? 499 : res.statusCode || 500;
+    const route = getRoutePattern(req);
+    const userId = req.session?.user?.id || null;
+    const viewUserId = req.viewUserId || null;
+
+    recordHttpRequestEnd({
+      method: req.method,
+      route,
+      statusCode,
+      durationMs,
+    });
+
+    logger.info(
+      {
+        event: "http_request",
+        method: req.method,
+        route,
+        statusCode,
+        durationMs,
+        requestId: context.requestId,
+        traceId: context.traceId,
+        userId,
+        viewUserId,
+        ip: req.ip,
+        userAgent: req.get("user-agent") || "",
+      },
+      "http request completed"
+    );
+  };
+
+  res.once("finish", () => finalize("finish"));
+  res.once("close", () => finalize("close"));
+
+  runWithRequestContext(context, () => next());
+});
 
 // CORS configured from ALLOWED_ORIGINS
 const allowedOrigins = ALLOWED_ORIGINS;
@@ -200,6 +294,26 @@ app.get("/api/_which-app", (_req, res) => {
 app.get("/api/message", (_req, res) =>
   res.json({ message: "Hello from the backend 👋" })
 );
+
+app.get("/metrics", (req, res) => {
+  if (!isMetricsAuthorized(req)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+  return res.send(toPrometheusMetrics());
+});
+
+app.get("/api/observability/summary", requireAuth, requireAdmin, (req, res) => {
+  const parsedWindowMs = Number(req.query.windowMs);
+  const windowMs =
+    Number.isFinite(parsedWindowMs) && parsedWindowMs > 0
+      ? Math.floor(parsedWindowMs)
+      : undefined;
+
+  const snapshot = getMetricsSnapshot({ windowMs });
+  return res.json(snapshot);
+});
 
 /* ========================================================================== */
 /*                             PUBLIC: CONTACT                                */

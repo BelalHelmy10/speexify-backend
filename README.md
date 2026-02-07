@@ -47,6 +47,19 @@ Full guide and SLO thresholds:
 
 - `docs/load-testing.md`
 
+## Observability
+
+Baseline observability now includes:
+
+- Structured request logs with request/trace IDs
+- Prometheus metrics endpoint: `GET /metrics`
+- Admin metrics snapshot: `GET /api/observability/summary`
+- In-process alerting with optional webhook notifications
+
+Guide and env variables:
+
+- `docs/observability-baseline.md`
+
 ---
 
 ## Architecture overview

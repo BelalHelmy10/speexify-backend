@@ -44,6 +44,22 @@ function parsePositiveIntEnv(name, fallback) {
   return Math.floor(parsed);
 }
 
+function parseNonNegativeNumberEnv(name, fallback) {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === "") return fallback;
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+function parseUnitIntervalEnv(name, fallback) {
+  const parsed = parseNonNegativeNumberEnv(name, fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed > 1) return fallback;
+  return parsed;
+}
+
 // Session runtime behavior
 export const SESSION_FORCE_MEMORY =
   isTest || parseBooleanEnv("SESSION_FORCE_MEMORY", false);
@@ -82,3 +98,44 @@ export const PAYMOB_PUBLIC_KEY = (process.env.PAYMOB_PUBLIC_KEY || "").trim();
 export const LOG_LEVEL =
   process.env.LOG_LEVEL ||
   (process.env.NODE_ENV === "production" ? "info" : "debug");
+
+// Observability: tracing
+export const SENTRY_TRACES_SAMPLE_RATE = parseUnitIntervalEnv(
+  "SENTRY_TRACES_SAMPLE_RATE",
+  isProd ? 0.1 : 1
+);
+export const SENTRY_PROFILES_SAMPLE_RATE = parseUnitIntervalEnv(
+  "SENTRY_PROFILES_SAMPLE_RATE",
+  0
+);
+
+// Observability: metrics / alerting
+export const OBS_METRICS_TOKEN = (process.env.OBS_METRICS_TOKEN || "").trim();
+
+export const OBS_ALERTS_ENABLED = parseBooleanEnv("OBS_ALERTS_ENABLED", !isTest);
+export const OBS_ALERT_WEBHOOK_URL = (process.env.OBS_ALERT_WEBHOOK_URL || "").trim();
+
+export const OBS_ALERT_WINDOW_MS = parsePositiveIntEnv(
+  "OBS_ALERT_WINDOW_MS",
+  5 * 60 * 1000
+);
+export const OBS_ALERT_CHECK_INTERVAL_MS = parsePositiveIntEnv(
+  "OBS_ALERT_CHECK_INTERVAL_MS",
+  60 * 1000
+);
+export const OBS_ALERT_COOLDOWN_MS = parsePositiveIntEnv(
+  "OBS_ALERT_COOLDOWN_MS",
+  10 * 60 * 1000
+);
+export const OBS_ALERT_ERROR_RATE_PCT = parseNonNegativeNumberEnv(
+  "OBS_ALERT_ERROR_RATE_PCT",
+  5
+);
+export const OBS_ALERT_P95_MS = parsePositiveIntEnv(
+  "OBS_ALERT_P95_MS",
+  1200
+);
+export const OBS_ALERT_MIN_REQUESTS = parsePositiveIntEnv(
+  "OBS_ALERT_MIN_REQUESTS",
+  100
+);
