@@ -12,23 +12,24 @@ datasource db {
 }
 
 model Package {
-  id              Int       @id @default(autoincrement())
+  id              Int           @id @default(autoincrement())
   title           String
   description     String?
   priceUSD        Int?
   features        String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  active          Boolean   @default(true)
-  audience        Audience  @default(INDIVIDUAL)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  active          Boolean       @default(true)
+  audience        Audience      @default(INDIVIDUAL)
   durationMin     Int?
   image           String?
-  isPopular       Boolean   @default(false)
-  priceType       PriceType @default(BUNDLE)
+  isPopular       Boolean       @default(false)
+  priceType       PriceType     @default(BUNDLE)
   sessionsPerPack Int?
-  sortOrder       Int       @default(0)
+  sortOrder       Int           @default(0)
   startingAtUSD   Int?
   userPackages    UserPackage[]
+  orders          Order[]
 }
 
 model User {
@@ -49,32 +50,33 @@ model User {
   teachingSessions      Session[]              @relation("SessionTeacher")
 
   // Legacy 1:1 learner ownership (Session.userId)
-  sessions              Session[]
+  sessions Session[]
 
   // New: membership rows for group sessions (and future-proof for 1:1 as well)
-  sessionParticipants   SessionParticipant[]
+  sessionParticipants SessionParticipant[]
 
-  sessionFeedbacks      SessionFeedback[]
-  userPackages          UserPackage[]
+  sessionFeedbacks SessionFeedback[]
+  userPackages     UserPackage[]
+  orders           Order[]
 
   // In-app notifications
-  notifications         Notification[]
+  notifications Notification[]
 
   // Support tickets + messages
-  supportTickets        SupportTicket[]
-  supportMessages       SupportMessage[]
-  
+  supportTickets  SupportTicket[]
+  supportMessages SupportMessage[]
+
   // ✨ Support ticket assignment (admin can assign tickets to staff)
-  assignedSupportTickets SupportTicket[]       @relation("AssignedSupportTickets")
-  
+  assignedSupportTickets SupportTicket[] @relation("AssignedSupportTickets")
+
   // ✨ Internal notes authored by staff
-  supportInternalNotes   SupportInternalNote[] @relation("SupportNoteAuthor")
+  supportInternalNotes SupportInternalNote[] @relation("SupportNoteAuthor")
 
   // Learner feedback on sessions
-  learnerFeedbacks      LearnerSessionFeedback[] @relation("LearnerFeedbacks")
+  learnerFeedbacks LearnerSessionFeedback[] @relation("LearnerFeedbacks")
 
   // ✨ NEW: User availability for scheduling
-  availabilities        Availability[]
+  availabilities Availability[]
 
   @@index([role])
 }
@@ -84,61 +86,64 @@ model User {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Availability {
-  id        Int      @id @default(autoincrement())
-  
+  id Int @id @default(autoincrement())
+
   // The user who owns this availability slot
-  userId    Int
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   // Day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
   // If null, this is a specific date slot rather than recurring
   dayOfWeek Int?
-  
+
   // For specific date availability (non-recurring)
   specificDate DateTime?
-  
+
   // Time range (stored as "HH:MM" in 24h format)
-  startTime String   // e.g., "09:00"
-  endTime   String   // e.g., "17:00"
-  
+  startTime String // e.g., "09:00"
+  endTime   String // e.g., "17:00"
+
   // Timezone for this availability (user's timezone at creation)
-  timezone  String?
-  
+  timezone String?
+
   // Whether this is a recurring weekly slot or one-time
   isRecurring Boolean @default(true)
-  
+
   // Status: active, inactive (soft disable without deleting)
-  status    String   @default("active")
-  
+  status String @default("active")
+
   // Optional note/label for the slot
-  note      String?
-  
+  note String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([userId, status])
   @@index([userId, dayOfWeek])
   @@index([userId, specificDate])
   @@index([status, dayOfWeek])
+  @@index([userId, status, isRecurring, dayOfWeek, startTime], map: "Availability_user_status_recur_day_start_idx")
+  @@index([userId, status, isRecurring, specificDate, startTime], map: "Availability_user_status_recur_date_start_idx")
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
-  userId    Int
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // e.g. booking_confirmed, reminder_24h, payment_receipt
-  type      String
+  type String
 
-  title     String
-  body      String?
-  data      Json?
+  title String
+  body  String?
+  data  Json?
 
   readAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId, createdAt])
   @@index([userId, readAt])
+  @@index([userId, readAt, id], map: "Notification_userId_readAt_id_idx")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,31 +174,31 @@ enum SupportPriority {
 }
 
 model SupportTicket {
-  id         Int             @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   // The user who opened the ticket
-  userId     Int
-  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  category   SupportCategory
-  subject    String?
-  status     SupportStatus   @default(OPEN)
-  
+  category SupportCategory
+  subject  String?
+  status   SupportStatus   @default(OPEN)
+
   // ✨ Priority system (default NORMAL)
-  priority   SupportPriority @default(NORMAL)
+  priority SupportPriority @default(NORMAL)
 
   // ✨ Ticket assignment (which staff member is handling this)
   assignedToId Int?
-  assignedTo   User?         @relation("AssignedSupportTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedTo   User? @relation("AssignedSupportTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
 
   // Soft resolution timestamps
   resolvedAt DateTime?
 
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  messages   SupportMessage[]
-  
+  messages SupportMessage[]
+
   // ✨ Internal notes (staff-only collaboration)
   internalNotes SupportInternalNote[]
 
@@ -202,41 +207,43 @@ model SupportTicket {
   @@index([category, updatedAt])
   @@index([priority, updatedAt])
   @@index([assignedToId, updatedAt])
+  @@index([userId, status, updatedAt], map: "SupportTicket_userId_status_updatedAt_idx")
+  @@index([status, priority, updatedAt], map: "SupportTicket_status_priority_updatedAt_idx")
 }
 
 model SupportMessage {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  ticketId  Int
-  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticketId Int
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   // Who authored the message
-  authorId  Int
-  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
-  body      String
+  body String
 
   // Simple flag for staff replies (we can refine later)
-  isStaff   Boolean  @default(false)
+  isStaff Boolean @default(false)
 
   createdAt DateTime @default(now())
 
+  attachments SupportAttachment[]
+
   @@index([ticketId, createdAt])
   @@index([authorId, createdAt])
-
-  attachments SupportAttachment[]
 }
 
 model SupportAttachment {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   messageId Int
   message   SupportMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  fileName  String
-  filePath  String
-  mimeType  String
-  fileSize  Int
+  fileName String
+  filePath String
+  mimeType String
+  fileSize Int
 
   createdAt DateTime @default(now())
 
@@ -245,16 +252,16 @@ model SupportAttachment {
 
 // ✨ Internal notes for staff collaboration
 model SupportInternalNote {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  ticketId  Int
-  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticketId Int
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   // Staff member who wrote the note
-  authorId  Int
-  author    User     @relation("SupportNoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+  author   User @relation("SupportNoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
 
-  body      String
+  body String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -277,63 +284,66 @@ model Audit {
 }
 
 model Session {
-  id                              Int              @id @default(autoincrement())
-  title                           String
-  startAt                         DateTime
-  endAt                           DateTime?
-  notes                           String?
+  id      Int       @id @default(autoincrement())
+  title   String
+  startAt DateTime
+  endAt   DateTime?
+  notes   String?
 
   // New: session kind + group capacity
-  type                            SessionType       @default(ONE_ON_ONE)
-  capacity                        Int?
+  type     SessionType @default(ONE_ON_ONE)
+  capacity Int?
 
   // Legacy 1:1 learner owner (kept for compatibility + migration)
   // For GROUP sessions, this can be null.
-  userId                          Int?
-  user                            User?             @relation(fields: [userId], references: [id])
+  userId Int?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  teacherId                       Int?
-  teacher                         User?             @relation("SessionTeacher", fields: [teacherId], references: [id])
+  teacherId Int?
+  teacher   User? @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
 
   // New: participant membership (many learners per session)
-  participants                    SessionParticipant[]
+  participants SessionParticipant[]
 
-  createdAt                       DateTime          @default(now())
-  updatedAt                       DateTime          @updatedAt
+  createdAt                       DateTime      @default(now())
+  updatedAt                       DateTime      @updatedAt
   reminder24hSentAt               DateTime?
   reminder6hSentAt                DateTime?
   reminder1hSentAt                DateTime?
   feedbackScore                   Int?
-  status                          SessionStatus     @default(scheduled)
+  status                          SessionStatus @default(scheduled)
   joinUrl                         String?
   teacherFeedbackComments         String?
   teacherFeedbackFutureSteps      String?
   teacherFeedbackMessageToLearner String?
   classroomState                  Json?
 
-  feedback                        SessionFeedback?
+  feedback SessionFeedback?
 
   // ─── Classroom Experience Fields ───
-  teacherNotes                    String?
-  resourcesUsed                   Json?             @default("[]")
-  resourcesUsedAt                 Json?             @default("{}")
-  learnerFeedbacks                LearnerSessionFeedback[]
+  teacherNotes     String?
+  resourcesUsed    Json?                    @default("[]")
+  resourcesUsedAt  Json?                    @default("{}")
+  learnerFeedbacks LearnerSessionFeedback[]
 
   @@index([userId, startAt])
   @@index([teacherId, startAt])
   @@index([type, startAt])
+  @@index([status, startAt], map: "Session_status_startAt_idx")
+  @@index([teacherId, status, startAt], map: "Session_teacherId_status_startAt_idx")
+  @@index([userId, status, startAt], map: "Session_userId_status_startAt_idx")
 }
 
 model SessionParticipant {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   sessionId Int
-  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   userId Int
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  status    String   @default("booked")
+  status     String    @default("booked")
   attendedAt DateTime?
 
   createdAt DateTime @default(now())
@@ -342,6 +352,8 @@ model SessionParticipant {
   @@unique([sessionId, userId])
   @@index([userId])
   @@index([sessionId])
+  @@index([userId, status], map: "SessionParticipant_userId_status_idx")
+  @@index([sessionId, status], map: "SessionParticipant_sessionId_status_idx")
 }
 
 model SessionFeedback {
@@ -359,25 +371,25 @@ model SessionFeedback {
 
 // ─── Learner Session Feedback (post-session ratings/surveys) ───
 model LearnerSessionFeedback {
-  id              String   @id @default(cuid())
-  sessionId       Int
-  learnerId       Int
-  
+  id        String @id @default(cuid())
+  sessionId Int
+  learnerId Int
+
   // Rating 1-5 stars
-  rating          Int
-  
+  rating Int
+
   // Optional feedback text fields
-  highlights      String?
-  improvements    String?
-  otherFeedback   String?
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
+  highlights    String?
+  improvements  String?
+  otherFeedback String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  learner         User     @relation("LearnerFeedbacks", fields: [learnerId], references: [id], onDelete: Cascade)
-  
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  learner User    @relation("LearnerFeedbacks", fields: [learnerId], references: [id], onDelete: Cascade)
+
   // Each learner can only submit one feedback per session
   @@unique([sessionId, learnerId])
   @@index([sessionId])
@@ -405,51 +417,54 @@ model PasswordResetCode {
 }
 
 model Order {
-  id            String   @id
-  amountCents   Int
-  currency      String   @default("EGP")
-  status        String   @default("pending")
-  psp           String   @default("paymob")
-  pspOrderId    Int?
-  customerEmail String?
-  customerPhone String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  userId        Int?
-  packageId     Int?
-  paymobTxnId   Int?
+  id             String        @id
+  amountCents    Int
+  currency       String        @default("EGP")
+  status         String        @default("pending")
+  psp            String        @default("paymob")
+  pspOrderId     Int?
+  customerEmail  String?
+  customerPhone  String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  userId         Int?
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  packageId      Int?
+  package        Package?      @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  paymobTxnId    Int?
   discountCodeId Int?
-  discountCode   DiscountCode? @relation(fields: [discountCodeId], references: [id])
+  discountCode   DiscountCode? @relation(fields: [discountCodeId], references: [id], onDelete: SetNull)
 
-  userPackage   UserPackage?
+  userPackage UserPackage?
 
   @@index([userId])
   @@index([packageId])
-  
+  @@index([status, updatedAt], map: "Order_status_updatedAt_idx")
+  @@index([paymobTxnId], map: "Order_paymobTxnId_idx")
+  @@index([pspOrderId], map: "Order_pspOrderId_idx")
 }
 
 model DiscountCode {
-  id           Int      @id @default(autoincrement())
-  code         String   @unique
-  percentage   Int      // 50 = 50% off
-  active       Boolean  @default(true)
-  expiresAt    DateTime?
-  maxUses      Int?
-  usedCount    Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id         Int       @id @default(autoincrement())
+  code       String    @unique
+  percentage Int // 50 = 50% off
+  active     Boolean   @default(true)
+  expiresAt  DateTime?
+  maxUses    Int?
+  usedCount  Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  orders       Order[]
+  orders Order[]
 }
 
-
 model UserPackage {
-  id                Int       @id @default(autoincrement())
-  userId            Int
-  packageId         Int
+  id        Int @id @default(autoincrement())
+  userId    Int
+  packageId Int
 
-  orderId           String?   @unique
-  order             Order?    @relation(fields: [orderId], references: [id])
+  orderId String? @unique
+  order   Order?  @relation(fields: [orderId], references: [id])
 
   title             String
   minutesPerSession Int?
@@ -463,6 +478,8 @@ model UserPackage {
   package           Package   @relation(fields: [packageId], references: [id])
 
   @@index([userId, status])
+  @@index([userId, status, expiresAt], map: "UserPackage_userId_status_expiresAt_idx")
+  @@index([userId, status, createdAt], map: "UserPackage_userId_status_createdAt_idx")
 }
 
 model OnboardingForm {
