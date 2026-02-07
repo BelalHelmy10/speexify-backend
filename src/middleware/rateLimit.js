@@ -1,10 +1,10 @@
 // src/middleware/rateLimit.js
-import rateLimit from "express-rate-limit";
+import { createRedisRateLimiter } from "../services/rateLimitService.js";
 
-export const loginLimiter = rateLimit({
+export const loginLimiter = createRedisRateLimiter({
+  scope: "auth-login-ip",
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 attempts per window per IP
+  limit: 10, // 10 attempts per window per IP
   message: { error: "Too many login attempts, please try again later" },
-  standardHeaders: true,
-  legacyHeaders: false,
+  keyBuilder: (req) => req.ip || "unknown",
 });

@@ -13,6 +13,7 @@ import {
 import { logger } from "../lib/logger.js";
 import fs from "fs";
 import path from "path";
+import { consumeRateLimit } from "../services/rateLimitService.js";
 import {
   broadcastNewMessage,
   broadcastTicketStatusChange,
@@ -21,9 +22,6 @@ import {
 
 const router = Router();
 const SUPPORT_UPLOAD_DIR = path.join(process.cwd(), "uploads", "support");
-
-// Rate limiting map (in production, use Redis)
-const rateLimits = new Map();
 
 const CategorySchema = z.enum([
   "PAYMENT",
@@ -40,26 +38,13 @@ const PrioritySchema = z
 // ============================================================================
 // HELPER: Rate limiting
 // ============================================================================
-function checkRateLimit(userId, action, maxAttempts, windowMs) {
-  const key = `${userId}:${action}`;
-  const now = Date.now();
-
-  if (!rateLimits.has(key)) {
-    rateLimits.set(key, []);
-  }
-
-  const attempts = rateLimits.get(key);
-
-  // Clean old attempts
-  const validAttempts = attempts.filter((time) => now - time < windowMs);
-  rateLimits.set(key, validAttempts);
-
-  if (validAttempts.length >= maxAttempts) {
-    return false;
-  }
-
-  validAttempts.push(now);
-  return true;
+async function checkRateLimit(userId, action, maxAttempts, windowMs) {
+  const result = await consumeRateLimit({
+    key: `support:user:${Number(userId)}:${String(action || "").slice(0, 120)}`,
+    limit: Number(maxAttempts),
+    windowMs: Number(windowMs),
+  });
+  return result.allowed;
 }
 
 function sanitizeDownloadName(fileName) {
@@ -141,7 +126,7 @@ router.post("/tickets", requireAuth, async (req, res) => {
   const userId = req.viewUserId;
 
   // Rate limit: 3 tickets per hour
-  if (!checkRateLimit(userId, "create_ticket", 3, 60 * 60 * 1000)) {
+  if (!(await checkRateLimit(userId, "create_ticket", 3, 60 * 60 * 1000))) {
     return res.status(429).json({
       error: "Too many tickets. Please wait before creating another.",
     });
@@ -323,7 +308,7 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
   const userId = req.viewUserId;
 
   // Rate limit: 10 messages per minute
-  if (!checkRateLimit(userId, `message_${ticketId}`, 10, 60 * 1000)) {
+  if (!(await checkRateLimit(userId, `message_${ticketId}`, 10, 60 * 1000))) {
     return res.status(429).json({
       error: "Too many messages. Please slow down.",
     });
