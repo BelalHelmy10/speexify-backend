@@ -37,6 +37,7 @@ import {
 import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
+import { validateRequest, formatZodError } from "./middleware/validateRequest.js";
 import { logger } from "./lib/logger.js";
 import notificationsRoutes from "./routes/notifications.js";
 import devEmailTestRoutes from "./routes/devEmailTest.js";
@@ -134,6 +135,59 @@ function centsToDollars(cents) {
   return typeof cents === "number" ? Math.round(cents) / 100 : 0;
 }
 
+const RoleFilterSchema = z.enum(["learner", "teacher", "admin"]);
+const ActiveFilterSchema = z.union([
+  z.literal(""),
+  z.literal("0"),
+  z.literal("1"),
+]);
+
+const ContactBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    email: z.string().trim().email(),
+    company: z.string().trim().max(120).optional(),
+    phone: z.string().trim().max(40).optional(),
+    role: z.string().trim().max(80).optional(),
+    topic: z.string().trim().max(120).optional(),
+    budget: z.string().trim().max(80).optional(),
+    message: z.string().trim().min(1).max(5000),
+  })
+  .strict();
+
+const ProfilePatchBodySchema = z
+  .object({
+    name: z.string().trim().max(120).nullable().optional(),
+    timezone: z.string().trim().max(80).nullable().optional(),
+  })
+  .strict()
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one profile field is required",
+  });
+
+const ChangePasswordBodySchema = z
+  .object({
+    currentPassword: z.string().min(1),
+    newPassword: z.string().min(8),
+  })
+  .strict();
+
+const UsersQuerySchema = z.object({
+  role: z.union([RoleFilterSchema, z.literal("")]).optional().default(""),
+  q: z.string().trim().max(120).optional().default(""),
+  active: ActiveFilterSchema.optional().default(""),
+});
+
+const LearnersQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(""),
+  active: ActiveFilterSchema.optional().default("1"),
+});
+
+const TeachersQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(""),
+  active: ActiveFilterSchema.optional().default(""),
+});
+
 /* ========================================================================== */
 /*                              HEALTH / HELLO                                */
 /* ========================================================================== */
@@ -152,11 +206,9 @@ app.get("/api/message", (_req, res) =>
 /* ========================================================================== */
 // NOTE: /api/packages is now handled by packagesRoutes (removed duplicate)
 
-app.post("/api/contact", async (req, res) => {
+app.post("/api/contact", validateRequest({ body: ContactBodySchema }), async (req, res) => {
   const { name, email, company, phone, role, topic, budget, message } =
-    req.body || {};
-  if (!name || !email || !message)
-    return res.status(400).json({ error: "Missing required fields" });
+    req.body;
 
   const html = `
     <h2>New contact form message</h2>
@@ -255,29 +307,40 @@ app.get("/api/me", requireAuth, async (req, res) => {
   }
 });
 
-app.patch("/api/me", requireAuth, async (req, res) => {
-  try {
-    const { name, timezone } = req.body;
-    const updated = await prisma.user.update({
-      where: { id: req.viewUserId },
-      data: { name: name?.trim() || null, timezone: timezone || null },
-      select: { id: true, email: true, name: true, role: true, timezone: true },
-    });
+app.patch(
+  "/api/me",
+  requireAuth,
+  validateRequest({ body: ProfilePatchBodySchema }),
+  async (req, res) => {
+    try {
+      const { name, timezone } = req.body;
+      const updated = await prisma.user.update({
+        where: { id: req.viewUserId },
+        data: { name: name?.trim() || null, timezone: timezone || null },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          timezone: true,
+        },
+      });
 
-    if (req.viewUserId === req.user.id) {
-      req.session.user = {
-        ...req.session.user,
-        name: updated.name,
-        timezone: updated.timezone,
-      };
+      if (req.viewUserId === req.user.id) {
+        req.session.user = {
+          ...req.session.user,
+          name: updated.name,
+          timezone: updated.timezone,
+        };
+      }
+
+      res.json(updated);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to update profile" });
     }
-
-    res.json(updated);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Failed to update profile" });
   }
-});
+);
 
 /* ========================================================================== */
 /*                          TEACHER SUMMARY (next)                            */
@@ -515,53 +578,26 @@ app.get("/api/me/packages", requireAuth, async (req, res) => {
 /*                                  USERS                                     */
 /* ========================================================================== */
 
-app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
-  const roleRaw = String(req.query.role || "").trim().toLowerCase();
-  const q = String(req.query.q || "").trim();
-  const active = String(req.query.active || "").trim();
+app.get(
+  "/api/users",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ query: UsersQuerySchema }),
+  async (req, res) => {
+    const roleRaw = req.query.role;
+    const q = req.query.q;
+    const active = req.query.active;
 
-  if (roleRaw && !["learner", "teacher", "admin"].includes(roleRaw)) {
-    return res.status(400).json({ error: "Invalid role filter" });
-  }
+    const where = {};
 
-  const where = {};
-
-  if (roleRaw) {
-    where.role = roleRaw;
-  }
-
-  if (active === "1") {
-    where.isDisabled = false;
-  } else if (active === "0") {
-    where.isDisabled = true;
-  }
-
-  if (q) {
-    where.OR = [
-      { email: { contains: q, mode: "insensitive" } },
-      { name: { contains: q, mode: "insensitive" } },
-    ];
-  }
-
-  const users = await prisma.user.findMany({
-    where,
-    select: { id: true, email: true, name: true, role: true, timezone: true },
-    orderBy: [{ name: "asc" }, { email: "asc" }],
-    take: 200,
-  });
-
-  res.json(users);
-});
-
-// Get learners specifically (for admin session creation)
-app.get("/api/learners", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const { q = "", active = "1" } = req.query;
-
-    const where = { role: "learner" };
+    if (roleRaw) {
+      where.role = roleRaw;
+    }
 
     if (active === "1") {
       where.isDisabled = false;
+    } else if (active === "0") {
+      where.isDisabled = true;
     }
 
     if (q) {
@@ -571,87 +607,125 @@ app.get("/api/learners", requireAuth, requireAdmin, async (req, res) => {
       ];
     }
 
-    const learners = await prisma.user.findMany({
+    const users = await prisma.user.findMany({
+      where,
+      select: { id: true, email: true, name: true, role: true, timezone: true },
+      orderBy: [{ name: "asc" }, { email: "asc" }],
+      take: 200,
+    });
+
+    res.json(users);
+  }
+);
+
+// Get learners specifically (for admin session creation)
+app.get(
+  "/api/learners",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ query: LearnersQuerySchema }),
+  async (req, res) => {
+    try {
+      const { q, active } = req.query;
+
+      const where = { role: "learner" };
+
+      if (active === "1") {
+        where.isDisabled = false;
+      }
+
+      if (q) {
+        where.OR = [
+          { email: { contains: q, mode: "insensitive" } },
+          { name: { contains: q, mode: "insensitive" } },
+        ];
+      }
+
+      const learners = await prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          isDisabled: true,
+          timezone: true,
+        },
+        orderBy: [{ name: "asc" }, { email: "asc" }],
+        take: 100,
+      });
+
+      res.json(learners);
+    } catch (e) {
+      console.error("GET /api/learners failed:", e);
+      res.status(500).json({ error: "Failed to load learners" });
+    }
+  }
+);
+
+app.get(
+  "/api/teachers",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ query: TeachersQuerySchema }),
+  async (req, res) => {
+    const onlyActive = req.query.active === "1";
+    const q = req.query.q;
+    const where = { role: "teacher" };
+
+    if (onlyActive) where.isDisabled = false;
+    if (q) {
+      where.OR = [
+        { email: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const teachers = await prisma.user.findMany({
       where,
       select: {
         id: true,
         email: true,
         name: true,
-        isDisabled: true,
         timezone: true,
       },
       orderBy: [{ name: "asc" }, { email: "asc" }],
-      take: 100,
+      take: 200,
     });
-
-    res.json(learners);
-  } catch (e) {
-    console.error("GET /api/learners failed:", e);
-    res.status(500).json({ error: "Failed to load learners" });
+    res.json(teachers);
   }
-});
+);
 
-app.get("/api/teachers", requireAuth, requireAdmin, async (req, res) => {
-  const onlyActive = String(req.query.active || "") === "1";
-  const q = String(req.query.q || "").trim();
-  const where = { role: "teacher" };
+app.post(
+  "/api/me/password",
+  requireAuth,
+  validateRequest({ body: ChangePasswordBodySchema }),
+  async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
 
-  if (onlyActive) where.isDisabled = false;
-  if (q) {
-    where.OR = [
-      { email: { contains: q, mode: "insensitive" } },
-      { name: { contains: q, mode: "insensitive" } },
-    ];
-  }
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { id: true, hashedPassword: true },
+      });
+      if (!user) return res.status(404).json({ error: "User not found" });
 
-  const teachers = await prisma.user.findMany({
-    where,
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      timezone: true,
-    },
-    orderBy: [{ name: "asc" }, { email: "asc" }],
-    take: 200,
-  });
-  res.json(teachers);
-});
+      const ok = await bcrypt.compare(currentPassword, user.hashedPassword);
+      if (!ok)
+        return res.status(401).json({ error: "Current password is incorrect" });
 
-app.post("/api/me/password", requireAuth, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: "Both passwords are required" });
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { hashedPassword },
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Change password error:", err);
+      res.status(500).json({ error: "Failed to change password" });
     }
-    if (newPassword.length < 8) {
-      return res
-        .status(400)
-        .json({ error: "New password must be at least 8 characters" });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: { id: true, hashedPassword: true },
-    });
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    const ok = await bcrypt.compare(currentPassword, user.hashedPassword);
-    if (!ok)
-      return res.status(401).json({ error: "Current password is incorrect" });
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { hashedPassword },
-    });
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("Change password error:", err);
-    res.status(500).json({ error: "Failed to change password" });
   }
-});
+);
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });
@@ -684,6 +758,13 @@ app.use((err, req, res, next) => {
 
   if (res.headersSent) {
     return next(err);
+  }
+
+  if (err instanceof z.ZodError) {
+    return res.status(400).json({
+      error: "Validation failed",
+      details: formatZodError(err),
+    });
   }
 
   res.status(500).json({ error: "Internal server error" });

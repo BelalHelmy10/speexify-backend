@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../../middleware/auth-helpers.js";
+import { formatZodError } from "../../middleware/validateRequest.js";
 import { logger } from "../../lib/logger.js";
 import {
   broadcastNewMessage,
@@ -325,7 +326,10 @@ router.post(
 
     const parsed = Body.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid message" });
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "body"),
+      });
     }
 
     const adminId = req.viewUserId;
@@ -392,7 +396,10 @@ router.patch(
 
     const parsed = Body.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid status" });
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "body"),
+      });
     }
 
     const adminId = req.viewUserId;
@@ -463,7 +470,10 @@ router.patch(
 
     const parsed = Body.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid assignment" });
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "body"),
+      });
     }
 
     try {
@@ -507,7 +517,10 @@ router.post(
 
     const parsed = Body.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid note" });
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "body"),
+      });
     }
 
     try {

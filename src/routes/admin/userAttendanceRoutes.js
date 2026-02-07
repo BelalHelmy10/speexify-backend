@@ -1,19 +1,22 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../../middleware/auth-helpers.js";
+import { validateRequest } from "../../middleware/validateRequest.js";
 
 const router = Router();
+const UserAttendanceParamsSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+});
 
 router.get(
   "/admin/users/:userId/attendance",
   requireAuth,
   requireAdmin,
+  validateRequest({ params: UserAttendanceParamsSchema }),
   async (req, res) => {
     try {
-      const targetUserId = parseInt(req.params.userId, 10);
-      if (!targetUserId) {
-        return res.status(400).json({ error: "Invalid user ID" });
-      }
+      const targetUserId = req.params.userId;
 
       const learner = await prisma.user.findUnique({
         where: { id: targetUserId },

@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth-helpers.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 import { logger } from "../lib/logger.js";
 import {
   createPaymentIntention,
@@ -27,140 +28,145 @@ import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
-const createIntentSchema = z.object({
-  amountCents: z.number().positive(),
-  currency: z.string().default("EGP"),
-  orderId: z.string(),
-  customer: z.object({
-    firstName: z.string().optional(),
-    lastName: z.string().optional(),
-    email: z.string().email().optional(),
-    phone: z.string().optional(),
-  }),
-  packageId: z.number(),
-  discountCode: z.string().optional().nullable(),
-});
+const CreateIntentBodySchema = z
+  .object({
+    amountCents: z.coerce.number().int().positive(),
+    currency: z.string().trim().min(3).max(8).default("EGP"),
+    orderId: z.string().trim().min(1).max(120),
+    customer: z
+      .object({
+        firstName: z.string().trim().max(120).optional(),
+        lastName: z.string().trim().max(120).optional(),
+        email: z.string().trim().email().optional(),
+        phone: z.string().trim().max(40).optional(),
+      })
+      .default({}),
+    packageId: z.coerce.number().int().positive(),
+    discountCode: z.string().trim().max(64).optional().nullable(),
+  })
+  .strict();
 
 /**
  * POST /create-intent
  * Creates a pending Order record, then initiates Paymob payment intention
  */
-router.post("/create-intent", requireAuth, async (req, res) => {
-  try {
-    const body = createIntentSchema.parse(req.body);
-    const { amountCents, currency, orderId, customer, packageId, discountCode } = body;
-    const userId = req.user.id;
+router.post(
+  "/create-intent",
+  requireAuth,
+  validateRequest({ body: CreateIntentBodySchema }),
+  async (req, res) => {
+    try {
+      const { amountCents, currency, orderId, customer, packageId, discountCode } =
+        req.body;
+      const userId = req.user.id;
 
-    logger.info({ userId, orderId, packageId }, "Initiating payment intent");
+      logger.info({ userId, orderId, packageId }, "Initiating payment intent");
 
-    // Check if order already exists (idempotency)
-    if (await orderExists(orderId)) {
-      logger.warn({ orderId }, "Order already exists, returning existing");
-      const existingOrder = await getOrderById(orderId);
+      // Check if order already exists (idempotency)
+      if (await orderExists(orderId)) {
+        logger.warn({ orderId }, "Order already exists, returning existing");
+        const existingOrder = await getOrderById(orderId);
 
-      // If order is already paid, don't allow re-payment
-      if (existingOrder?.status === "paid") {
-        return res.status(400).json({
-          ok: false,
-          message: "This order has already been paid",
+        // If order is already paid, don't allow re-payment
+        if (existingOrder?.status === "paid") {
+          return res.status(400).json({
+            ok: false,
+            message: "This order has already been paid",
+          });
+        }
+      }
+
+      // Look up discount code ID if provided
+      let discountCodeId = null;
+      if (discountCode) {
+        const discount = await prisma.discountCode.findUnique({
+          where: { code: discountCode },
         });
+        if (discount) {
+          discountCodeId = discount.id;
+        }
       }
-    }
 
-    // Look up discount code ID if provided
-    let discountCodeId = null;
-    if (discountCode) {
-      const discount = await prisma.discountCode.findUnique({
-        where: { code: discountCode },
+      // Convert display currency to EGP for Paymob (Paymob integration only supports EGP)
+      let egpAmountCents = amountCents;
+      let exchangeRate = 1;
+
+      if (currency !== "EGP") {
+        // Frontend sends amount in display currency cents, convert to EGP cents
+        const displayAmount = amountCents / 100; // Convert cents to whole units
+        const conversion = await convertToEGP(displayAmount, currency);
+        egpAmountCents = conversion.egpAmount * 100; // Convert back to cents
+        exchangeRate = conversion.rate;
+
+        logger.info(
+          {
+            orderId,
+            displayCurrency: currency,
+            displayAmountCents: amountCents,
+            egpAmountCents,
+            exchangeRate,
+          },
+          "Converted display currency to EGP"
+        );
+      }
+
+      // Create pending order in database BEFORE calling Paymob
+      // Store both display amount and EGP amount for audit
+      await createPendingOrder({
+        orderId,
+        userId,
+        packageId,
+        amountCents: egpAmountCents, // Store EGP amount (what Paymob charges)
+        currency: "EGP", // Always EGP in our system
+        displayAmountCents: amountCents, // Original display amount
+        displayCurrency: currency, // Original display currency
+        customerEmail: customer.email,
+        customerPhone: customer.phone,
+        discountCodeId,
       });
-      if (discount) {
-        discountCodeId = discount.id;
-      }
-    }
 
-    // Convert display currency to EGP for Paymob (Paymob integration only supports EGP)
-    let egpAmountCents = amountCents;
-    let exchangeRate = 1;
-
-    if (currency !== "EGP") {
-      // Frontend sends amount in display currency cents, convert to EGP cents
-      const displayAmount = amountCents / 100; // Convert cents to whole units
-      const conversion = await convertToEGP(displayAmount, currency);
-      egpAmountCents = conversion.egpAmount * 100; // Convert back to cents
-      exchangeRate = conversion.rate;
+      // Create Paymob payment intention (ALWAYS in EGP)
+      const intention = await createPaymentIntention({
+        amountCents: egpAmountCents,
+        currency: "EGP", // Always EGP for Paymob
+        orderId,
+        billingData: customer,
+      });
 
       logger.info(
         {
           orderId,
-          displayCurrency: currency,
-          displayAmountCents: amountCents,
-          egpAmountCents,
-          exchangeRate,
+          intentionId: intention.intentionId,
+          checkoutUrl: intention.checkoutUrl,
         },
-        "Converted display currency to EGP"
+        "Paymob Intention Created"
       );
-    }
 
-    // Create pending order in database BEFORE calling Paymob
-    // Store both display amount and EGP amount for audit
-    await createPendingOrder({
-      orderId,
-      userId,
-      packageId,
-      amountCents: egpAmountCents, // Store EGP amount (what Paymob charges)
-      currency: "EGP", // Always EGP in our system
-      displayAmountCents: amountCents, // Original display amount
-      displayCurrency: currency, // Original display currency
-      customerEmail: customer.email,
-      customerPhone: customer.phone,
-      discountCodeId,
-    });
-
-    // Create Paymob payment intention (ALWAYS in EGP)
-    const intention = await createPaymentIntention({
-      amountCents: egpAmountCents,
-      currency: "EGP", // Always EGP for Paymob
-      orderId,
-      billingData: customer,
-    });
-
-    logger.info(
-      {
-        orderId,
+      return res.json({
+        ok: true,
+        iframeUrl: intention.checkoutUrl,
         intentionId: intention.intentionId,
-        checkoutUrl: intention.checkoutUrl,
-      },
-      "Paymob Intention Created",
-    );
-
-    return res.json({
-      ok: true,
-      iframeUrl: intention.checkoutUrl,
-      intentionId: intention.intentionId,
-    });
-  } catch (err) {
-    logger.error({ err }, "Create Intent Error");
-
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ ok: false, error: err.errors });
-    }
-
-    // Show Paymob error details in development only
-    if (process.env.NODE_ENV !== "production") {
-      return res.status(500).json({
-        ok: false,
-        message: "Payment init failed",
-        debug: {
-          status: err?.status,
-          message: err?.message,
-          paymob: err?.paymob,
-        },
       });
-    }
+    } catch (err) {
+      logger.error({ err }, "Create Intent Error");
 
-    return res.status(500).json({ ok: false, message: "Payment init failed" });
+      // Show Paymob error details in development only
+      if (process.env.NODE_ENV !== "production") {
+        return res.status(500).json({
+          ok: false,
+          message: "Payment init failed",
+          debug: {
+            status: err?.status,
+            message: err?.message,
+            paymob: err?.paymob,
+          },
+        });
+      }
+
+      return res.status(500).json({ ok: false, message: "Payment init failed" });
+    }
   }
-});
+);
 
 /**
  * POST /webhook

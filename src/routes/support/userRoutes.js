@@ -5,6 +5,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { requireAuth } from "../../middleware/auth-helpers.js";
+import { formatZodError } from "../../middleware/validateRequest.js";
 import {
   supportUpload,
   validateUploadedFile,
@@ -53,8 +54,8 @@ router.post("/tickets", requireAuth, async (req, res) => {
   const parsed = Body.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
-      error: "Invalid data",
-      details: parsed.error.errors,
+      error: "Validation failed",
+      details: formatZodError(parsed.error, "body"),
     });
   }
 
@@ -240,7 +241,10 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
 
   const parsed = Body.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid message" });
+    return res.status(400).json({
+      error: "Validation failed",
+      details: formatZodError(parsed.error, "body"),
+    });
   }
 
   const viewerId = req.viewUserId;

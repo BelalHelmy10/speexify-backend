@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
+import { formatZodError } from "../middleware/validateRequest.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
@@ -191,8 +192,8 @@ router.post("/me/onboarding", requireAuth, async (req, res) => {
     const parsed = OnboardingAnswersSchema.safeParse(answers);
     if (!parsed.success) {
       return res.status(400).json({
-        error: "Invalid onboarding payload",
-        issues: parsed.error.issues,
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "body"),
       });
     }
 
