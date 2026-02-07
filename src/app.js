@@ -522,13 +522,41 @@ app.get("/api/me/packages", requireAuth, async (req, res) => {
 /*                                  USERS                                     */
 /* ========================================================================== */
 
-app.get("/api/users", requireAuth, async (req, res) => {
-  const where = req.query.role ? { role: String(req.query.role) } : undefined;
+app.get("/api/users", requireAuth, requireAdmin, async (req, res) => {
+  const roleRaw = String(req.query.role || "").trim().toLowerCase();
+  const q = String(req.query.q || "").trim();
+  const active = String(req.query.active || "").trim();
+
+  if (roleRaw && !["learner", "teacher", "admin"].includes(roleRaw)) {
+    return res.status(400).json({ error: "Invalid role filter" });
+  }
+
+  const where = {};
+
+  if (roleRaw) {
+    where.role = roleRaw;
+  }
+
+  if (active === "1") {
+    where.isDisabled = false;
+  } else if (active === "0") {
+    where.isDisabled = true;
+  }
+
+  if (q) {
+    where.OR = [
+      { email: { contains: q, mode: "insensitive" } },
+      { name: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
   const users = await prisma.user.findMany({
     where,
     select: { id: true, email: true, name: true, role: true, timezone: true },
-    orderBy: { email: "asc" },
+    orderBy: [{ name: "asc" }, { email: "asc" }],
+    take: 200,
   });
+
   res.json(users);
 });
 
@@ -570,10 +598,18 @@ app.get("/api/learners", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/api/teachers", requireAuth, async (req, res) => {
+app.get("/api/teachers", requireAuth, requireAdmin, async (req, res) => {
   const onlyActive = String(req.query.active || "") === "1";
+  const q = String(req.query.q || "").trim();
   const where = { role: "teacher" };
+
   if (onlyActive) where.isDisabled = false;
+  if (q) {
+    where.OR = [
+      { email: { contains: q, mode: "insensitive" } },
+      { name: { contains: q, mode: "insensitive" } },
+    ];
+  }
 
   const teachers = await prisma.user.findMany({
     where,
@@ -581,11 +617,10 @@ app.get("/api/teachers", requireAuth, async (req, res) => {
       id: true,
       email: true,
       name: true,
-      isDisabled: true,
-      rateHourlyCents: true,
-      ratePerSessionCents: true,
+      timezone: true,
     },
-    orderBy: [{ isDisabled: "asc" }, { email: "asc" }],
+    orderBy: [{ name: "asc" }, { email: "asc" }],
+    take: 200,
   });
   res.json(teachers);
 });
