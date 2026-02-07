@@ -91,64 +91,122 @@ export async function getRemainingCredits(userId) {
  * Take 1 credit from the newest active pack that still has remaining credits.
  */
 export async function consumeOneCredit(userId) {
-  // Find a pack with remaining credits
-  const packs = await prisma.userPackage.findMany({
-    where: {
-      userId: Number(userId),
-      status: "active",
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
+  const uid = Number(userId);
+  const now = new Date();
 
-  // Find the first pack with remaining credits
-  const pack = packs.find(
-    (p) => Number(p.sessionsTotal) - Number(p.sessionsUsed || 0) > 0
-  );
+  return prisma.$transaction(async (tx) => {
+    const candidatePacks = await tx.userPackage.findMany({
+      where: {
+        userId: uid,
+        status: "active",
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        userId: true,
+        sessionsTotal: true,
+      },
+    });
 
-  if (!pack) {
+    for (const pack of candidatePacks) {
+      const consumed = await tx.userPackage.updateMany({
+        where: {
+          id: pack.id,
+          userId: uid,
+          status: "active",
+          sessionsTotal: pack.sessionsTotal,
+          sessionsUsed: { lt: pack.sessionsTotal },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        data: { sessionsUsed: { increment: 1 } },
+      });
+
+      if (consumed.count !== 1) {
+        continue;
+      }
+
+      const updated = await tx.userPackage.findUnique({
+        where: { id: pack.id },
+        select: { sessionsTotal: true, sessionsUsed: true },
+      });
+
+      if (!updated) {
+        logger.error(
+          { packId: pack.id, userId: uid },
+          "[credits] Pack missing after consume"
+        );
+        return { ok: false, reason: "no_credits" };
+      }
+
+      return {
+        ok: true,
+        packId: pack.id,
+        remaining: updated.sessionsTotal - updated.sessionsUsed,
+      };
+    }
+
     return { ok: false, reason: "no_credits" };
-  }
-
-  const updated = await prisma.userPackage.update({
-    where: { id: pack.id },
-    data: { sessionsUsed: { increment: 1 } },
   });
-
-  return {
-    ok: true,
-    packId: pack.id,
-    remaining: updated.sessionsTotal - updated.sessionsUsed,
-  };
 }
 
 /**
  * Give back 1 credit to the newest pack that has at least 1 used.
  */
 export async function refundOneCredit(userId) {
-  const pack = await prisma.userPackage.findFirst({
-    where: {
-      userId: Number(userId),
-      status: "active",
-      sessionsUsed: { gt: 0 },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
+  const uid = Number(userId);
 
-  if (!pack) {
+  return prisma.$transaction(async (tx) => {
+    const candidatePacks = await tx.userPackage.findMany({
+      where: {
+        userId: uid,
+        status: "active",
+        sessionsUsed: { gt: 0 },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        userId: true,
+      },
+    });
+
+    for (const pack of candidatePacks) {
+      const refunded = await tx.userPackage.updateMany({
+        where: {
+          id: pack.id,
+          userId: uid,
+          status: "active",
+          sessionsUsed: { gt: 0 },
+        },
+        data: { sessionsUsed: { decrement: 1 } },
+      });
+
+      if (refunded.count !== 1) {
+        continue;
+      }
+
+      const updated = await tx.userPackage.findUnique({
+        where: { id: pack.id },
+        select: { sessionsTotal: true, sessionsUsed: true },
+      });
+
+      if (!updated) {
+        logger.error(
+          { packId: pack.id, userId: uid },
+          "[credits] Pack missing after refund"
+        );
+        return { ok: false, reason: "nothing_to_refund" };
+      }
+
+      return {
+        ok: true,
+        packId: pack.id,
+        remaining: updated.sessionsTotal - updated.sessionsUsed,
+      };
+    }
+
     return { ok: false, reason: "nothing_to_refund" };
-  }
-
-  const updated = await prisma.userPackage.update({
-    where: { id: pack.id },
-    data: { sessionsUsed: { decrement: 1 } },
   });
-
-  return {
-    ok: true,
-    packId: pack.id,
-    remaining: updated.sessionsTotal - updated.sessionsUsed,
-  };
 }
 
 /**
