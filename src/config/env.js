@@ -139,3 +139,31 @@ export const OBS_ALERT_MIN_REQUESTS = parsePositiveIntEnv(
   "OBS_ALERT_MIN_REQUESTS",
   100
 );
+
+// Privacy / compliance
+export const PRIVACY_CONTACT_EMAIL = (
+  process.env.PRIVACY_CONTACT_EMAIL || "privacy@speexify.com"
+)
+  .trim()
+  .toLowerCase();
+
+export const PRIVACY_POLICY_VERSION = (
+  process.env.PRIVACY_POLICY_VERSION || "2026-01"
+).trim();
+
+export const PRIVACY_RETENTION_DAYS_VERIFICATION_CODES = parsePositiveIntEnv(
+  "PRIVACY_RETENTION_DAYS_VERIFICATION_CODES",
+  30
+);
+export const PRIVACY_RETENTION_DAYS_NOTIFICATIONS = parsePositiveIntEnv(
+  "PRIVACY_RETENTION_DAYS_NOTIFICATIONS",
+  180
+);
+export const PRIVACY_RETENTION_DAYS_AUDITS = parsePositiveIntEnv(
+  "PRIVACY_RETENTION_DAYS_AUDITS",
+  730
+);
+export const PRIVACY_RETENTION_DAYS_SUPPORT_TICKETS = parsePositiveIntEnv(
+  "PRIVACY_RETENTION_DAYS_SUPPORT_TICKETS",
+  730
+);

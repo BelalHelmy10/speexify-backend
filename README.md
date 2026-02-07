@@ -74,6 +74,19 @@ Execution runbook:
 
 - `docs/security-audit-pentest.md`
 
+## Privacy & Compliance
+
+Privacy baseline controls are now available:
+
+- Data-subject request lifecycle endpoints (`/api/privacy/...`)
+- Self-service export endpoint for authenticated users
+- Admin-reviewed deletion requests with controlled anonymization
+- Retention cleanup tooling (`npm run privacy:retention:dry`, `npm run privacy:retention:apply`)
+
+Implementation details and runbook:
+
+- `docs/privacy-compliance.md`
+
 ---
 
 ## Architecture overview

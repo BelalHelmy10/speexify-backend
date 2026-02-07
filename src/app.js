@@ -47,6 +47,7 @@ import supportRoutes from "./routes/support.js";
 import availabilityRoutes from "./routes/availability.js";
 import calendarRoutes from "./routes/calendar.js";
 import discountRoutes from "./routes/discounts.js";
+import privacyRoutes from "./routes/privacy.js";
 import {
   buildRequestContext,
   runWithRequestContext,
@@ -219,6 +220,7 @@ app.use("/api", devEmailTestRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api", availabilityRoutes);
 app.use("/api", calendarRoutes);
+app.use("/api/privacy", privacyRoutes);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */
