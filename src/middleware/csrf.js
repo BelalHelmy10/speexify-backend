@@ -14,7 +14,14 @@ const rawCsrf = csurf({
  */
 function shouldExcludeCsrf(url) {
   // Normalize URL for consistent matching
-  const normalizedUrl = url.toLowerCase();
+  let normalizedPath = "";
+  try {
+    normalizedPath = new URL(url || "", "http://localhost").pathname.toLowerCase();
+  } catch {
+    normalizedPath = String(url || "")
+      .split("?")[0]
+      .toLowerCase();
+  }
 
   // Explicit list of excluded paths
   const excludedPaths = [
@@ -31,14 +38,9 @@ function shouldExcludeCsrf(url) {
 
   // Check exact prefix matches
   for (const path of excludedPaths) {
-    if (normalizedUrl.startsWith(path)) {
+    if (normalizedPath.startsWith(path)) {
       return true;
     }
-  }
-
-  // Check impersonate routes specifically (handles /stop and /:id)
-  if (normalizedUrl.includes("/admin/impersonate")) {
-    return true;
   }
 
   return false;

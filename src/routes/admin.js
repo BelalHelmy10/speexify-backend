@@ -277,21 +277,38 @@ router.post(
 /*                              ADMIN: IMPERSONATE                            */
 /* ========================================================================== */
 
-// STOP route - NO AUTH MIDDLEWARE (session might be in weird state)
-router.post("/admin/impersonate/stop", (req, res) => {
-  console.log(">>> STOP IMPERSONATE HIT");
-  try {
-    if (req.session) {
-      console.log(">>> Session exists, asUserId:", req.session.asUserId);
+router.post(
+  "/admin/impersonate/stop",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const previousAsUserId = req.session?.asUserId || null;
       req.session.asUserId = null;
+
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      if (previousAsUserId) {
+        await audit(
+          req.user.id,
+          "impersonate_stop",
+          "User",
+          Number(previousAsUserId)
+        );
+      }
+
+      return res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err }, "admin.stopImpersonate error");
+      return res.status(500).json({ error: "Failed to stop impersonation" });
     }
-    console.log(">>> Returning ok");
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error(">>> Stop error:", err);
-    return res.status(500).json({ error: err.message });
   }
-});
+);
 
 // START route - requires admin
 router.post(
@@ -299,7 +316,6 @@ router.post(
   requireAuth,
   requireAdmin,
   async (req, res) => {
-    console.log(">>> START IMPERSONATE HIT, id:", req.params.id);
     try {
       const targetId = Number(req.params.id);
 
@@ -320,13 +336,24 @@ router.post(
         return res.status(404).json({ error: "User not found" });
       }
 
+      const previousAsUserId = req.session?.asUserId || null;
       req.session.asUserId = targetId;
-      console.log(">>> Now impersonating:", target.email);
+
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+
+      await audit(req.user.id, "impersonate_start", "User", targetId, {
+        previousAsUserId: previousAsUserId ? Number(previousAsUserId) : null,
+      });
 
       return res.json({ ok: true });
     } catch (err) {
-      console.error(">>> Start error:", err);
-      return res.status(500).json({ error: err.message });
+      logger.error({ err }, "admin.startImpersonate error");
+      return res.status(500).json({ error: "Failed to start impersonation" });
     }
   }
 );
