@@ -60,6 +60,20 @@ Guide and env variables:
 
 - `docs/observability-baseline.md`
 
+## Security Audit + Pentest
+
+External security audit readiness is now operational with:
+
+- Disclosure endpoints: `/.well-known/security.txt` and `/security.txt`
+- Automated preflight scanner: `npm run security:preflight`
+- Dependency audit command: `npm run security:deps`
+- Combined command: `npm run security:audit`
+- Scheduled/manual CI workflow: `.github/workflows/security-audit.yml`
+
+Execution runbook:
+
+- `docs/security-audit-pentest.md`
+
 ---
 
 ## Architecture overview

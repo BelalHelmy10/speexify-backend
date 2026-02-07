@@ -24,7 +24,10 @@
     "loadtest:10k": "node scripts/loadTestRunner.js 10k",
     "loadtest:100k": "node scripts/loadTestRunner.js 100k",
     "loadtest:1m": "node scripts/loadTestRunner.js 1m",
-    "loadtest:smoke": "LOADTEST_SCALE=0.2 LOADTEST_DURATION_SEC=30 LOADTEST_RAMP_SEC=8 LOADTEST_TIMEOUT_MS=3000 node scripts/loadTestRunner.js 10k"
+    "loadtest:smoke": "LOADTEST_SCALE=0.2 LOADTEST_DURATION_SEC=30 LOADTEST_RAMP_SEC=8 LOADTEST_TIMEOUT_MS=3000 node scripts/loadTestRunner.js 10k",
+    "security:preflight": "node scripts/securityAuditPreflight.js",
+    "security:deps": "npm audit --omit=dev --audit-level=high",
+    "security:audit": "npm run security:preflight && npm run security:deps"
   },
   "keywords": [],
   "author": "",

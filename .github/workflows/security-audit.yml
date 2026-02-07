@@ -1,0 +1,47 @@
+name: Backend security audit checks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax build gate
+        run: npm run build
+
+      - name: Security preflight (strict)
+        env:
+          SESSION_SECRET: ci-audit-session-secret
+          REDIS_URL: redis://127.0.0.1:6379
+          ALLOWED_ORIGINS: https://speexify.com
+          WS_ALLOWED_ORIGINS: https://speexify.com
+          PAYMOB_HMAC_SECRET: ci-audit-paymob-secret
+        run: SECURITY_AUDIT_STRICT=1 npm run security:preflight
+
+      - name: Dependency vulnerability audit
+        run: npm run security:deps
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-reports-${{ github.run_number }}
+          path: reports/security/*.json
+          if-no-files-found: ignore

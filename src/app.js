@@ -108,6 +108,14 @@ function isMetricsAuthorized(req) {
   return safeTokenCompare(candidate, OBS_METRICS_TOKEN);
 }
 
+const SECURITY_TXT = [
+  "Contact: mailto:security@speexify.com",
+  "Canonical: https://speexify.com/.well-known/security.txt",
+  "Policy: https://speexify.com/security",
+  "Preferred-Languages: en, ar",
+  "Expires: 2027-12-31T23:59:59.000Z",
+].join("\n");
+
 /* ========================================================================== */
 /*                               MIDDLEWARE                                   */
 /* ========================================================================== */
@@ -294,6 +302,16 @@ app.get("/api/_which-app", (_req, res) => {
 app.get("/api/message", (_req, res) =>
   res.json({ message: "Hello from the backend 👋" })
 );
+
+app.get("/security.txt", (_req, res) => {
+  res.type("text/plain; charset=utf-8");
+  return res.send(`${SECURITY_TXT}\n`);
+});
+
+app.get("/.well-known/security.txt", (_req, res) => {
+  res.type("text/plain; charset=utf-8");
+  return res.send(`${SECURITY_TXT}\n`);
+});
 
 app.get("/metrics", (req, res) => {
   if (!isMetricsAuthorized(req)) {
