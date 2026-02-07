@@ -19,6 +19,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -54,6 +55,9 @@ jobs:
 
       - name: Run Prisma migrations
         run: npx prisma migrate deploy
+
+      - name: Build (strict compile gate)
+        run: npm run build
 
       - name: Run tests
         run: npm test
