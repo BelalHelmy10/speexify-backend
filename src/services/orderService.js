@@ -50,31 +50,100 @@ export async function createPendingOrder({
  */
 export async function markOrderPaid(orderId, paymobTxnId) {
     try {
-        // Update order status
-        const order = await prisma.order.update({
-            where: { id: orderId },
-            data: {
-                status: "paid",
-                paymobTxnId: paymobTxnId ? Number(paymobTxnId) : null,
-                updatedAt: new Date(),
-            },
-            include: {
-                userPackage: true,
-            },
+        const result = await prisma.$transaction(async (tx) => {
+            let order = await tx.order.findUnique({
+                where: { id: orderId },
+                include: { userPackage: true },
+            });
+
+            if (!order) {
+                throw new Error(`Order not found: ${orderId}`);
+            }
+
+            if (order.status !== "paid") {
+                await tx.order.update({
+                    where: { id: orderId },
+                    data: {
+                        status: "paid",
+                        paymobTxnId: paymobTxnId ? Number(paymobTxnId) : null,
+                        updatedAt: new Date(),
+                    },
+                });
+
+                order = await tx.order.findUnique({
+                    where: { id: orderId },
+                    include: { userPackage: true },
+                });
+
+                if (!order) {
+                    throw new Error(`Order disappeared while marking paid: ${orderId}`);
+                }
+            }
+
+            if (order.userPackage) {
+                logger.warn(
+                    { orderId },
+                    "UserPackage already exists for this order, skipping credit grant"
+                );
+                return { order, userPackage: order.userPackage, alreadyGranted: true };
+            }
+
+            if (!order.packageId || !order.userId) {
+                throw new Error(`Order is missing packageId/userId: ${orderId}`);
+            }
+
+            const pkg = await tx.package.findUnique({
+                where: { id: order.packageId },
+            });
+
+            if (!pkg) {
+                throw new Error(`Package not found: ${order.packageId}`);
+            }
+
+            try {
+                const userPackage = await tx.userPackage.create({
+                    data: {
+                        userId: order.userId,
+                        packageId: order.packageId,
+                        orderId: order.id,
+                        title: pkg.title,
+                        minutesPerSession: pkg.durationMin || null,
+                        sessionsTotal: pkg.sessionsPerPack || 1,
+                        sessionsUsed: 0,
+                        status: "active",
+                        expiresAt: pkg.sessionsPerPack
+                            ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+                            : null,
+                    },
+                });
+
+                return { order, userPackage, alreadyGranted: false };
+            } catch (error) {
+                if (error?.code === "P2002") {
+                    const existingUserPackage = await tx.userPackage.findUnique({
+                        where: { orderId: order.id },
+                    });
+                    if (existingUserPackage) {
+                        logger.warn(
+                            { orderId },
+                            "UserPackage already created concurrently for paid order"
+                        );
+                        return {
+                            order,
+                            userPackage: existingUserPackage,
+                            alreadyGranted: true,
+                        };
+                    }
+                }
+                throw error;
+            }
         });
 
-        logger.info({ orderId, paymobTxnId }, "Order marked as paid");
-
-        // If UserPackage already exists for this order, don't create duplicate
-        if (order.userPackage) {
-            logger.warn({ orderId }, "UserPackage already exists for this order, skipping credit grant");
-            return { order, alreadyGranted: true };
-        }
-
-        // Grant credits by creating UserPackage
-        const userPackage = await grantPackageCredits(order);
-
-        return { order, userPackage, alreadyGranted: false };
+        logger.info(
+            { orderId, paymobTxnId, alreadyGranted: result.alreadyGranted },
+            "Order marked as paid"
+        );
+        return result;
     } catch (error) {
         logger.error({ error, orderId }, "Failed to mark order as paid");
         throw error;
@@ -86,17 +155,36 @@ export async function markOrderPaid(orderId, paymobTxnId) {
  */
 export async function markOrderFailed(orderId, reason) {
     try {
-        const order = await prisma.order.update({
-            where: { id: orderId },
+        const updated = await prisma.order.updateMany({
+            where: {
+                id: orderId,
+                status: { not: "paid" },
+            },
             data: {
                 status: "failed",
                 updatedAt: new Date(),
             },
         });
 
+        const order = await prisma.order.findUnique({
+            where: { id: orderId },
+        });
+
+        if (!order) {
+            throw new Error(`Order not found: ${orderId}`);
+        }
+
+        if (updated.count === 0 && order.status === "paid") {
+            logger.warn(
+                { orderId, reason },
+                "Skipping failure transition because order is already paid"
+            );
+            return { order, skipped: true };
+        }
+
         logger.info({ orderId, reason }, "Order marked as failed");
 
-        return order;
+        return { order, skipped: false };
     } catch (error) {
         logger.error({ error, orderId, reason }, "Failed to mark order as failed");
         throw error;

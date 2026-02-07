@@ -138,7 +138,7 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
 
             // Check for conflicts
             const conflictList = await findSessionConflicts({
-                learnerId: Number(learnerId),
+                userId: Number(learnerId),
                 teacherId: teacherId ? Number(teacherId) : null,
                 startAt,
                 endAt,
@@ -239,7 +239,12 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
 
             // Send notifications
             try {
-                await sendBookingNotifications(session);
+                await sendBookingNotifications({
+                    session,
+                    learnerIds: [Number(learnerId)],
+                    teacherId: session.teacherId || null,
+                    bookedBy: req.user.id,
+                });
             } catch (err) {
                 logger.error({ err, sessionId: session.id }, "Failed to send notifications");
             }

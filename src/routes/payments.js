@@ -9,6 +9,13 @@ import {
   parseTransactionCallback,
 } from "../services/paymobService.js";
 import {
+  beginPaymobWebhookReconciliation,
+  buildPaymobEventKey,
+  markWebhookEventProcessed,
+  markWebhookEventIgnored,
+  markWebhookEventFailed,
+} from "../services/paymentReconciliationService.js";
+import {
   createPendingOrder,
   markOrderPaid,
   markOrderFailed,
@@ -161,6 +168,10 @@ router.post("/create-intent", requireAuth, async (req, res) => {
  * Verifies HMAC, updates order status, grants credits on success
  */
 router.post("/webhook", async (req, res) => {
+  let reconciliation = null;
+  let txn = null;
+  let orderId = null;
+
   try {
     const hmac = req.query.hmac;
     const body = req.body;
@@ -177,7 +188,56 @@ router.post("/webhook", async (req, res) => {
     }
 
     // 2. Parse transaction data
-    const txn = parseTransactionCallback(body);
+    txn = parseTransactionCallback(body);
+    orderId = txn.specialReference || txn.merchantOrderId || null;
+    const transactionId =
+      txn.transactionId == null ? null : String(txn.transactionId);
+
+    // 3. Record webhook receipt and dedupe processing
+    const eventKey = buildPaymobEventKey({
+      ...txn,
+      specialReference: orderId || txn.specialReference || null,
+    });
+
+    reconciliation = await beginPaymobWebhookReconciliation({
+      eventKey,
+      orderId,
+      transactionId,
+      payload: body,
+      signature: typeof hmac === "string" ? hmac : null,
+    });
+
+    if (reconciliation.state === "replay") {
+      logger.info(
+        { eventKey, orderId, transactionId },
+        "Duplicate webhook replay detected; skipping"
+      );
+      return res.json({ received: true, status: "duplicate" });
+    }
+
+    if (reconciliation.state === "in_progress") {
+      logger.info(
+        { eventKey, orderId, transactionId },
+        "Webhook is already being processed"
+      );
+      return res.status(202).json({ received: true, status: "in_progress" });
+    }
+
+    if (reconciliation.state === "conflict") {
+      logger.warn(
+        { eventKey, orderId, transactionId },
+        "Webhook event key conflict with different payload"
+      );
+      return res.status(200).json({ received: true, status: "conflict_ignored" });
+    }
+
+    if (reconciliation.state === "error") {
+      logger.error(
+        { eventKey, orderId, transactionId },
+        "Failed to initialize webhook reconciliation record"
+      );
+      return res.status(500).json({ error: "Webhook reconciliation unavailable" });
+    }
 
     logger.info(
       {
@@ -190,26 +250,60 @@ router.post("/webhook", async (req, res) => {
       "Parsed webhook transaction"
     );
 
-    // 3. Find order by special_reference (our orderId)
-    const orderId = txn.specialReference;
+    // 4. Find order by special_reference (our orderId)
     if (!orderId) {
-      logger.error({ txn }, "No special_reference in webhook");
+      logger.error({ txn }, "No order reference in webhook");
+      await markWebhookEventIgnored(reconciliation?.recordId, {
+        transactionId,
+        reason: "missing_order_reference",
+      });
       return res.status(400).json({ error: "Missing order reference" });
     }
 
     const order = await getOrderById(orderId);
     if (!order) {
-      logger.error({ orderId }, "Order not found for webhook");
-      return res.status(404).json({ error: "Order not found" });
+      logger.error({ orderId, transactionId }, "Order not found for webhook");
+      await markWebhookEventFailed(reconciliation?.recordId, {
+        orderId,
+        transactionId,
+        error: "order_not_found",
+      });
+      return res.status(503).json({ error: "Order not found yet; retry later" });
     }
 
-    // 4. Skip if order already processed (idempotency)
+    const amountMatches =
+      txn.amountCents == null ||
+      Number(txn.amountCents) === Number(order.amountCents);
+    const currencyMatches =
+      !txn.currency ||
+      String(txn.currency).toUpperCase() ===
+        String(order.currency || "").toUpperCase();
+
+    if (!amountMatches || !currencyMatches) {
+      const reconciliationError = `amount_or_currency_mismatch order=${order.id} txnAmount=${txn.amountCents} orderAmount=${order.amountCents} txnCurrency=${txn.currency} orderCurrency=${order.currency}`;
+      logger.error({ orderId, txn }, "Webhook reconciliation mismatch");
+      await markWebhookEventFailed(reconciliation?.recordId, {
+        orderId,
+        transactionId,
+        error: reconciliationError,
+      });
+      return res.status(409).json({ error: "Payment reconciliation mismatch" });
+    }
+
+    // 5. Skip if order already processed (idempotency)
     if (order.status === "paid") {
       logger.info({ orderId }, "Order already paid, skipping duplicate webhook");
+      await markWebhookEventProcessed(reconciliation?.recordId, {
+        orderId,
+        transactionId,
+        resolution: "already_paid",
+      });
       return res.json({ received: true, status: "already_processed" });
     }
 
-    // 5. Update order status based on transaction result
+    // 6. Update order status based on transaction result
+    let resolution = "pending";
+
     if (txn.success && !txn.pending) {
       // Payment successful - mark paid and grant credits
       const result = await markOrderPaid(orderId, txn.transactionId);
@@ -223,21 +317,38 @@ router.post("/webhook", async (req, res) => {
         },
         "Order marked as paid, credits granted"
       );
+      resolution = result.alreadyGranted ? "paid_already_granted" : "paid_granted";
     } else if (txn.errorOccurred || (!txn.success && !txn.pending)) {
       // Payment failed
-      await markOrderFailed(orderId, "Payment failed or declined");
+      const failResult = await markOrderFailed(orderId, "payment_failed_or_declined");
       logger.info({ orderId }, "Order marked as failed");
+      resolution = failResult?.skipped ? "failed_ignored_paid_order" : "failed_marked";
     } else if (txn.pending) {
       // Still pending - do nothing, wait for final webhook
       logger.info({ orderId }, "Payment still pending");
+      resolution = "pending";
     }
 
-    // Always return 200 to acknowledge webhook
+    await markWebhookEventProcessed(reconciliation?.recordId, {
+      orderId,
+      transactionId,
+      resolution,
+    });
+
+    // Return 200 for handled states
     return res.json({ received: true });
   } catch (err) {
-    logger.error({ err }, "Webhook processing error");
-    // Still return 200 to prevent Paymob retries on our errors
-    return res.status(200).json({ received: true, error: "Processing error" });
+    logger.error({ err, orderId, txn }, "Webhook processing error");
+
+    await markWebhookEventFailed(reconciliation?.recordId, {
+      orderId,
+      transactionId:
+        txn?.transactionId == null ? null : String(txn.transactionId),
+      error: err?.message || "webhook_processing_error",
+    });
+
+    // Return non-2xx so provider retries recoverable failures.
+    return res.status(500).json({ received: false, error: "Processing error" });
   }
 });
 
