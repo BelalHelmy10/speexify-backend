@@ -59,5 +59,11 @@ jobs:
       - name: Build (strict compile gate)
         run: npm run build
 
-      - name: Run tests
-        run: npm test
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests
+        run: npm run test:integration
+
+      - name: Run critical E2E tests
+        run: npm run test:e2e

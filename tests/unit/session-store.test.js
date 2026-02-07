@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const backendRoot = fileURLToPath(new URL("..", import.meta.url));
+const backendRoot = fileURLToPath(new URL("../..", import.meta.url));
 const sessionProbeScript = `
   import { sessionStoreInfo } from "./src/middleware/session.js";
   console.log("SESSION_STORE:" + JSON.stringify(sessionStoreInfo));

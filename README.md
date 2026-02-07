@@ -11,6 +11,27 @@ It includes:
 - Admin tools (user management, teacher workload, manual session creation)
 - Paymob-based payments (if enabled)
 
+## Test Pyramid
+
+- Unit tests: `npm run test:unit`
+  - Pure logic and helpers with no external systems.
+- Integration tests: `npm run test:integration`
+  - Middleware and boundary behavior with mocked request/response objects.
+- Critical E2E tests: `npm run test:e2e`
+  - Key API journeys using `supertest` and real routing/session behavior.
+
+Default local test command runs fast, stable layers only:
+
+```bash
+npm test
+```
+
+Full CI gate runs compile + unit + integration + critical E2E:
+
+```bash
+npm run ci:check
+```
+
 ---
 
 ## Architecture overview

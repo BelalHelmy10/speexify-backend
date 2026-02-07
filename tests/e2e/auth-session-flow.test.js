@@ -1,12 +1,13 @@
-// tests/auth.test.js
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { prisma } from "../src/lib/prisma.js";
+import { prisma } from "../../src/lib/prisma.js";
 import bcrypt from "bcryptjs";
-import app from "../src/app.js";
+import app from "../../src/app.js";
 
-test("login and /api/auth/me flow works", async (t) => {
+const e2eTest = process.env.RUN_E2E === "1" ? test : test.skip;
+
+e2eTest("login and /api/auth/me flow works", async (t) => {
   const email = `testuser+${Date.now()}@example.com`;
   const plainPassword = "Password123"; // matches our policy: 8+ chars, letters+numbers
 
