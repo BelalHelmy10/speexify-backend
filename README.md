@@ -445,3 +445,35 @@ Copy code
 
 
 ```
+
+## Backup And Recovery
+
+Step 18 introduces executable backup/restore scripts plus a recovery drill flow.
+
+### Commands
+
+```bash
+# Create snapshot (DB only by default)
+npm run backup:create
+
+# Create snapshot with uploads archive
+BACKUP_INCLUDE_UPLOADS=true npm run backup:create
+
+# Restore (dry run)
+RESTORE_DATABASE_URL=postgres://... npm run backup:restore -- --dry-run --snapshot <snapshot>
+
+# Restore (confirmed)
+RESTORE_DATABASE_URL=postgres://... npm run backup:restore -- --yes --snapshot <snapshot>
+
+# Monthly recovery drill (must target separate drill DB)
+RECOVERY_DRILL_DATABASE_URL=postgres://... npm run backup:drill
+```
+
+### Runbook
+
+See `/docs/backup-restore-runbook.md` for:
+
+- RPO/RTO targets
+- Backup retention policy
+- Recovery drill procedure
+- Post-restore verification checklist

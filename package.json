@@ -13,7 +13,10 @@
     "test": "NODE_ENV=test node --test",
     "postinstall": "node ./node_modules/prisma/build/index.js generate",
     "send:reminders24h": "node scripts/sendReminders24h.js",
-    "send:reminders1h": "node scripts/sendReminders1h.js"
+    "send:reminders1h": "node scripts/sendReminders1h.js",
+    "backup:create": "node scripts/backupCreate.js",
+    "backup:restore": "node scripts/backupRestore.js",
+    "backup:drill": "node scripts/backupRecoveryDrill.js"
   },
   "keywords": [],
   "author": "",
