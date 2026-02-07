@@ -3,6 +3,7 @@
 
 // NODE_ENV flag
 export const isProd = process.env.NODE_ENV === "production";
+export const isTest = process.env.NODE_ENV === "test";
 
 // Port
 export const PORT = process.env.PORT ? Number(process.env.PORT) : 5050;
@@ -23,6 +24,37 @@ if (isProd && !REDIS_URL) {
     "REDIS_URL must be set in production (required for sessions)",
   );
 }
+
+function parseBooleanEnv(name, fallback = false) {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === "") return fallback;
+
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parsePositiveIntEnv(name, fallback) {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === "") return fallback;
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+// Session runtime behavior
+export const SESSION_FORCE_MEMORY =
+  isTest || parseBooleanEnv("SESSION_FORCE_MEMORY", false);
+export const SESSION_REDIS_STRICT = parseBooleanEnv(
+  "SESSION_REDIS_STRICT",
+  false,
+);
+export const SESSION_REDIS_CONNECT_TIMEOUT_MS = parsePositiveIntEnv(
+  "SESSION_REDIS_CONNECT_TIMEOUT_MS",
+  3000,
+);
 
 // Cookie domain (optional)
 export const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;

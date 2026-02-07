@@ -4,8 +4,9 @@ import app from "./src/app.js";
 import { logger } from "./src/lib/logger.js";
 import { setupWebRtcSignaling } from "./src/webrtcSignaling.js";
 import { setupSupportWebSocket } from "./src/services/supportWebSocket.js";
+import { sessionStoreInfo } from "./src/middleware/session.js";
 
-console.log("[BOOT] REDIS_URL:", process.env.REDIS_URL ? "SET" : "MISSING");
+logger.info({ sessionStore: sessionStoreInfo }, "[boot] Session store configured");
 
 const PORT = Number(process.env.PORT || 5050);
 
@@ -14,6 +15,8 @@ setupSupportWebSocket(server);
 setupWebRtcSignaling(server);
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log("=== HTTP + WebSocket server listening on", PORT, "===");
-  logger.info({ port: PORT }, "Server started with WebRTC signaling");
+  logger.info(
+    { port: PORT, sessionStore: sessionStoreInfo },
+    "Server started with WebRTC signaling"
+  );
 });
