@@ -1,8 +1,15 @@
 // src/jobs/sessionReminders.js
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import os from "os";
+import crypto from "crypto";
 import { createNotification } from "../services/notificationsService.js";
 import { sendEmail } from "../services/emailService.js";
+import {
+  acquireDistributedLock,
+  renewDistributedLock,
+  releaseDistributedLock,
+} from "../services/distributedLockService.js";
 
 function formatInTz(date, timeZone) {
   try {
@@ -260,72 +267,153 @@ async function sendReminderForSession({ session, kind }) {
 export function startSessionReminderScheduler({
   intervalMs = 5 * 60 * 1000, // every 5 minutes
   windowMinutes = 6, // match sessions starting within next ~6 minutes of target
+  lockName = "session-reminders-scheduler",
+  lockLeaseMs = Math.max(intervalMs * 4, 10 * 60 * 1000),
+  lockOwnerId = process.env.SCHEDULER_OWNER_ID ||
+    `${os.hostname()}:${process.pid}:${crypto.randomUUID().slice(0, 8)}`,
 } = {}) {
-  logger.info({ intervalMs, windowMinutes }, "[reminders] scheduler starting");
+  logger.info(
+    { intervalMs, windowMinutes, lockName, lockLeaseMs, lockOwnerId },
+    "[reminders] scheduler starting"
+  );
+
+  let inProcessTickRunning = false;
 
   const tick = async () => {
-    const now = new Date();
+    if (inProcessTickRunning) {
+      logger.warn("[reminders] previous tick still running, skipping overlap");
+      return;
+    }
 
-    // Targets: 24h, 6h, 1h from now
-    const targets = [
-      { kind: "24h", hours: 24, field: "reminder24hSentAt" },
-      { kind: "6h", hours: 6, field: "reminder6hSentAt" },
-      { kind: "1h", hours: 1, field: "reminder1hSentAt" },
-    ];
+    inProcessTickRunning = true;
+    const lockToken = crypto.randomUUID();
+    const renewEveryMs = Math.max(10_000, Math.floor(lockLeaseMs / 3));
+    let renewalHandle = null;
+    let lockLost = false;
+    let lock = null;
 
-    for (const t of targets) {
-      const target = new Date(now.getTime() + t.hours * 60 * 60 * 1000);
-      const start = new Date(target.getTime() - windowMinutes * 60 * 1000);
-      const end = new Date(target.getTime() + windowMinutes * 60 * 1000);
-
-      const where = {
-        status: "scheduled",
-        startAt: { gte: start, lt: end },
-        [t.field]: null,
-      };
-
-      const sessions = await prisma.session.findMany({
-        where,
-        select: {
-          id: true,
-          title: true,
-          startAt: true,
-          endAt: true,
-          status: true,
-          userId: true,
-          teacherId: true,
-          joinUrl: true,
-          participants: {
-            select: { userId: true, status: true },
-          },
-        },
-        orderBy: { startAt: "asc" },
-        take: 200,
+    try {
+      lock = await acquireDistributedLock({
+        lockName,
+        ownerId: lockOwnerId,
+        token: lockToken,
+        leaseMs: lockLeaseMs,
       });
 
-      if (!sessions.length) continue;
+      if (!lock.acquired) {
+        logger.debug(
+          { lockName, lockOwnerId },
+          "[reminders] distributed lock held by another worker, skipping tick"
+        );
+        return;
+      }
 
-      logger.info(
-        { count: sessions.length, kind: t.kind },
-        "[reminders] sessions found"
-      );
-
-      for (const session of sessions) {
-        try {
-          await sendReminderForSession({ session, kind: t.kind });
-
-          // Mark this reminder as sent so it never repeats
-          await prisma.session.update({
-            where: { id: session.id },
-            data: { [t.field]: new Date() },
+      renewalHandle = setInterval(() => {
+        renewDistributedLock({
+          lockName,
+          ownerId: lockOwnerId,
+          token: lockToken,
+          leaseMs: lockLeaseMs,
+        })
+          .then((renewed) => {
+            if (!renewed) {
+              lockLost = true;
+              logger.error(
+                { lockName, lockOwnerId },
+                "[reminders] lock renewal failed; stopping current tick early"
+              );
+            }
+          })
+          .catch((err) => {
+            lockLost = true;
+            logger.error(
+              { err, lockName, lockOwnerId },
+              "[reminders] lock renewal error; stopping current tick early"
+            );
           });
-        } catch (e) {
-          logger.error(
-            { err: e, sessionId: session.id, kind: t.kind },
-            "[reminders] failed to process session reminder"
-          );
+      }, renewEveryMs);
+
+      const now = new Date();
+
+      // Targets: 24h, 6h, 1h from now
+      const targets = [
+        { kind: "24h", hours: 24, field: "reminder24hSentAt" },
+        { kind: "6h", hours: 6, field: "reminder6hSentAt" },
+        { kind: "1h", hours: 1, field: "reminder1hSentAt" },
+      ];
+
+      for (const t of targets) {
+        if (lockLost) break;
+
+        const target = new Date(now.getTime() + t.hours * 60 * 60 * 1000);
+        const start = new Date(target.getTime() - windowMinutes * 60 * 1000);
+        const end = new Date(target.getTime() + windowMinutes * 60 * 1000);
+
+        const where = {
+          status: "scheduled",
+          startAt: { gte: start, lt: end },
+          [t.field]: null,
+        };
+
+        const sessions = await prisma.session.findMany({
+          where,
+          select: {
+            id: true,
+            title: true,
+            startAt: true,
+            endAt: true,
+            status: true,
+            userId: true,
+            teacherId: true,
+            joinUrl: true,
+            participants: {
+              select: { userId: true, status: true },
+            },
+          },
+          orderBy: { startAt: "asc" },
+          take: 200,
+        });
+
+        if (!sessions.length) continue;
+
+        logger.info(
+          { count: sessions.length, kind: t.kind },
+          "[reminders] sessions found"
+        );
+
+        for (const session of sessions) {
+          if (lockLost) break;
+
+          try {
+            await sendReminderForSession({ session, kind: t.kind });
+
+            // Mark this reminder as sent so it never repeats
+            await prisma.session.update({
+              where: { id: session.id },
+              data: { [t.field]: new Date() },
+            });
+          } catch (e) {
+            logger.error(
+              { err: e, sessionId: session.id, kind: t.kind },
+              "[reminders] failed to process session reminder"
+            );
+          }
         }
       }
+    } finally {
+      if (renewalHandle) {
+        clearInterval(renewalHandle);
+      }
+
+      if (lock?.acquired) {
+        await releaseDistributedLock({
+          lockName,
+          ownerId: lockOwnerId,
+          token: lockToken,
+        });
+      }
+
+      inProcessTickRunning = false;
     }
   };
 

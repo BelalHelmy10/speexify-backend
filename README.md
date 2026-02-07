@@ -230,6 +230,8 @@ Optional worker tuning env vars:
 
 - `REMINDER_INTERVAL_MS` (default `300000`)
 - `REMINDER_WINDOW_MINUTES` (default `6`)
+- `REMINDER_LOCK_NAME` (default `session-reminders-scheduler`)
+- `REMINDER_LOCK_LEASE_MS` (default `max(interval*4, 600000)`)
 
 “How to…” – product usage
 This section explains how each role uses the product in simple terms.
