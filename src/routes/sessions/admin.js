@@ -22,6 +22,15 @@ import {
 } from "../../services/idempotencyService.js";
 
 const router = Router();
+const ADMIN_SESSIONS_DEFAULT_LIMIT = 100;
+const ADMIN_SESSIONS_MAX_LIMIT = 250;
+const ADMIN_SESSIONS_MAX_OFFSET = 10000;
+
+function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 // --------------------------------------------------------------------------
 // GET /api/admin/sessions - List all sessions (admin)
@@ -34,20 +43,28 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             teacherId = "",
             type = "",
             range = "",
-            limit = "100",
-            offset = "0",
         } = req.query;
+        const take = parseBoundedInt(req.query.limit, {
+            fallback: ADMIN_SESSIONS_DEFAULT_LIMIT,
+            min: 1,
+            max: ADMIN_SESSIONS_MAX_LIMIT,
+        });
+        const skip = parseBoundedInt(req.query.offset, {
+            fallback: 0,
+            min: 0,
+            max: ADMIN_SESSIONS_MAX_OFFSET,
+        });
 
         const now = new Date();
         const where = {};
 
         // Filter by legacy userId OR participant
-        if (userId) {
+        if (userId && Number.isFinite(Number(userId))) {
             const uid = Number(userId);
             where.OR = [{ userId: uid }, { participants: { some: { userId: uid } } }];
         }
 
-        if (teacherId) {
+        if (teacherId && Number.isFinite(Number(teacherId))) {
             where.teacherId = Number(teacherId);
         }
 
@@ -100,8 +117,8 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
                     },
                 },
                 orderBy: [{ startAt: "desc" }, { id: "desc" }],
-                take: Number(limit),
-                skip: Number(offset),
+                take,
+                skip,
             }),
             prisma.session.count({ where }),
         ]);

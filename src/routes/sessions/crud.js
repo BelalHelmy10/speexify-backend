@@ -4,6 +4,15 @@
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
 
 const router = Router();
+const SESSIONS_DEFAULT_LIMIT = 100;
+const SESSIONS_MAX_LIMIT = 300;
+const SESSIONS_MAX_OFFSET = 5000;
+
+function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 // --------------------------------------------------------------------------
 // GET /api/sessions - List sessions for current user (learner view)
@@ -12,6 +21,16 @@ const router = Router();
 router.get("/sessions", requireAuth, async (req, res) => {
     try {
         const userId = req.viewUserId;
+        const take = parseBoundedInt(req.query.limit, {
+            fallback: SESSIONS_DEFAULT_LIMIT,
+            min: 1,
+            max: SESSIONS_MAX_LIMIT,
+        });
+        const skip = parseBoundedInt(req.query.offset, {
+            fallback: 0,
+            min: 0,
+            max: SESSIONS_MAX_OFFSET,
+        });
 
         const sessions = await prisma.session.findMany({
             where: {
@@ -29,7 +48,9 @@ router.get("/sessions", requireAuth, async (req, res) => {
                     },
                 },
             },
-            orderBy: { startAt: "asc" },
+            orderBy: [{ startAt: "asc" }, { id: "asc" }],
+            take,
+            skip,
         });
 
         res.json(sessions);

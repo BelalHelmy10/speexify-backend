@@ -5,6 +5,15 @@ import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
+const AVAILABILITY_ADMIN_DEFAULT_LIMIT = 100;
+const AVAILABILITY_ADMIN_MAX_LIMIT = 500;
+const AVAILABILITY_ADMIN_MAX_OFFSET = 10000;
+
+function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 /* ========================================================================== */
 /*                           AVAILABILITY VALIDATION                          */
@@ -441,9 +450,17 @@ router.get(
         userId,
         status = "active",
         dayOfWeek,
-        limit = "100",
-        offset = "0",
       } = req.query;
+      const take = parseBoundedInt(req.query.limit, {
+        fallback: AVAILABILITY_ADMIN_DEFAULT_LIMIT,
+        min: 1,
+        max: AVAILABILITY_ADMIN_MAX_LIMIT,
+      });
+      const skip = parseBoundedInt(req.query.offset, {
+        fallback: 0,
+        min: 0,
+        max: AVAILABILITY_ADMIN_MAX_OFFSET,
+      });
 
       const where = {};
 
@@ -486,8 +503,8 @@ router.get(
             { dayOfWeek: "asc" },
             { startTime: "asc" },
           ],
-          take: Number(limit),
-          skip: Number(offset),
+          take,
+          skip,
         }),
         prisma.availability.count({ where }),
       ]);

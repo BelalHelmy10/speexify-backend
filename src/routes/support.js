@@ -22,6 +22,9 @@ import {
 
 const router = Router();
 const SUPPORT_UPLOAD_DIR = path.join(process.cwd(), "uploads", "support");
+const SUPPORT_TICKETS_DEFAULT_LIMIT = 50;
+const SUPPORT_TICKETS_MAX_LIMIT = 200;
+const SUPPORT_TICKETS_MAX_OFFSET = 10000;
 
 const CategorySchema = z.enum([
   "PAYMENT",
@@ -52,6 +55,12 @@ function sanitizeDownloadName(fileName) {
     .trim()
     .replace(/[^a-zA-Z0-9._-]/g, "_");
   return sanitized || "attachment";
+}
+
+function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
 async function loadAttachmentAccessContext(attachmentId, viewerId, isAdmin) {
@@ -197,36 +206,51 @@ router.post("/tickets", requireAuth, async (req, res) => {
 // ============================================================================
 router.get("/tickets", requireAuth, async (req, res) => {
   const userId = req.viewUserId;
+  const take = parseBoundedInt(req.query.limit, {
+    fallback: SUPPORT_TICKETS_DEFAULT_LIMIT,
+    min: 1,
+    max: SUPPORT_TICKETS_MAX_LIMIT,
+  });
+  const skip = parseBoundedInt(req.query.offset, {
+    fallback: 0,
+    min: 0,
+    max: SUPPORT_TICKETS_MAX_OFFSET,
+  });
 
   try {
-    const tickets = await prisma.supportTicket.findMany({
-      where: { userId },
-      orderBy: { updatedAt: "desc" },
-      select: {
-        id: true,
-        category: true,
-        subject: true,
-        status: true,
-        priority: true,
-        assignedToId: true,
-        assignedTo: {
-          select: { id: true, name: true, email: true },
-        },
-        createdAt: true,
-        updatedAt: true,
-        messages: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-          select: {
-            id: true,
-            body: true,
-            createdAt: true,
-            isStaff: true,
-            authorId: true,
+    const [tickets, total] = await prisma.$transaction([
+      prisma.supportTicket.findMany({
+        where: { userId },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take,
+        skip,
+        select: {
+          id: true,
+          category: true,
+          subject: true,
+          status: true,
+          priority: true,
+          assignedToId: true,
+          assignedTo: {
+            select: { id: true, name: true, email: true },
+          },
+          createdAt: true,
+          updatedAt: true,
+          messages: {
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: {
+              id: true,
+              body: true,
+              createdAt: true,
+              isStaff: true,
+              authorId: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.supportTicket.count({ where: { userId } }),
+    ]);
 
     const normalized = tickets.map((t) => ({
       ...t,
@@ -234,7 +258,7 @@ router.get("/tickets", requireAuth, async (req, res) => {
       messages: undefined,
     }));
 
-    return res.json({ ok: true, tickets: normalized });
+    return res.json({ ok: true, tickets: normalized, total, limit: take, offset: skip });
   } catch (e) {
     logger.error({ err: e, userId }, "Failed to list tickets");
     return res.status(500).json({ error: "Failed to list tickets" });
@@ -673,6 +697,16 @@ router.get("/admin/tickets", requireAuth, requireAdmin, async (req, res) => {
     ? Number(req.query.assignedToId)
     : null;
   const q = req.query.q ? String(req.query.q).trim() : "";
+  const take = parseBoundedInt(req.query.limit, {
+    fallback: SUPPORT_TICKETS_DEFAULT_LIMIT,
+    min: 1,
+    max: SUPPORT_TICKETS_MAX_LIMIT,
+  });
+  const skip = parseBoundedInt(req.query.offset, {
+    fallback: 0,
+    min: 0,
+    max: SUPPORT_TICKETS_MAX_OFFSET,
+  });
 
   const allowedStatuses = ["OPEN", "IN_PROGRESS", "RESOLVED"];
   const allowedPriorities = ["LOW", "NORMAL", "HIGH", "URGENT"];
@@ -703,36 +737,41 @@ router.get("/admin/tickets", requireAuth, requireAdmin, async (req, res) => {
         : {}),
     };
 
-    const tickets = await prisma.supportTicket.findMany({
-      where,
-      orderBy: { updatedAt: "desc" },
-      select: {
-        id: true,
-        category: true,
-        subject: true,
-        status: true,
-        priority: true,
-        assignedToId: true,
-        assignedTo: {
-          select: { id: true, name: true, email: true },
-        },
-        createdAt: true,
-        updatedAt: true,
-        userId: true,
-        user: { select: { id: true, name: true, email: true } },
-        messages: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-          select: {
-            id: true,
-            body: true,
-            createdAt: true,
-            isStaff: true,
-            authorId: true,
+    const [tickets, total] = await prisma.$transaction([
+      prisma.supportTicket.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take,
+        skip,
+        select: {
+          id: true,
+          category: true,
+          subject: true,
+          status: true,
+          priority: true,
+          assignedToId: true,
+          assignedTo: {
+            select: { id: true, name: true, email: true },
+          },
+          createdAt: true,
+          updatedAt: true,
+          userId: true,
+          user: { select: { id: true, name: true, email: true } },
+          messages: {
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: 1,
+            select: {
+              id: true,
+              body: true,
+              createdAt: true,
+              isStaff: true,
+              authorId: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.supportTicket.count({ where }),
+    ]);
 
     const normalized = tickets.map((t) => ({
       ...t,
@@ -740,7 +779,7 @@ router.get("/admin/tickets", requireAuth, requireAdmin, async (req, res) => {
       messages: undefined,
     }));
 
-    return res.json({ ok: true, tickets: normalized });
+    return res.json({ ok: true, tickets: normalized, total, limit: take, offset: skip });
   } catch (e) {
     logger.error({ err: e }, "Admin failed to list tickets");
     return res.status(500).json({ error: "Failed to list tickets" });

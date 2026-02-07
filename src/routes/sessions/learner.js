@@ -10,6 +10,16 @@ import {
 } from "./_shared.js";
 
 const router = Router();
+const SESSION_LIST_DEFAULT_LIMIT = 10;
+const SESSION_LIST_MAX_LIMIT = 100;
+const SESSIONS_BETWEEN_DEFAULT_LIMIT = 500;
+const SESSIONS_BETWEEN_MAX_LIMIT = 1000;
+
+function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 // --------------------------------------------------------------------------
 // GET /api/me/sessions - List sessions for current user
@@ -47,7 +57,12 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                 role = impersonatedUser.role;
             }
         }
-        const { range = "upcoming", limit = 10 } = req.query;
+        const { range = "upcoming" } = req.query;
+        const requestedLimit = parseBoundedInt(req.query.limit, {
+            fallback: SESSION_LIST_DEFAULT_LIMIT,
+            min: 1,
+            max: SESSION_LIST_MAX_LIMIT,
+        });
         const now = new Date();
 
         // Membership base: include both participants AND legacy userId
@@ -98,7 +113,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
         const rawSessions = await prisma.session.findMany({
             where,
             orderBy,
-            take: Number(limit) || 10,
+            take: requestedLimit,
             select: {
                 id: true,
                 title: true,
@@ -229,9 +244,16 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
             ],
         };
 
+        const requestedLimit = parseBoundedInt(req.query.limit, {
+            fallback: SESSIONS_BETWEEN_DEFAULT_LIMIT,
+            min: 1,
+            max: SESSIONS_BETWEEN_MAX_LIMIT,
+        });
+
         const sessions = await prisma.session.findMany({
             where,
             orderBy: { startAt: "asc" },
+            take: requestedLimit,
             select: {
                 id: true,
                 title: true,
@@ -260,7 +282,10 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
             };
         });
 
-        return res.json({ sessions: shaped });
+        return res.json({
+            sessions: shaped,
+            truncated: sessions.length === requestedLimit,
+        });
     } catch (e) {
         logger.error({ err: e }, "GET /me/sessions-between failed");
         return res.status(500).json({
