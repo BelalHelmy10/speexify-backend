@@ -14,6 +14,12 @@ import {
     logger,
     audit,
 } from "./_shared.js";
+import {
+    getIdempotencyKeyFromRequest,
+    beginIdempotentRequest,
+    completeIdempotentRequest,
+    abandonIdempotentRequest,
+} from "../../services/idempotencyService.js";
 
 const router = Router();
 
@@ -131,6 +137,8 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 // POST /api/admin/sessions - Create new session (1:1 or GROUP)
 // --------------------------------------------------------------------------
 router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
+    let idempotency = null;
+
     try {
         const {
             type = "ONE_ON_ONE",
@@ -246,6 +254,34 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
                 });
             }
 
+            idempotency = await beginIdempotentRequest({
+                actorId: req.user.id,
+                scope: "admin.sessions.create",
+                key: getIdempotencyKeyFromRequest(req),
+                payload: {
+                    type: "ONE_ON_ONE",
+                    learnerId: Number(learnerId),
+                    teacherId: teacherId ? Number(teacherId) : null,
+                    title,
+                    startAt: start.toISOString(),
+                    endAt: finalEndAt.toISOString(),
+                    joinUrl: finalJoinUrl,
+                    notes: finalNotes,
+                    allowNoCredit: !!allowNoCredit,
+                },
+            });
+
+            if (idempotency.state === "replay") {
+                return res.status(idempotency.statusCode).json(idempotency.responseBody);
+            }
+            if (
+                idempotency.state === "conflict" ||
+                idempotency.state === "in_progress" ||
+                idempotency.state === "error"
+            ) {
+                return res.status(idempotency.statusCode).json(idempotency.responseBody);
+            }
+
             const session = await prisma.session.create({
                 data: {
                     type: "ONE_ON_ONE",
@@ -325,7 +361,16 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
                 );
             }
 
-            return res.status(201).json({ ok: true, session });
+            const responseBody = { ok: true, session };
+            if (idempotency?.state === "started") {
+                await completeIdempotentRequest(idempotency.recordId, {
+                    statusCode: 201,
+                    responseBody,
+                    resourceId: session.id,
+                });
+            }
+
+            return res.status(201).json(responseBody);
         }
 
         // ─────────────────────────────────────────────
@@ -406,6 +451,35 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             }
         }
 
+        idempotency = await beginIdempotentRequest({
+            actorId: req.user.id,
+            scope: "admin.sessions.create",
+            key: getIdempotencyKeyFromRequest(req),
+            payload: {
+                type: "GROUP",
+                learnerIds: uniqueLearnerIds,
+                teacherId: teacherId ? Number(teacherId) : null,
+                capacity: capacity || null,
+                title,
+                startAt: start.toISOString(),
+                endAt: finalEndAt.toISOString(),
+                joinUrl: finalJoinUrl,
+                notes: finalNotes,
+                allowNoCredit: !!allowNoCredit,
+            },
+        });
+
+        if (idempotency.state === "replay") {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
+        }
+        if (
+            idempotency.state === "conflict" ||
+            idempotency.state === "in_progress" ||
+            idempotency.state === "error"
+        ) {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
+        }
+
         const session = await prisma.session.create({
             data: {
                 type: "GROUP",
@@ -474,8 +548,20 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             );
         }
 
-        return res.status(201).json({ ok: true, session });
+        const responseBody = { ok: true, session };
+        if (idempotency?.state === "started") {
+            await completeIdempotentRequest(idempotency.recordId, {
+                statusCode: 201,
+                responseBody,
+                resourceId: session.id,
+            });
+        }
+
+        return res.status(201).json(responseBody);
     } catch (e) {
+        if (idempotency?.state === "started") {
+            await abandonIdempotentRequest(idempotency.recordId);
+        }
         logger.error({ err: e }, "admin.createSession error");
         return res.status(500).json({ error: "Failed to create session" });
     }
@@ -489,6 +575,8 @@ router.post(
     requireAuth,
     requireAdmin,
     async (req, res) => {
+        let idempotency = null;
+
         try {
             const sessionId = Number(req.params.id);
             if (!sessionId || Number.isNaN(sessionId)) {
@@ -618,6 +706,29 @@ router.post(
                 }
             }
 
+            idempotency = await beginIdempotentRequest({
+                actorId: req.user.id,
+                scope: `admin.sessions.addParticipants.${sessionId}`,
+                key: getIdempotencyKeyFromRequest(req),
+                payload: {
+                    sessionId,
+                    toAdd,
+                    allowNoCredit: !!allowNoCredit,
+                    allowOverCapacity: !!allowOverCapacity,
+                },
+            });
+
+            if (idempotency.state === "replay") {
+                return res.status(idempotency.statusCode).json(idempotency.responseBody);
+            }
+            if (
+                idempotency.state === "conflict" ||
+                idempotency.state === "in_progress" ||
+                idempotency.state === "error"
+            ) {
+                return res.status(idempotency.statusCode).json(idempotency.responseBody);
+            }
+
             // Insert/update participant rows
             await prisma.$transaction(async (tx) => {
                 for (const uid of toAdd) {
@@ -684,10 +795,20 @@ router.post(
                 );
             }
 
-            return res
-                .status(201)
-                .json({ ok: true, added: toAdd.length, userIds: toAdd });
+            const responseBody = { ok: true, added: toAdd.length, userIds: toAdd };
+            if (idempotency?.state === "started") {
+                await completeIdempotentRequest(idempotency.recordId, {
+                    statusCode: 201,
+                    responseBody,
+                    resourceId: sessionId,
+                });
+            }
+
+            return res.status(201).json(responseBody);
         } catch (e) {
+            if (idempotency?.state === "started") {
+                await abandonIdempotentRequest(idempotency.recordId);
+            }
             logger.error({ err: e }, "admin.sessions.addParticipants error");
             return res.status(500).json({ error: "Failed to add participants" });
         }

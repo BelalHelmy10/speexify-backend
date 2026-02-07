@@ -10,6 +10,12 @@ import {
     sendCancellationNotifications,
     logger,
 } from "./_shared.js";
+import {
+    getIdempotencyKeyFromRequest,
+    beginIdempotentRequest,
+    completeIdempotentRequest,
+    abandonIdempotentRequest,
+} from "../../services/idempotencyService.js";
 
 const router = Router();
 
@@ -66,6 +72,8 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
 // POST /api/sessions/:id/cancel - Cancel session or participant seat
 // --------------------------------------------------------------------------
 router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
+    let idempotency = null;
+
     try {
         const id = Number(req.params.id);
 
@@ -102,6 +110,41 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
 
         if (!(isAdmin || isTeacher || isLearner)) {
             return res.status(403).json({ error: "Forbidden" });
+        }
+
+        // No-op for already-canceled sessions to prevent duplicate refunds.
+        if (sessionRow.status === "canceled") {
+            return res.json({
+                ok: true,
+                scope: "session",
+                alreadyCanceled: true,
+                refunded: false,
+                refundResults: [],
+            });
+        }
+
+        idempotency = await beginIdempotentRequest({
+            actorId: req.user.id,
+            scope: `sessions.cancel.${sessionRow.id}`,
+            key: getIdempotencyKeyFromRequest(req),
+            payload: {
+                sessionId: sessionRow.id,
+                actorId: req.user.id,
+                viewerId,
+                role: req.user.role,
+                body: req.body || {},
+            },
+        });
+
+        if (idempotency.state === "replay") {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
+        }
+        if (
+            idempotency.state === "conflict" ||
+            idempotency.state === "in_progress" ||
+            idempotency.state === "error"
+        ) {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
         }
 
         const startsAt = new Date(sessionRow.startAt);
@@ -153,11 +196,20 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
                 );
             }
 
-            return res.json({
+            const responseBody = {
                 ok: true,
                 scope: "participant",
                 refunded,
-            });
+            };
+            if (idempotency?.state === "started") {
+                await completeIdempotentRequest(idempotency.recordId, {
+                    statusCode: 200,
+                    responseBody,
+                    resourceId: sessionRow.id,
+                });
+            }
+
+            return res.json(responseBody);
         }
 
         // ─────────────────────────────────────────────
@@ -253,14 +305,26 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
             );
         }
 
-        return res.json({
+        const responseBody = {
             ok: true,
             scope: "session",
             refunded: refundableWholeSession,
             refundResults,
             session: updated,
-        });
+        };
+        if (idempotency?.state === "started") {
+            await completeIdempotentRequest(idempotency.recordId, {
+                statusCode: 200,
+                responseBody,
+                resourceId: sessionRow.id,
+            });
+        }
+
+        return res.json(responseBody);
     } catch (e) {
+        if (idempotency?.state === "started") {
+            await abandonIdempotentRequest(idempotency.recordId);
+        }
         logger.error({ err: e }, "Cancel failed");
         res.status(400).json({ error: "Failed to cancel session" });
     }

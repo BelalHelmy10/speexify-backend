@@ -12,6 +12,12 @@ import {
     sendBookingNotifications,
     logger
 } from "./_shared.js";
+import {
+    getIdempotencyKeyFromRequest,
+    beginIdempotentRequest,
+    completeIdempotentRequest,
+    abandonIdempotentRequest,
+} from "../../services/idempotencyService.js";
 
 const bulkCreateRouter = Router();
 
@@ -31,6 +37,8 @@ const bulkCreateRouter = Router();
  * - allowNoCredit: boolean (default false)
  */
 bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, async (req, res) => {
+    let idempotency = null;
+
     try {
         const {
             learnerId,
@@ -167,6 +175,35 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             });
         }
 
+        idempotency = await beginIdempotentRequest({
+            actorId: req.user.id,
+            scope: "admin.sessions.bulkCreate",
+            key: getIdempotencyKeyFromRequest(req),
+            payload: {
+                learnerId: Number(learnerId),
+                teacherId: teacherId ? Number(teacherId) : null,
+                dayOfWeek: Number(dayOfWeek),
+                time,
+                numberOfSessions: Number(numberOfSessions),
+                durationMin: Number(durationMin),
+                defaultTitle,
+                customTitles,
+                allowNoCredit: !!allowNoCredit,
+                startDate: startDate || null,
+            },
+        });
+
+        if (idempotency.state === "replay") {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
+        }
+        if (
+            idempotency.state === "conflict" ||
+            idempotency.state === "in_progress" ||
+            idempotency.state === "error"
+        ) {
+            return res.status(idempotency.statusCode).json(idempotency.responseBody);
+        }
+
         // Create all sessions in a transaction
         const createdSessions = await prisma.$transaction(async (tx) => {
             const results = [];
@@ -218,7 +255,7 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             creditsConsumed,
         }, "Bulk recurring sessions created");
 
-        return res.status(201).json({
+        const responseBody = {
             success: true,
             created: createdSessions.length,
             creditsConsumed,
@@ -229,9 +266,21 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
                 startAt: s.startAt.toISOString(),
                 title: s.title,
             })),
-        });
+        };
+        if (idempotency?.state === "started") {
+            await completeIdempotentRequest(idempotency.recordId, {
+                statusCode: 201,
+                responseBody,
+                resourceId: createdSessions[0]?.id || null,
+            });
+        }
+
+        return res.status(201).json(responseBody);
 
     } catch (err) {
+        if (idempotency?.state === "started") {
+            await abandonIdempotentRequest(idempotency.recordId);
+        }
         logger.error({ err }, "bulk-create recurring sessions error");
         return res.status(500).json({
             error: "Failed to create sessions",
