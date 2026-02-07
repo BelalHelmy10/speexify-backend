@@ -45,8 +45,6 @@ import availabilityRoutes from "./routes/availability.js";
 import calendarRoutes from "./routes/calendar.js";
 import discountRoutes from "./routes/discounts.js";
 
-import path from "path";
-
 const app = express();
 
 // Initialize Sentry BEFORE other middlewares
@@ -118,11 +116,6 @@ app.use("/api", devEmailTestRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api", availabilityRoutes);
 app.use("/api", calendarRoutes);
-
-app.use(
-  "/uploads/support",
-  express.static(path.join(process.cwd(), "uploads", "support"))
-);
 
 /* ========================================================================== */
 /*                                  HELPERS                                   */

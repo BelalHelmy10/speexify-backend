@@ -5,8 +5,14 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
-import { supportUpload } from "../lib/supportUpload.js";
+import {
+  supportUpload,
+  validateUploadedFile,
+  deleteFile,
+} from "../lib/supportUpload.js";
 import { logger } from "../lib/logger.js";
+import fs from "fs";
+import path from "path";
 import {
   broadcastNewMessage,
   broadcastTicketStatusChange,
@@ -14,6 +20,7 @@ import {
 } from "../services/supportWebSocket.js";
 
 const router = Router();
+const SUPPORT_UPLOAD_DIR = path.join(process.cwd(), "uploads", "support");
 
 // Rate limiting map (in production, use Redis)
 const rateLimits = new Map();
@@ -53,6 +60,78 @@ function checkRateLimit(userId, action, maxAttempts, windowMs) {
 
   validAttempts.push(now);
   return true;
+}
+
+function sanitizeDownloadName(fileName) {
+  const sanitized = String(fileName || "attachment")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  return sanitized || "attachment";
+}
+
+async function loadAttachmentAccessContext(attachmentId, viewerId, isAdmin) {
+  const attachment = await prisma.supportAttachment.findUnique({
+    where: { id: attachmentId },
+    select: {
+      id: true,
+      fileName: true,
+      filePath: true,
+      mimeType: true,
+      fileSize: true,
+      message: {
+        select: {
+          ticket: {
+            select: {
+              id: true,
+              userId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const ticket = attachment?.message?.ticket || null;
+  if (!attachment || !ticket) {
+    return { allowed: false, status: 404, error: "Attachment not found" };
+  }
+
+  if (!isAdmin && ticket.userId !== viewerId) {
+    return { allowed: false, status: 403, error: "Forbidden" };
+  }
+
+  return { allowed: true, attachment, ticket };
+}
+
+async function requireTicketAccess(req, res, next) {
+  const ticketId = Number(req.params.id);
+  if (!Number.isFinite(ticketId)) {
+    return res.status(400).json({ error: "Invalid ticket id" });
+  }
+
+  const viewerId = req.viewUserId;
+  const isAdmin = req.user?.role === "admin";
+
+  try {
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, userId: true, status: true },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    if (!isAdmin && ticket.userId !== viewerId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    req.supportAccess = { ticketId, ticket, viewerId, isAdmin };
+    return next();
+  } catch (err) {
+    logger.error({ err, ticketId }, "Failed to validate support ticket access");
+    return res.status(500).json({ error: "Failed to validate ticket access" });
+  }
 }
 
 // ============================================================================
@@ -322,31 +401,17 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
 router.post(
   "/tickets/:id/attachments",
   requireAuth,
+  requireTicketAccess,
   supportUpload.single("file"),
+  validateUploadedFile,
   async (req, res) => {
-    const ticketId = Number(req.params.id);
+    const { ticketId, viewerId, isAdmin } = req.supportAccess || {};
 
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const viewerId = req.viewUserId;
-    const isAdmin = req.user?.role === "admin";
-
     try {
-      const ticket = await prisma.supportTicket.findUnique({
-        where: { id: ticketId },
-        select: { id: true, userId: true },
-      });
-
-      if (!ticket) {
-        return res.status(404).json({ error: "Ticket not found" });
-      }
-
-      if (!isAdmin && ticket.userId !== viewerId) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-
       // Create message with attachment
       const message = await prisma.supportMessage.create({
         data: {
@@ -386,11 +451,69 @@ router.post(
 
       res.json({ ok: true, message });
     } catch (err) {
+      if (req.file?.filename) {
+        deleteFile(req.file.filename);
+      }
       logger.error({ err, ticketId }, "Failed to upload attachment");
       res.status(500).json({ error: "Failed to upload attachment" });
     }
   }
 );
+
+// ============================================================================
+// GET /api/support/attachments/:attachmentId - Authorized attachment download
+// ============================================================================
+router.get("/attachments/:attachmentId", requireAuth, async (req, res) => {
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isFinite(attachmentId)) {
+    return res.status(400).json({ error: "Invalid attachment id" });
+  }
+
+  const viewerId = req.viewUserId;
+  const isAdmin = req.user?.role === "admin";
+
+  try {
+    const access = await loadAttachmentAccessContext(
+      attachmentId,
+      viewerId,
+      isAdmin
+    );
+
+    if (!access.allowed) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    const { attachment } = access;
+    const safeStoredName = path.basename(String(attachment.filePath || ""));
+    const absolutePath = path.join(SUPPORT_UPLOAD_DIR, safeStoredName);
+
+    if (!safeStoredName || !fs.existsSync(absolutePath)) {
+      logger.warn(
+        { attachmentId, filePath: attachment.filePath },
+        "Support attachment file missing on disk"
+      );
+      return res.status(404).json({ error: "Attachment file not found" });
+    }
+
+    const stats = fs.statSync(absolutePath);
+    const mimeType = attachment.mimeType || "application/octet-stream";
+    const disposition = mimeType.startsWith("image/") ? "inline" : "attachment";
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Length", String(stats.size));
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="${sanitizeDownloadName(attachment.fileName)}"`
+    );
+    res.setHeader("Cache-Control", "private, max-age=300");
+
+    return res.sendFile(absolutePath);
+  } catch (err) {
+    logger.error({ err, attachmentId }, "Failed to serve support attachment");
+    return res.status(500).json({ error: "Failed to serve attachment" });
+  }
+});
 
 // ============================================================================
 // COPY THIS ENTIRE SECTION INTO YOUR backend/routes/support.js
