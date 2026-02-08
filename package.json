@@ -28,6 +28,8 @@
     "security:preflight": "node scripts/securityAuditPreflight.js",
     "security:deps": "npm audit --omit=dev --audit-level=high",
     "security:audit": "npm run security:preflight && npm run security:deps",
+    "launch:check": "node scripts/launchReadinessCheck.js",
+    "launch:check:strict": "node scripts/launchReadinessCheck.js --strict",
     "privacy:retention:dry": "node scripts/privacyRetentionCleanup.js",
     "privacy:retention:apply": "node scripts/privacyRetentionCleanup.js --apply"
   },

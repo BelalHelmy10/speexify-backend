@@ -87,6 +87,21 @@ Implementation details and runbook:
 
 - `docs/privacy-compliance.md`
 
+## Launch Ops Runbooks
+
+Production launch and incident operations are documented with:
+
+- Launch gate checklist: `docs/launch-readiness-checklist.md`
+- Incident response: `docs/incident-response-runbook.md`
+- Rollback procedure: `docs/rollback-runbook.md`
+- Backup/restore and drills: `docs/backup-restore-runbook.md`
+
+Operational command:
+
+```bash
+npm run launch:check
+```
+
 ---
 
 ## Architecture overview
