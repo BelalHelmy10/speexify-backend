@@ -20,6 +20,7 @@ import {
   createPendingOrder,
   markOrderPaid,
   markOrderFailed,
+  markOrderPendingForRetry,
   getOrderById,
   orderExists,
 } from "../services/orderService.js";
@@ -45,6 +46,15 @@ const CreateIntentBodySchema = z
     discountCode: z.string().trim().max(64).optional().nullable(),
   })
   .strict();
+
+const OrderIdParamsSchema = z.object({
+  orderId: z.string().trim().min(1).max(120),
+});
+
+const RecoveryOrdersQuerySchema = z.object({
+  packageId: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(10),
+});
 
 /**
  * POST /create-intent
@@ -164,6 +174,54 @@ router.post(
       }
 
       return res.status(500).json({ ok: false, message: "Payment init failed" });
+    }
+  }
+);
+
+/**
+ * GET /orders/recovery
+ * Returns recent unpaid orders to help users recover from flaky connectivity/payment redirects.
+ */
+router.get(
+  "/orders/recovery",
+  requireAuth,
+  validateRequest({ query: RecoveryOrdersQuerySchema }),
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const { packageId, limit } = req.query;
+
+      const where = {
+        userId,
+        status: { in: ["pending", "failed"] },
+        ...(packageId ? { packageId: Number(packageId) } : {}),
+      };
+
+      const items = await prisma.order.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }],
+        take: Number(limit),
+        select: {
+          id: true,
+          status: true,
+          amountCents: true,
+          currency: true,
+          packageId: true,
+          createdAt: true,
+          updatedAt: true,
+          package: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+        },
+      });
+
+      return res.json({ items });
+    } catch (err) {
+      logger.error({ err, userId: req.user?.id }, "List recovery orders error");
+      return res.status(500).json({ error: "Failed to list recovery orders" });
     }
   }
 );
@@ -411,5 +469,80 @@ router.get("/orders/:orderId", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Failed to get order" });
   }
 });
+
+/**
+ * POST /orders/:orderId/retry-intent
+ * Re-opens checkout for an existing unpaid order (network drop / callback failure recovery).
+ */
+router.post(
+  "/orders/:orderId/retry-intent",
+  requireAuth,
+  validateRequest({ params: OrderIdParamsSchema }),
+  async (req, res) => {
+    try {
+      const { orderId } = req.params;
+      const userId = req.user.id;
+
+      const order = await getOrderById(orderId);
+
+      if (!order) {
+        return res.status(404).json({ ok: false, error: "Order not found" });
+      }
+
+      if (order.userId !== userId) {
+        logger.warn(
+          { orderId, orderUserId: order.userId, requestUserId: userId },
+          "User tried to retry another user's order"
+        );
+        return res.status(403).json({ ok: false, error: "Access denied" });
+      }
+
+      if (order.status === "paid") {
+        return res
+          .status(409)
+          .json({ ok: false, error: "Order already paid", status: "paid" });
+      }
+
+      await markOrderPendingForRetry(orderId, "retry_intent_requested");
+
+      const [firstName = "User", ...rest] = String(req.user?.name || "User")
+        .trim()
+        .split(/\s+/);
+      const lastName = rest.join(" ");
+
+      const intention = await createPaymentIntention({
+        amountCents: Number(order.amountCents),
+        currency: String(order.currency || "EGP").toUpperCase(),
+        orderId,
+        billingData: {
+          firstName,
+          lastName,
+          email: order.customerEmail || req.user?.email || "user@example.com",
+          phone: order.customerPhone || "01000000000",
+        },
+      });
+
+      logger.info(
+        { orderId, userId, intentionId: intention.intentionId },
+        "Payment retry intention created"
+      );
+
+      return res.json({
+        ok: true,
+        orderId,
+        iframeUrl: intention.checkoutUrl,
+        intentionId: intention.intentionId,
+      });
+    } catch (err) {
+      logger.error(
+        { err, orderId: req.params?.orderId, userId: req.user?.id },
+        "Retry payment intent error"
+      );
+      return res
+        .status(500)
+        .json({ ok: false, error: "Payment retry failed" });
+    }
+  }
+);
 
 export default router;

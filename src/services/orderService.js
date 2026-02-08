@@ -192,6 +192,46 @@ export async function markOrderFailed(orderId, reason) {
 }
 
 /**
+ * Move an unpaid order back to pending so the user can retry checkout safely.
+ */
+export async function markOrderPendingForRetry(orderId, reason = "retry_requested") {
+    try {
+        const updated = await prisma.order.updateMany({
+            where: {
+                id: orderId,
+                status: { not: "paid" },
+            },
+            data: {
+                status: "pending",
+                updatedAt: new Date(),
+            },
+        });
+
+        const order = await prisma.order.findUnique({
+            where: { id: orderId },
+        });
+
+        if (!order) {
+            throw new Error(`Order not found: ${orderId}`);
+        }
+
+        if (updated.count === 0 && order.status === "paid") {
+            logger.warn(
+                { orderId, reason },
+                "Skipping retry transition because order is already paid"
+            );
+            return { order, skipped: true };
+        }
+
+        logger.info({ orderId, reason }, "Order reset to pending for retry");
+        return { order, skipped: false };
+    } catch (error) {
+        logger.error({ error, orderId, reason }, "Failed to reset order for retry");
+        throw error;
+    }
+}
+
+/**
  * Get order by merchant order ID (our orderId)
  */
 export async function getOrderById(orderId) {
