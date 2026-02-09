@@ -88,12 +88,16 @@ async function authenticateFromSession(request) {
   const sessionUser = sessionData?.user;
   if (!sessionUser?.id) return null;
 
-  return { authenticated: true, userId: String(sessionUser.id) };
+  return {
+    authenticated: true,
+    userId: String(sessionUser.id),
+    authSource: "session",
+  };
 }
 
 async function authenticateConnection(request) {
   if (!CONFIG.AUTH_ENABLED) {
-    return { authenticated: true, userId: "anonymous" };
+    return { authenticated: true, userId: "anonymous", authSource: "disabled" };
   }
 
   try {
@@ -111,7 +115,11 @@ async function authenticateConnection(request) {
 
     const result = await CONFIG.validateToken(token, request);
     if (result.valid) {
-      return { authenticated: true, userId: result.userId };
+      return {
+        authenticated: true,
+        userId: String(result.userId),
+        authSource: "token",
+      };
     }
 
     return { authenticated: false, reason: result.reason || "Invalid token" };

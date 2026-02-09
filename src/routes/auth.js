@@ -11,6 +11,11 @@ import {
 import { sendEmail } from "../services/emailService.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
+import { requireAuth } from "../middleware/auth-helpers.js";
+import {
+  createWsAuthToken,
+  getWsAuthTokenTtlMs,
+} from "../webrtcSignaling/token.js";
 
 const router = Router();
 
@@ -265,6 +270,37 @@ router.get("/me", async (req, res) => {
   }
 
   return res.json({ user: adminUser });
+});
+
+/* ========================================================================== */
+/*                           WEBSOCKET AUTH TOKEN                             */
+/* ========================================================================== */
+
+router.get("/ws-token", requireAuth, (req, res) => {
+  try {
+    const userId = String(req.viewUserId || req.user?.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const { token, expiresAt } = createWsAuthToken({
+      userId,
+      ttlMs: getWsAuthTokenTtlMs(),
+    });
+
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+      "Surrogate-Control": "no-store",
+      Vary: "Cookie",
+    });
+
+    return res.json({ token, expiresAt });
+  } catch (err) {
+    logger.error({ err }, "Failed to issue websocket token");
+    return res.status(500).json({ error: "Failed to issue websocket token" });
+  }
 });
 
 /* ========================================================================== */

@@ -1,5 +1,6 @@
 // src/webrtcSignaling/config.js
 import { ALLOWED_ORIGINS as HTTP_ALLOWED_ORIGINS, isProd } from "../config/env.js";
+import { verifyWsAuthToken } from "./token.js";
 
 function parseBooleanEnv(name, defaultValue) {
   const raw = process.env[name];
@@ -34,9 +35,16 @@ const CONFIG = {
   AUTH_ENABLED: parseBooleanEnv("WS_AUTH_ENABLED", true),
   AUTH_TOKEN_HEADER: "sec-websocket-protocol",
   validateToken: async (token, request) => {
+    const verified = verifyWsAuthToken(token);
+    if (!verified.valid) {
+      return {
+        valid: false,
+        reason: verified.reason || "Invalid token",
+      };
+    }
     return {
-      valid: false,
-      reason: "Token auth is not configured for this environment",
+      valid: true,
+      userId: verified.userId,
     };
   },
 
