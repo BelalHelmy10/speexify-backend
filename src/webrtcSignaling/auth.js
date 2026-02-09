@@ -101,28 +101,33 @@ async function authenticateConnection(request) {
   }
 
   try {
+    const token = extractTokenFromRequest(request);
+    if (token) {
+      const result = await CONFIG.validateToken(token, request);
+      if (result.valid) {
+        return {
+          authenticated: true,
+          userId: String(result.userId),
+          authSource: "token",
+        };
+      }
+
+      const sessionAuth = await authenticateFromSession(request);
+      if (sessionAuth) return sessionAuth;
+
+      return {
+        authenticated: false,
+        reason: result.reason || "Invalid token",
+      };
+    }
+
     const sessionAuth = await authenticateFromSession(request);
     if (sessionAuth) return sessionAuth;
 
-    const token = extractTokenFromRequest(request);
-
-    if (!token) {
-      return {
-        authenticated: false,
-        reason: "No valid session or token provided",
-      };
-    }
-
-    const result = await CONFIG.validateToken(token, request);
-    if (result.valid) {
-      return {
-        authenticated: true,
-        userId: String(result.userId),
-        authSource: "token",
-      };
-    }
-
-    return { authenticated: false, reason: result.reason || "Invalid token" };
+    return {
+      authenticated: false,
+      reason: "No valid session or token provided",
+    };
   } catch (err) {
     logger.error({ err }, "[Auth] Authentication error");
     return { authenticated: false, reason: "Authentication error" };
