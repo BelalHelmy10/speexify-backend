@@ -34,7 +34,13 @@ export function validateRequest(schemas = {}) {
       if (!parsed.success) {
         details.push(...normalizeIssues(parsed.error.issues, "query"));
       } else {
-        req.query = parsed.data;
+        // req.query may be a getter in newer Express — merge instead of replace
+        try {
+          req.query = parsed.data;
+        } catch {
+          Object.keys(req.query).forEach((k) => delete req.query[k]);
+          Object.assign(req.query, parsed.data);
+        }
       }
     }
 
