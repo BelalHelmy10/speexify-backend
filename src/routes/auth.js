@@ -57,6 +57,7 @@ const publicUserSelect = {
   name: true,
   role: true,
   timezone: true,
+  language: true,
   isDisabled: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,
@@ -97,6 +98,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       name: user.name,
       role: user.role,
       timezone: user.timezone ?? null,
+      language: user.language ?? "en",
     };
     req.session.asUserId = null;
     req.session.user = sessionUser;
@@ -164,6 +166,7 @@ router.post("/google", async (req, res) => {
           name: true,
           role: true,
           timezone: true,
+          language: true,
           isDisabled: true,
         },
       });
@@ -176,6 +179,7 @@ router.post("/google", async (req, res) => {
           name: true,
           role: true,
           timezone: true,
+          language: true,
           isDisabled: true,
         },
       });
@@ -188,6 +192,7 @@ router.post("/google", async (req, res) => {
       name: user.name,
       role: user.role,
       timezone: user.timezone ?? null,
+      language: user.language ?? "en",
     };
 
     req.session.save((saveErr) => {
@@ -438,6 +443,7 @@ router.post("/password/reset/complete", async (req, res) => {
       name: user.name,
       role: user.role,
       timezone: user.timezone ?? null,
+      language: user.language ?? "en",
     };
 
     return res.json({ ok: true });
@@ -575,6 +581,7 @@ router.post("/register/complete", async (req, res) => {
         name: true,
         role: true,
         timezone: true,
+        language: true,
         isDisabled: true,
       },
     });

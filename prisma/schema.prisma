@@ -41,6 +41,10 @@ model User {
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   timezone              String?
+  language              String?                @default("en")
+  notificationPreferences Json?
+  calendarFeedRevokedAt DateTime?
+  passwordChangedAt     DateTime?
   isDisabled            Boolean                @default(false)
   rateHourlyCents       Int?
   ratePerSessionCents   Int?

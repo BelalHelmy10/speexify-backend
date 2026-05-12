@@ -246,6 +246,35 @@ const ActiveFilterSchema = z.union([
   z.literal("1"),
 ]);
 
+const LANGUAGE_OPTIONS = ["en", "ar"];
+const DEFAULT_NOTIFICATION_PREFERENCES = Object.freeze({
+  emailSessionReminders: true,
+  emailSessionChanges: true,
+  inAppSessionReminders: true,
+  weeklyProgressDigest: true,
+  productUpdates: false,
+  reminderLeadTime: "24h",
+});
+
+function isValidTimeZone(value) {
+  if (!value) return true;
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validatePasswordStrength(password, label = "New password") {
+  if (!password || typeof password !== "string") return `${label} is required`;
+  if (password.length < 8) return `${label} must be at least 8 characters`;
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return `${label} must contain at least one letter and one number`;
+  }
+  return null;
+}
+
 const ContactBodySchema = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -263,10 +292,20 @@ const ProfilePatchBodySchema = z
   .object({
     name: z.string().trim().max(120).nullable().optional(),
     timezone: z.string().trim().max(80).nullable().optional(),
+    language: z.enum(LANGUAGE_OPTIONS).nullable().optional(),
   })
   .strict()
   .refine((payload) => Object.keys(payload).length > 0, {
     message: "At least one profile field is required",
+  })
+  .superRefine((payload, ctx) => {
+    if (payload.timezone && !isValidTimeZone(payload.timezone)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["timezone"],
+        message: "Invalid time zone",
+      });
+    }
   });
 
 const ChangePasswordBodySchema = z
@@ -274,7 +313,31 @@ const ChangePasswordBodySchema = z
     currentPassword: z.string().min(1),
     newPassword: z.string().min(8),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, ctx) => {
+    const error = validatePasswordStrength(payload.newPassword);
+    if (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["newPassword"],
+        message: error,
+      });
+    }
+  });
+
+const NotificationPreferencesBodySchema = z
+  .object({
+    emailSessionReminders: z.boolean().optional(),
+    emailSessionChanges: z.boolean().optional(),
+    inAppSessionReminders: z.boolean().optional(),
+    weeklyProgressDigest: z.boolean().optional(),
+    productUpdates: z.boolean().optional(),
+    reminderLeadTime: z.enum(["1h", "6h", "24h", "none"]).optional(),
+  })
+  .strict()
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: "At least one preference is required",
+  });
 
 const UsersQuerySchema = z.object({
   role: z.union([RoleFilterSchema, z.literal("")]).optional().default(""),
@@ -396,6 +459,7 @@ if (ALLOW_LEGACY_REGISTER) {
           name: true,
           role: true,
           timezone: true,
+          language: true,
         },
       });
 
@@ -430,6 +494,10 @@ app.get("/api/me", requireAuth, async (req, res) => {
         name: true,
         role: true,
         timezone: true,
+        language: true,
+        notificationPreferences: true,
+        calendarFeedRevokedAt: true,
+        passwordChangedAt: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -447,16 +515,33 @@ app.patch(
   validateRequest({ body: ProfilePatchBodySchema }),
   async (req, res) => {
     try {
-      const { name, timezone } = req.body;
+      const { name, timezone, language } = req.body;
+      const data = {};
+      if (Object.prototype.hasOwnProperty.call(req.body, "name")) {
+        data.name = name?.trim() || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "timezone")) {
+        data.timezone = timezone || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "language")) {
+        data.language = language || "en";
+      }
+
       const updated = await prisma.user.update({
         where: { id: req.viewUserId },
-        data: { name: name?.trim() || null, timezone: timezone || null },
+        data,
         select: {
           id: true,
           email: true,
           name: true,
           role: true,
           timezone: true,
+          language: true,
+          notificationPreferences: true,
+          calendarFeedRevokedAt: true,
+          passwordChangedAt: true,
+          createdAt: true,
+          updatedAt: true,
         },
       });
 
@@ -465,6 +550,7 @@ app.patch(
           ...req.session.user,
           name: updated.name,
           timezone: updated.timezone,
+          language: updated.language,
         };
       }
 
@@ -472,6 +558,58 @@ app.patch(
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: "Failed to update profile" });
+    }
+  }
+);
+
+app.get("/api/me/notification-preferences", requireAuth, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.viewUserId },
+      select: { notificationPreferences: true },
+    });
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      ...(user.notificationPreferences || {}),
+    });
+  } catch (err) {
+    logger.error({ err, userId: req.viewUserId }, "GET /api/me/notification-preferences failed");
+    res.status(500).json({ error: "Failed to load notification preferences" });
+  }
+});
+
+app.patch(
+  "/api/me/notification-preferences",
+  requireAuth,
+  validateRequest({ body: NotificationPreferencesBodySchema }),
+  async (req, res) => {
+    try {
+      const current = await prisma.user.findUnique({
+        where: { id: req.viewUserId },
+        select: { notificationPreferences: true },
+      });
+
+      if (!current) return res.status(404).json({ error: "User not found" });
+
+      const notificationPreferences = {
+        ...DEFAULT_NOTIFICATION_PREFERENCES,
+        ...(current.notificationPreferences || {}),
+        ...req.body,
+      };
+
+      const updated = await prisma.user.update({
+        where: { id: req.viewUserId },
+        data: { notificationPreferences },
+        select: { notificationPreferences: true },
+      });
+
+      res.json(updated.notificationPreferences);
+    } catch (err) {
+      logger.error({ err, userId: req.viewUserId }, "PATCH /api/me/notification-preferences failed");
+      res.status(500).json({ error: "Failed to save notification preferences" });
     }
   }
 );
@@ -850,7 +988,7 @@ app.post(
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       await prisma.user.update({
         where: { id: user.id },
-        data: { hashedPassword },
+        data: { hashedPassword, passwordChangedAt: new Date() },
       });
 
       res.json({ ok: true });

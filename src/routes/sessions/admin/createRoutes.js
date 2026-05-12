@@ -7,7 +7,7 @@ import {
   requireAdmin,
   findSessionConflicts,
   getRemainingCredits,
-  consumeOneCredit,
+  consumeOneCreditWithClient,
   sendBookingNotifications,
   logger,
   audit,
@@ -20,6 +20,173 @@ import {
 } from "../../../services/idempotencyService.js";
 
 const router = Router();
+
+function httpError(statusCode, body) {
+  const err = new Error(body?.message || body?.error || "Request failed");
+  err.statusCode = statusCode;
+  err.responseBody = body;
+  return err;
+}
+
+function normalizeSessionType(type) {
+  return type === "GROUP" ? "GROUP" : "ONE_ON_ONE";
+}
+
+function normalizeAllowNoCredit(value) {
+  return value === true || value === "true";
+}
+
+function parseFinalCapacity(capacity) {
+  if (capacity === undefined || capacity === null || capacity === "") return null;
+  const parsed = Number(capacity);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw httpError(400, {
+      error: "invalid_capacity",
+      message: "capacity must be a positive integer",
+    });
+  }
+  return parsed;
+}
+
+function uniqueLearnerIds(values) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+}
+
+async function ensureTeacher(teacherId) {
+  if (!teacherId) return null;
+
+  const teacher = await prisma.user.findUnique({
+    where: { id: Number(teacherId) },
+    select: { id: true, role: true, isDisabled: true },
+  });
+
+  if (!teacher || teacher.isDisabled) {
+    throw httpError(404, {
+      error: "Teacher not found or disabled",
+      teacherId: Number(teacherId),
+    });
+  }
+
+  if (teacher.role !== "teacher" && teacher.role !== "admin") {
+    throw httpError(400, {
+      error: "teacherId must refer to a teacher or admin",
+      teacherId: Number(teacherId),
+      actualRole: teacher.role,
+    });
+  }
+
+  return teacher;
+}
+
+async function ensureLearners(learnerIds) {
+  const learners = await prisma.user.findMany({
+    where: { id: { in: learnerIds } },
+    select: { id: true, role: true, isDisabled: true },
+  });
+  const byId = new Map(learners.map((learner) => [learner.id, learner]));
+
+  for (const learnerId of learnerIds) {
+    const learner = byId.get(learnerId);
+    if (!learner || learner.isDisabled) {
+      throw httpError(404, {
+        error: "User not found or disabled",
+        learnerId,
+      });
+    }
+    if (learner.role !== "learner" && learner.role !== "admin") {
+      throw httpError(400, {
+        error: "learnerIds must refer to learners",
+        learnerId,
+      });
+    }
+  }
+
+  return learners;
+}
+
+async function ensureNoConflicts({ startAt, endAt, learnerIds, teacherId }) {
+  const learnerChecks = await Promise.all(
+    learnerIds.map(async (learnerId) => ({
+      learnerId,
+      conflicts: await findSessionConflicts({
+        startAt,
+        endAt,
+        userId: learnerId,
+      }),
+    }))
+  );
+
+  for (const check of learnerChecks) {
+    if (check.conflicts.length) {
+      throw httpError(409, {
+        error: "Time conflict",
+        learnerId: check.learnerId,
+        conflicts: check.conflicts,
+      });
+    }
+  }
+
+  if (teacherId) {
+    const conflicts = await findSessionConflicts({
+      startAt,
+      endAt,
+      teacherId: Number(teacherId),
+    });
+
+    if (conflicts.length) {
+      throw httpError(409, {
+        error: "Time conflict",
+        teacherId: Number(teacherId),
+        conflicts,
+      });
+    }
+  }
+}
+
+async function ensureCredits({ learnerIds, allowNoCredit }) {
+  if (allowNoCredit) return;
+
+  for (const learnerId of learnerIds) {
+    const remaining = await getRemainingCredits(learnerId);
+    if (remaining <= 0) {
+      throw httpError(422, {
+        error: "no_credits",
+        message: "Learner has no remaining credits",
+        learnerId,
+      });
+    }
+  }
+}
+
+async function consumeCreditsInTransaction({ tx, learnerIds, allowNoCredit }) {
+  const creditResults = [];
+  if (allowNoCredit) return creditResults;
+
+  for (const learnerId of learnerIds) {
+    const result = await consumeOneCreditWithClient(tx, learnerId);
+    if (!result.ok) {
+      throw httpError(422, {
+        error: "no_credits",
+        message: "Learner has no remaining credits",
+        learnerId,
+      });
+    }
+    creditResults.push({
+      learnerId,
+      consumed: true,
+      packId: result.packId,
+      remaining: result.remaining,
+    });
+  }
+
+  return creditResults;
+}
 
 // POST /api/admin/sessions - Create new session (1:1 or GROUP)
 router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
@@ -40,6 +207,8 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       meetingUrl,
       notes,
       allowNoCredit = false,
+      allowNoCreditReason = "",
+      creditOverrideReason = "",
     } = req.body;
 
     if (!startAt) {
@@ -55,276 +224,104 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       ? new Date(endAt)
       : new Date(start.getTime() + Number(durationMin || 60) * 60_000);
 
+    if (
+      Number.isNaN(finalEndAt.getTime()) ||
+      finalEndAt.getTime() <= start.getTime()
+    ) {
+      return res.status(400).json({ error: "endAt must be after startAt" });
+    }
+
+    const finalType = normalizeSessionType(type);
+    const finalTeacherId = teacherId ? Number(teacherId) : null;
+    const finalCapacity = parseFinalCapacity(capacity);
+    const finalTitle =
+      String(title || "").trim() ||
+      (finalType === "GROUP" ? "Group Session" : "Lesson");
     const finalJoinUrl = (joinUrl ?? meetingUrl ?? "").trim() || null;
     const finalNotes = (notes ?? "").trim() || null;
+    const allowCreditOverride = normalizeAllowNoCredit(allowNoCredit);
+    const overrideReason = String(
+      allowNoCreditReason || creditOverrideReason || ""
+    ).trim();
 
-    if (teacherId) {
-      const teacher = await prisma.user.findUnique({
-        where: { id: Number(teacherId) },
-        select: { id: true, role: true, isDisabled: true },
-      });
-
-      if (!teacher || teacher.isDisabled) {
-        return res.status(404).json({
-          error: "Teacher not found or disabled",
-          teacherId: Number(teacherId),
-        });
-      }
-
-      if (teacher.role !== "teacher" && teacher.role !== "admin") {
-        return res.status(400).json({
-          error: "teacherId must refer to a teacher or admin",
-          teacherId: Number(teacherId),
-          actualRole: teacher.role,
-        });
-      }
-    }
-
-    if (type === "ONE_ON_ONE") {
-      if (!learnerId) {
-        return res.status(400).json({ error: "learnerId is required" });
-      }
-
-      const learner = await prisma.user.findUnique({
-        where: { id: Number(learnerId) },
-        select: { id: true, role: true, isDisabled: true },
-      });
-
-      if (!learner || learner.isDisabled) {
-        return res.status(404).json({
-          error: "User not found or disabled",
-          userId: Number(learnerId),
-        });
-      }
-      if (learner.role !== "learner" && learner.role !== "admin") {
-        return res.status(400).json({
-          error: "learnerId must refer to a learner",
-          userId: Number(learnerId),
-        });
-      }
-
-      if (teacherId && Number(teacherId) === Number(learnerId)) {
-        return res.status(400).json({
-          error: "Teacher cannot be the same as learner",
-          teacherId: Number(teacherId),
-          learnerId: Number(learnerId),
-        });
-      }
-
-      const conflicts = await findSessionConflicts({
-        startAt: start,
-        endAt: finalEndAt,
-        userId: Number(learnerId),
-        teacherId,
-      });
-
-      if (conflicts.length) {
-        return res.status(409).json({ error: "Time conflict", conflicts });
-      }
-
-      const remaining = await getRemainingCredits(Number(learnerId));
-      if (!allowNoCredit && remaining <= 0) {
-        return res.status(422).json({
-          error: "no_credits",
-          message: "Learner has no remaining credits",
-          learnerId: Number(learnerId),
-        });
-      }
-
-      idempotency = await beginIdempotentRequest({
-        actorId: req.user.id,
-        scope: "admin.sessions.create",
-        key: getIdempotencyKeyFromRequest(req),
-        payload: {
-          type: "ONE_ON_ONE",
-          learnerId: Number(learnerId),
-          teacherId: teacherId ? Number(teacherId) : null,
-          title,
-          startAt: start.toISOString(),
-          endAt: finalEndAt.toISOString(),
-          joinUrl: finalJoinUrl,
-          notes: finalNotes,
-          allowNoCredit: !!allowNoCredit,
-        },
-      });
-
-      if (idempotency.state === "replay") {
-        return res.status(idempotency.statusCode).json(idempotency.responseBody);
-      }
-      if (
-        idempotency.state === "conflict" ||
-        idempotency.state === "in_progress" ||
-        idempotency.state === "error"
-      ) {
-        return res.status(idempotency.statusCode).json(idempotency.responseBody);
-      }
-
-      const session = await prisma.session.create({
-        data: {
-          type: "ONE_ON_ONE",
-          userId: Number(learnerId),
-          teacherId: teacherId || null,
-          title,
-          startAt: start,
-          endAt: finalEndAt,
-          joinUrl: finalJoinUrl,
-          notes: finalNotes,
-        },
-      });
-
-      await prisma.sessionParticipant.create({
-        data: {
-          sessionId: session.id,
-          userId: Number(learnerId),
-        },
-      });
-
-      let creditResult = null;
-      console.log("========== CREDIT DEBUG ==========");
-      console.log("learnerId:", Number(learnerId));
-      console.log("allowNoCredit:", allowNoCredit, "type:", typeof allowNoCredit);
-      if (!allowNoCredit) {
-        console.log(">>> ENTERING credit consumption");
-        try {
-          creditResult = await consumeOneCredit(Number(learnerId));
-          console.log(">>> consumeOneCredit result:", JSON.stringify(creditResult));
-          if (!creditResult.ok) {
-            logger.warn(
-              { userId: Number(learnerId), sessionId: session.id },
-              "[credits] Failed to consume credit on booking"
-            );
-          }
-        } catch (e) {
-          console.log(">>> EXCEPTION:", e.message);
-          logger.error(
-            { err: e, userId: Number(learnerId), sessionId: session.id },
-            "[credits] consumeOneCredit failed on session create"
-          );
-        }
-      } else {
-        console.log(">>> SKIPPED - allowNoCredit is truthy");
-      }
-      console.log("========== END DEBUG ==========");
-
-      await audit(req.user.id, "session_create", "Session", session.id, {
-        type: "ONE_ON_ONE",
-        learnerId: Number(learnerId),
-        teacherId,
-        creditConsumed: creditResult?.ok || false,
-      });
-
-      try {
-        await sendBookingNotifications({
-          session,
-          learnerIds: [Number(learnerId)],
-          teacherId: teacherId || null,
-          bookedBy: req.user.id,
-        });
-      } catch (e) {
-        logger.error(
-          { err: e, learnerId: Number(learnerId), sessionId: session.id },
-          "booking notifications failed"
-        );
-      }
-
-      const responseBody = { ok: true, session };
-      if (idempotency?.state === "started") {
-        await completeIdempotentRequest(idempotency.recordId, {
-          statusCode: 201,
-          responseBody,
-          resourceId: session.id,
-        });
-      }
-
-      return res.status(201).json(responseBody);
-    }
-
-    if (!Array.isArray(learnerIds) || learnerIds.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "learnerIds[] is required for GROUP sessions" });
-    }
-
-    const uniqueLearnerIds = Array.from(
-      new Set(learnerIds.map((x) => Number(x)).filter((n) => n && !Number.isNaN(n)))
-    );
-
-    if (!uniqueLearnerIds.length) {
-      return res
-        .status(400)
-        .json({ error: "learnerIds[] must contain valid ids" });
-    }
-
-    if (teacherId && uniqueLearnerIds.includes(Number(teacherId))) {
+    if (allowCreditOverride && overrideReason.length < 6) {
       return res.status(400).json({
-        error: "Teacher cannot be a participant in the same session",
-        teacherId: Number(teacherId),
+        error: "credit_override_reason_required",
+        message: "No-credit override reason must be at least 6 characters.",
       });
     }
 
-    if (capacity && uniqueLearnerIds.length > capacity) {
+    await ensureTeacher(finalTeacherId);
+
+    const finalLearnerIds =
+      finalType === "GROUP"
+        ? uniqueLearnerIds(Array.isArray(learnerIds) ? learnerIds : [])
+        : learnerId
+          ? [Number(learnerId)]
+          : [];
+
+    if (!finalLearnerIds.length) {
+      return res.status(400).json({
+        error:
+          finalType === "GROUP"
+            ? "learnerIds[] is required for GROUP sessions"
+            : "learnerId is required",
+      });
+    }
+
+    if (finalLearnerIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+      return res.status(400).json({ error: "Learner IDs must be valid" });
+    }
+
+    if (finalTeacherId && finalLearnerIds.includes(finalTeacherId)) {
+      return res.status(400).json({
+        error:
+          finalType === "GROUP"
+            ? "Teacher cannot be a participant in the same session"
+            : "Teacher cannot be the same as learner",
+        teacherId: finalTeacherId,
+      });
+    }
+
+    if (
+      finalType === "GROUP" &&
+      finalCapacity !== null &&
+      finalLearnerIds.length > finalCapacity
+    ) {
       return res.status(400).json({
         error: "capacity_exceeded",
         message: "learnerIds exceed session capacity",
       });
     }
 
-    for (const uid of uniqueLearnerIds) {
-      const u = await prisma.user.findUnique({
-        where: { id: uid },
-        select: { id: true, role: true, isDisabled: true },
-      });
-
-      if (!u || u.isDisabled) {
-        return res
-          .status(404)
-          .json({ error: "User not found or disabled", learnerId: uid });
-      }
-      if (u.role !== "learner" && u.role !== "admin") {
-        return res
-          .status(400)
-          .json({ error: "learnerIds must refer to learners", learnerId: uid });
-      }
-
-      const conflicts = await findSessionConflicts({
-        startAt: start,
-        endAt: finalEndAt,
-        userId: uid,
-        teacherId,
-      });
-
-      if (conflicts.length) {
-        return res.status(409).json({
-          error: "Time conflict",
-          learnerId: uid,
-          conflicts,
-        });
-      }
-
-      const remaining = await getRemainingCredits(uid);
-      if (!allowNoCredit && remaining <= 0) {
-        return res.status(422).json({
-          error: "no_credits",
-          learnerId: uid,
-        });
-      }
-    }
+    await ensureLearners(finalLearnerIds);
+    await ensureNoConflicts({
+      startAt: start,
+      endAt: finalEndAt,
+      learnerIds: finalLearnerIds,
+      teacherId: finalTeacherId,
+    });
+    await ensureCredits({
+      learnerIds: finalLearnerIds,
+      allowNoCredit: allowCreditOverride,
+    });
 
     idempotency = await beginIdempotentRequest({
       actorId: req.user.id,
       scope: "admin.sessions.create",
       key: getIdempotencyKeyFromRequest(req),
       payload: {
-        type: "GROUP",
-        learnerIds: uniqueLearnerIds,
-        teacherId: teacherId ? Number(teacherId) : null,
-        capacity: capacity || null,
-        title,
+        type: finalType,
+        learnerIds: finalLearnerIds,
+        teacherId: finalTeacherId,
+        capacity: finalCapacity,
+        title: finalTitle,
         startAt: start.toISOString(),
         endAt: finalEndAt.toISOString(),
         joinUrl: finalJoinUrl,
         notes: finalNotes,
-        allowNoCredit: !!allowNoCredit,
+        allowNoCredit: allowCreditOverride,
+        allowNoCreditReason: allowCreditOverride ? overrideReason : null,
       },
     });
 
@@ -339,68 +336,70 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       return res.status(idempotency.statusCode).json(idempotency.responseBody);
     }
 
-    const session = await prisma.session.create({
-      data: {
-        type: "GROUP",
-        capacity: capacity || null,
-        teacherId: teacherId || null,
-        title,
-        startAt: start,
-        endAt: finalEndAt,
-        joinUrl: finalJoinUrl,
-        notes: finalNotes,
-      },
-    });
+    const { session, creditResults } = await prisma.$transaction(async (tx) => {
+      const createdSession = await tx.session.create({
+        data: {
+          type: finalType,
+          userId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : null,
+          capacity: finalType === "GROUP" ? finalCapacity : null,
+          teacherId: finalTeacherId,
+          title: finalTitle,
+          startAt: start,
+          endAt: finalEndAt,
+          joinUrl: finalJoinUrl,
+          notes: finalNotes,
+        },
+      });
 
-    await prisma.sessionParticipant.createMany({
-      data: uniqueLearnerIds.map((uid) => ({
-        sessionId: session.id,
-        userId: uid,
-      })),
-      skipDuplicates: true,
-    });
-
-    const creditResults = [];
-    if (!allowNoCredit) {
-      for (const uid of uniqueLearnerIds) {
-        try {
-          const result = await consumeOneCredit(uid);
-          creditResults.push({ learnerId: uid, consumed: result.ok });
-          if (!result.ok) {
-            logger.warn(
-              { userId: uid, sessionId: session.id },
-              "[credits] Failed to consume credit on GROUP booking"
-            );
-          }
-        } catch (e) {
-          logger.error(
-            { err: e, userId: uid, sessionId: session.id },
-            "[credits] consumeOneCredit failed on GROUP session create"
-          );
-          creditResults.push({ learnerId: uid, consumed: false });
-        }
+      if (finalType === "ONE_ON_ONE") {
+        await tx.sessionParticipant.create({
+          data: {
+            sessionId: createdSession.id,
+            userId: finalLearnerIds[0],
+          },
+        });
+      } else {
+        await tx.sessionParticipant.createMany({
+          data: finalLearnerIds.map((id) => ({
+            sessionId: createdSession.id,
+            userId: id,
+          })),
+          skipDuplicates: true,
+        });
       }
-    }
+
+      const consumedCredits = await consumeCreditsInTransaction({
+        tx,
+        learnerIds: finalLearnerIds,
+        allowNoCredit: allowCreditOverride,
+      });
+
+      return { session: createdSession, creditResults: consumedCredits };
+    });
 
     await audit(req.user.id, "session_create", "Session", session.id, {
-      type: "GROUP",
-      learnerIds: uniqueLearnerIds,
-      teacherId,
-      capacity,
+      type: finalType,
+      learnerIds: finalLearnerIds,
+      learnerId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : undefined,
+      teacherId: finalTeacherId,
+      capacity: finalCapacity,
       creditResults,
+      creditConsumed: creditResults.some((result) => result.consumed),
+      creditOverrideAllowed: allowCreditOverride,
+      creditOverrideReason: allowCreditOverride ? overrideReason : null,
     });
 
     try {
       await sendBookingNotifications({
         session,
-        learnerIds: uniqueLearnerIds,
-        teacherId: teacherId || null,
+        learnerIds: finalLearnerIds,
+        teacherId: finalTeacherId,
         bookedBy: req.user.id,
       });
     } catch (e) {
       logger.error(
-        { err: e, learnerIds: uniqueLearnerIds, sessionId: session.id },
-        "booking notifications failed (group)"
+        { err: e, learnerIds: finalLearnerIds, sessionId: session.id },
+        "booking notifications failed"
       );
     }
 
@@ -417,6 +416,9 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   } catch (e) {
     if (idempotency?.state === "started") {
       await abandonIdempotentRequest(idempotency.recordId);
+    }
+    if (e?.statusCode && e?.responseBody) {
+      return res.status(e.statusCode).json(e.responseBody);
     }
     logger.error({ err: e }, "admin.createSession error");
     return res.status(500).json({ error: "Failed to create session" });

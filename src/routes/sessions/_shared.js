@@ -7,6 +7,7 @@ import { requireAuth, requireAdmin } from "../../middleware/auth-helpers.js";
 import {
     findSessionConflicts,
     getRemainingCredits,
+    consumeOneCreditWithClient,
     consumeOneCredit,
     refundOneCredit,
     finalizeExpiredSessionsForUser,
@@ -32,6 +33,7 @@ export {
     requireAdmin,
     findSessionConflicts,
     getRemainingCredits,
+    consumeOneCreditWithClient,
     consumeOneCredit,
     refundOneCredit,
     finalizeExpiredSessionsForUser,

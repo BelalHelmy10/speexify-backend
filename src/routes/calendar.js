@@ -98,8 +98,17 @@ async function loadUserSessions(userId) {
 // --------------------------------------------------------------------------
 router.get("/calendar/export-link", requireAuth, async (req, res) => {
   const userId = req.viewUserId;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { calendarFeedRevokedAt: true },
+  });
+  if (!user) return res.status(404).json({ error: "User not found" });
+
   const exp = Date.now() + 180 * 24 * 60 * 60 * 1000;
-  const token = signToken({ userId, exp });
+  const rev = user.calendarFeedRevokedAt
+    ? new Date(user.calendarFeedRevokedAt).getTime()
+    : 0;
+  const token = signToken({ userId, exp, rev });
 
   const proto = String(req.headers["x-forwarded-proto"] || req.protocol)
     .split(",")[0]
@@ -112,7 +121,25 @@ router.get("/calendar/export-link", requireAuth, async (req, res) => {
   )}`;
   const webcalUrl = httpsUrl.replace(/^https?:\/\//, "webcal://");
 
-  res.json({ httpsUrl, webcalUrl, expiresAt: exp });
+  res.json({
+    httpsUrl,
+    webcalUrl,
+    expiresAt: exp,
+    revokedAt: user.calendarFeedRevokedAt || null,
+  });
+});
+
+// --------------------------------------------------------------------------
+// POST /api/calendar/export-link/revoke
+// --------------------------------------------------------------------------
+router.post("/calendar/export-link/revoke", requireAuth, async (req, res) => {
+  const revokedAt = new Date();
+  await prisma.user.update({
+    where: { id: req.viewUserId },
+    data: { calendarFeedRevokedAt: revokedAt },
+  });
+
+  res.json({ ok: true, revokedAt });
 });
 
 // --------------------------------------------------------------------------
@@ -123,6 +150,22 @@ router.get("/calendar.ics", async (req, res) => {
   const payload = verifyToken(token);
   if (!payload) {
     return res.status(401).send("Invalid calendar token");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: { id: true, calendarFeedRevokedAt: true },
+  });
+  if (!user) {
+    return res.status(401).send("Invalid calendar token");
+  }
+
+  const currentRev = user.calendarFeedRevokedAt
+    ? new Date(user.calendarFeedRevokedAt).getTime()
+    : 0;
+  const tokenRev = payload.rev == null ? 0 : Number(payload.rev);
+  if (tokenRev !== currentRev) {
+    return res.status(401).send("Calendar token has been revoked");
   }
 
   const sessions = await loadUserSessions(payload.userId);

@@ -7,6 +7,7 @@ const publicUserSelect = {
   name: true,
   role: true,
   timezone: true,
+  language: true,
   isDisabled: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,

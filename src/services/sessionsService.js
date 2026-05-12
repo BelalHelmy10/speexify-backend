@@ -89,64 +89,72 @@ export async function getRemainingCredits(userId) {
 
 /**
  * Take 1 credit from the newest active pack that still has remaining credits.
+ * Accepts either the root Prisma client or an active transaction client.
  */
-export async function consumeOneCredit(userId) {
+export async function consumeOneCreditWithClient(db, userId) {
   const uid = Number(userId);
   const now = new Date();
 
-  return prisma.$transaction(async (tx) => {
-    const candidatePacks = await tx.userPackage.findMany({
+  const candidatePacks = await db.userPackage.findMany({
+    where: {
+      userId: uid,
+      status: "active",
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      id: true,
+      userId: true,
+      sessionsTotal: true,
+    },
+  });
+
+  for (const pack of candidatePacks) {
+    const consumed = await db.userPackage.updateMany({
       where: {
+        id: pack.id,
         userId: uid,
         status: "active",
+        sessionsTotal: pack.sessionsTotal,
+        sessionsUsed: { lt: pack.sessionsTotal },
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      select: {
-        id: true,
-        userId: true,
-        sessionsTotal: true,
-      },
+      data: { sessionsUsed: { increment: 1 } },
     });
 
-    for (const pack of candidatePacks) {
-      const consumed = await tx.userPackage.updateMany({
-        where: {
-          id: pack.id,
-          userId: uid,
-          status: "active",
-          sessionsTotal: pack.sessionsTotal,
-          sessionsUsed: { lt: pack.sessionsTotal },
-          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-        },
-        data: { sessionsUsed: { increment: 1 } },
-      });
-
-      if (consumed.count !== 1) {
-        continue;
-      }
-
-      const updated = await tx.userPackage.findUnique({
-        where: { id: pack.id },
-        select: { sessionsTotal: true, sessionsUsed: true },
-      });
-
-      if (!updated) {
-        logger.error(
-          { packId: pack.id, userId: uid },
-          "[credits] Pack missing after consume"
-        );
-        return { ok: false, reason: "no_credits" };
-      }
-
-      return {
-        ok: true,
-        packId: pack.id,
-        remaining: updated.sessionsTotal - updated.sessionsUsed,
-      };
+    if (consumed.count !== 1) {
+      continue;
     }
 
-    return { ok: false, reason: "no_credits" };
+    const updated = await db.userPackage.findUnique({
+      where: { id: pack.id },
+      select: { sessionsTotal: true, sessionsUsed: true },
+    });
+
+    if (!updated) {
+      logger.error(
+        { packId: pack.id, userId: uid },
+        "[credits] Pack missing after consume"
+      );
+      return { ok: false, reason: "no_credits" };
+    }
+
+    return {
+      ok: true,
+      packId: pack.id,
+      remaining: updated.sessionsTotal - updated.sessionsUsed,
+    };
+  }
+
+  return { ok: false, reason: "no_credits" };
+}
+
+/**
+ * Take 1 credit from the newest active pack that still has remaining credits.
+ */
+export async function consumeOneCredit(userId) {
+  return prisma.$transaction((tx) => {
+    return consumeOneCreditWithClient(tx, userId);
   });
 }
 
