@@ -10,6 +10,7 @@ function getMeta(ws) {
       classroomRoomId: null,
       isInitiator: false,
       userId: null,
+      authSource: null,
       ip: null,
       isAlive: true,
       messageTimestamps: [],

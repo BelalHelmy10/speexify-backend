@@ -15,6 +15,7 @@ import { checkRateLimit, validateRoomId, validateSignalPayload } from "./validat
 import { createRoomManager } from "./roomManager.js";
 import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
+import { authorizeClassroomJoin } from "./classroomAuthorization.js";
 
 function setupWebRtcSignaling(httpServer) {
   const wssPrep = new WebSocketServer({
@@ -89,8 +90,10 @@ function setupWebRtcSignaling(httpServer) {
     if (heartbeatIntervalClassroom) clearInterval(heartbeatIntervalClassroom);
   });
 
-  function createMessageHandler(roomManager, channelName) {
-    return (ws, raw) => {
+  function createMessageHandler(roomManager, channelName, options = {}) {
+    const { authorizeJoin = null } = options;
+
+    return async (ws, raw) => {
       if (!checkRateLimit(ws)) {
         safeSend(ws, { type: MSG_TYPES.ERROR, message: "Rate limit exceeded" });
         return;
@@ -120,6 +123,34 @@ function setupWebRtcSignaling(httpServer) {
             safeSend(ws, { type: MSG_TYPES.ERROR, message: validation.reason });
             return;
           }
+
+          if (typeof authorizeJoin === "function") {
+            const meta = getMeta(ws);
+            const authorization = await authorizeJoin({
+              roomId,
+              userId: meta.userId,
+              ws,
+            });
+
+            if (!authorization.allowed) {
+              logger.warn(
+                {
+                  roomId,
+                  userId: meta.userId,
+                  reason: authorization.reason,
+                },
+                `[${channelName}] Forbidden room join`
+              );
+              safeSend(ws, { type: MSG_TYPES.ERROR, message: "Forbidden" });
+              try {
+                ws.close(1008, "Forbidden");
+              } catch {
+                // Ignore close errors.
+              }
+              return;
+            }
+          }
+
           roomManager.join(ws, roomId);
           break;
         }
@@ -182,7 +213,10 @@ function setupWebRtcSignaling(httpServer) {
           safeSend(ws, { type: MSG_TYPES.ERROR, message: "Message too large" });
           return;
         }
-        messageHandler(ws, raw);
+        Promise.resolve(messageHandler(ws, raw)).catch((err) => {
+          logger.error({ err, ip }, `[${channelName}] Message handler failed`);
+          safeSend(ws, { type: MSG_TYPES.ERROR, message: "Server error" });
+        });
       });
 
       ws.on("close", () => {
@@ -207,7 +241,8 @@ function setupWebRtcSignaling(httpServer) {
   const prepMessageHandler = createMessageHandler(videoRoomManager, "WebRTC");
   const classroomMessageHandler = createMessageHandler(
     classroomRoomManager,
-    "Classroom"
+    "Classroom",
+    { authorizeJoin: authorizeClassroomJoin }
   );
 
   wssPrep.on(
@@ -291,7 +326,9 @@ function setupWebRtcSignaling(httpServer) {
 
     request.__wsHandled = true;
     wss.handleUpgrade(request, socket, head, (ws) => {
-      getMeta(ws).userId = authResult.userId;
+      const meta = getMeta(ws);
+      meta.userId = authResult.userId;
+      meta.authSource = authResult.authSource;
       wss.emit("connection", ws, request);
     });
   });

@@ -5,6 +5,574 @@ import { Router, prisma, requireAuth, logger } from "./_shared.js";
 
 const router = Router();
 
+const CLASSROOM_FOCUS_MODES = new Set(["video", "balanced", "content"]);
+const MIN_SPLIT_PERCENT = 12;
+const MAX_SPLIT_PERCENT = 88;
+const MAX_CHAT_MESSAGE_LENGTH = 4000;
+const CHAT_MESSAGES_DEFAULT_LIMIT = 100;
+const CHAT_MESSAGES_MAX_LIMIT = 200;
+const CHAT_RATE_LIMIT_MAX = 5;       // max messages per window
+const CHAT_RATE_LIMIT_WINDOW_MS = 10000; // 10-second window
+
+// ── In-memory chat rate limiter ──────────────────────────────────────────────
+// Key: `${sessionId}:${userId}` → Array of timestamps
+const chatRateLimitMap = new Map();
+
+function isChatRateLimited(sessionId, userId) {
+    const key = `${sessionId}:${userId}`;
+    const now = Date.now();
+    const cutoff = now - CHAT_RATE_LIMIT_WINDOW_MS;
+
+    let timestamps = chatRateLimitMap.get(key);
+    if (!timestamps) {
+        timestamps = [];
+        chatRateLimitMap.set(key, timestamps);
+    }
+
+    // Remove expired entries
+    while (timestamps.length > 0 && timestamps[0] <= cutoff) {
+        timestamps.shift();
+    }
+
+    if (timestamps.length >= CHAT_RATE_LIMIT_MAX) {
+        return true;
+    }
+
+    timestamps.push(now);
+    return false;
+}
+
+// Cleanup stale keys every 60 seconds to prevent memory leaks
+setInterval(() => {
+    const cutoff = Date.now() - CHAT_RATE_LIMIT_WINDOW_MS * 2;
+    for (const [key, timestamps] of chatRateLimitMap) {
+        if (!timestamps.length || timestamps[timestamps.length - 1] <= cutoff) {
+            chatRateLimitMap.delete(key);
+        }
+    }
+}, 60000);
+
+function parseSessionIdParam(raw) {
+    const sessionId = Number(raw);
+    if (!sessionId || Number.isNaN(sessionId)) return null;
+    return sessionId;
+}
+
+function clampNumber(value, min, max) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return Math.min(max, Math.max(min, num));
+}
+
+function safeString(value, maxLength = 300) {
+    if (value === null) return null;
+    if (value === undefined) return undefined;
+    const text = String(value).trim();
+    if (!text) return null;
+    return text.slice(0, maxLength);
+}
+
+function getStoredClassroomState(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return value;
+}
+
+function getClassroomAccess(req, session) {
+    const viewerId = Number(req.viewUserId);
+    const realUserId = Number(req.user?.id);
+    const isParticipant = (session.participants || []).some(
+        (p) => p.userId === viewerId && p.status !== "canceled"
+    );
+    const isLearner = isParticipant || session.userId === viewerId;
+    const isTeacher = session.teacherId === realUserId;
+    const isAdmin = req.user?.role === "admin";
+
+    return { isLearner, isTeacher, isAdmin };
+}
+
+function sanitizeLayoutPatch(layout) {
+    if (!layout || typeof layout !== "object" || Array.isArray(layout)) return null;
+
+    const next = {};
+    if (layout.focusMode !== undefined) {
+        const focusMode = safeString(layout.focusMode, 30);
+        if (CLASSROOM_FOCUS_MODES.has(focusMode)) next.focusMode = focusMode;
+    }
+    if (layout.customSplit !== undefined) {
+        next.customSplit =
+            layout.customSplit === null
+                ? null
+                : clampNumber(layout.customSplit, MIN_SPLIT_PERCENT, MAX_SPLIT_PERCENT);
+    }
+    if (layout.teacherAllowsFollowing !== undefined) {
+        next.teacherAllowsFollowing = Boolean(layout.teacherAllowsFollowing);
+    }
+
+    return Object.keys(next).length ? next : null;
+}
+
+function sanitizeScrollPatch(scroll) {
+    if (!scroll || typeof scroll !== "object" || Array.isArray(scroll)) return null;
+    const scrollNorm = clampNumber(scroll.scrollNorm, 0, 1);
+    if (scrollNorm === null) return null;
+
+    return {
+        scrollNorm,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function sanitizePdfScrollPatch(scroll) {
+    if (!scroll || typeof scroll !== "object" || Array.isArray(scroll)) return null;
+    const scrollNorm = clampNumber(scroll.scrollNorm, 0, 1);
+    if (scrollNorm === null) return null;
+
+    return {
+        resourceId: safeString(scroll.resourceId, 300) ?? null,
+        page: Math.max(1, Math.floor(Number(scroll.page) || 1)),
+        scrollNorm,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function sanitizeAudioPatch(audio) {
+    if (!audio || typeof audio !== "object" || Array.isArray(audio)) return null;
+
+    const time = clampNumber(audio.time, 0, 24 * 60 * 60);
+    const trackIndex = Math.max(0, Math.floor(Number(audio.trackIndex) || 0));
+    const seq = Math.max(0, Math.floor(Number(audio.seq) || 0));
+    const sentAt = Number(audio.sentAt);
+
+    return {
+        resourceId: safeString(audio.resourceId, 300) ?? null,
+        seq,
+        sentAt: Number.isFinite(sentAt) ? sentAt : Date.now(),
+        trackIndex,
+        time: time === null ? 0 : time,
+        playing: Boolean(audio.playing),
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function sanitizeClassroomStatePatch(input) {
+    const source =
+        input?.state && typeof input.state === "object" && !Array.isArray(input.state)
+            ? input.state
+            : input || {};
+    const patch = {};
+
+    if (source.resourceId !== undefined) {
+        patch.resourceId = safeString(source.resourceId, 300);
+    }
+
+    const layout = sanitizeLayoutPatch(source.layout);
+    if (layout) patch.layout = layout;
+
+    const contentScroll = sanitizeScrollPatch(source.contentScroll);
+    if (contentScroll) patch.contentScroll = contentScroll;
+
+    const pdfScroll = sanitizePdfScrollPatch(source.pdfScroll);
+    if (pdfScroll) patch.pdfScroll = pdfScroll;
+
+    const audio = sanitizeAudioPatch(source.audio);
+    if (audio) patch.audio = audio;
+
+    return patch;
+}
+
+function mergeClassroomState(existingState, patch) {
+    const existing = getStoredClassroomState(existingState);
+    const nowIso = new Date().toISOString();
+
+    const next = {
+        ...existing,
+        version: 1,
+        updatedAt: nowIso,
+    };
+
+    if (patch.resourceId !== undefined) next.resourceId = patch.resourceId;
+    if (patch.layout) {
+        next.layout = {
+            ...(existing.layout && typeof existing.layout === "object"
+                ? existing.layout
+                : {}),
+            ...patch.layout,
+            updatedAt: nowIso,
+        };
+    }
+    if (patch.contentScroll) next.contentScroll = patch.contentScroll;
+    if (patch.pdfScroll) next.pdfScroll = patch.pdfScroll;
+    if (patch.audio) next.audio = patch.audio;
+
+    return next;
+}
+
+function sanitizeChatBody(value) {
+    if (typeof value !== "string") return "";
+    return value.trim().slice(0, MAX_CHAT_MESSAGE_LENGTH);
+}
+
+function parseChatLimit(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return CHAT_MESSAGES_DEFAULT_LIMIT;
+    return Math.min(CHAT_MESSAGES_MAX_LIMIT, Math.max(1, Math.floor(num)));
+}
+
+function parseBeforeCursor(value) {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getChatSenderRole(access, userRole) {
+    if (access.isTeacher) return "teacher";
+    if (access.isAdmin && !access.isLearner) return "admin";
+    if (String(userRole || "").toLowerCase() === "teacher") return "teacher";
+    return "learner";
+}
+
+function getDisplayName(user) {
+    return user?.name || user?.email?.split("@")[0] || null;
+}
+
+function shapeClassroomMessage(row, access, viewerId) {
+    const isDeleted = !!row.deletedAt;
+    const isMine = row.senderId != null && Number(row.senderId) === Number(viewerId);
+    const canDelete = !isDeleted && (isMine || access.isTeacher || access.isAdmin);
+
+    return {
+        id: row.id,
+        type: "message",
+        role: row.senderRole || "learner",
+        name: row.senderName || "Participant",
+        text: isDeleted ? "" : row.body,
+        at: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+        updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+        senderId: row.senderId,
+        isMine,
+        isDeleted,
+        deletedAt: row.deletedAt ? (row.deletedAt instanceof Date ? row.deletedAt.toISOString() : row.deletedAt) : null,
+        canDelete,
+        deliveryStatus: "sent",
+    };
+}
+
+function formatTranscriptLine(row) {
+    const at = row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt;
+    const name = row.senderName || "Participant";
+    const role = row.senderRole ? ` (${row.senderRole})` : "";
+    const body = row.deletedAt ? "[deleted message]" : row.body;
+    return `[${at}] ${name}${role}: ${body}`;
+}
+
+async function findClassroomSession(sessionId) {
+    return prisma.session.findUnique({
+        where: { id: sessionId },
+        select: {
+            id: true,
+            userId: true,
+            teacherId: true,
+            classroomState: true,
+            participants: {
+                select: {
+                    userId: true,
+                    status: true,
+                },
+            },
+        },
+    });
+}
+
+async function requireClassroomAccess(req, res, sessionId) {
+    const session = await findClassroomSession(sessionId);
+    if (!session) {
+        res.status(404).json({ error: "Session not found" });
+        return null;
+    }
+
+    const access = getClassroomAccess(req, session);
+    if (!(access.isLearner || access.isTeacher || access.isAdmin)) {
+        res.status(403).json({ error: "Forbidden" });
+        return null;
+    }
+
+    return { session, access };
+}
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/classroom-state - Restore persisted live classroom state
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await findClassroomSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const { isLearner, isTeacher, isAdmin } = getClassroomAccess(req, session);
+        if (!(isLearner || isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        return res.json({
+            state: getStoredClassroomState(session.classroomState),
+        });
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/classroom-state failed");
+        return res.status(500).json({ error: "Failed to load classroom state" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// PATCH /api/sessions/:id/classroom-state - Persist teacher-controlled live state
+// --------------------------------------------------------------------------
+router.patch("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await findClassroomSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const { isTeacher, isAdmin } = getClassroomAccess(req, session);
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only the teacher can update classroom state" });
+        }
+
+        const patch = sanitizeClassroomStatePatch(req.body || {});
+        if (!Object.keys(patch).length) {
+            return res.status(400).json({ error: "No valid classroom state fields provided" });
+        }
+
+        const nextState = mergeClassroomState(session.classroomState, patch);
+        const updated = await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+            select: {
+                id: true,
+                classroomState: true,
+            },
+        });
+
+        return res.json({
+            ok: true,
+            state: getStoredClassroomState(updated.classroomState),
+        });
+    } catch (err) {
+        logger.error({ err }, "PATCH /sessions/:id/classroom-state failed");
+        return res.status(500).json({ error: "Failed to save classroom state" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/chat/messages - Load persisted classroom chat transcript
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        const limit = parseChatLimit(req.query.limit);
+        const before = parseBeforeCursor(req.query.before);
+        const where = {
+            sessionId,
+            ...(before ? { createdAt: { lt: before } } : {}),
+        };
+
+        const rows = await prisma.classroomMessage.findMany({
+            where,
+            orderBy: { createdAt: "desc" },
+            take: limit + 1,
+        });
+
+        const hasMore = rows.length > limit;
+        const pageRows = rows.slice(0, limit).reverse();
+        const viewerId = Number(req.viewUserId || req.user?.id);
+
+        return res.json({
+            ok: true,
+            messages: pageRows.map((row) =>
+                shapeClassroomMessage(row, context.access, viewerId)
+            ),
+            hasMore,
+            nextBefore: hasMore ? rows[limit - 1]?.createdAt?.toISOString?.() : null,
+        });
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/chat/messages failed");
+        return res.status(500).json({ error: "Failed to load chat messages" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/chat/messages - Persist a classroom chat message
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        // Rate-limit: max 5 messages per 10 seconds per user per session
+        const rateLimitUserId = Number(req.viewUserId || req.user?.id);
+        if (Number.isFinite(rateLimitUserId) && isChatRateLimited(sessionId, rateLimitUserId)) {
+            return res.status(429).json({
+                error: "Too many messages. Please wait a moment before sending again.",
+            });
+        }
+
+        const rawBody = typeof req.body?.text === "string" ? req.body.text : req.body?.body;
+        const body = sanitizeChatBody(rawBody);
+        if (!body) {
+            return res.status(400).json({ error: "Message cannot be empty" });
+        }
+
+        if (String(rawBody || "").trim().length > MAX_CHAT_MESSAGE_LENGTH) {
+            return res.status(400).json({
+                error: `Message must be ${MAX_CHAT_MESSAGE_LENGTH} characters or less`,
+            });
+        }
+
+        const senderId = Number(req.viewUserId || req.user?.id);
+        const sender = Number.isFinite(senderId)
+            ? await prisma.user.findUnique({
+                where: { id: senderId },
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    role: true,
+                },
+            })
+            : null;
+
+        const row = await prisma.classroomMessage.create({
+            data: {
+                sessionId,
+                senderId: sender?.id || null,
+                senderRole: getChatSenderRole(context.access, sender?.role || req.user?.role),
+                senderName: getDisplayName(sender) || getDisplayName(req.user) || null,
+                body,
+            },
+        });
+
+        return res.status(201).json({
+            ok: true,
+            message: shapeClassroomMessage(row, context.access, senderId),
+        });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/chat/messages failed");
+        return res.status(500).json({ error: "Failed to send chat message" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// DELETE /api/sessions/:id/chat/messages/:messageId - Soft-delete a message
+// --------------------------------------------------------------------------
+router.delete("/sessions/:id/chat/messages/:messageId", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        const existing = await prisma.classroomMessage.findFirst({
+            where: {
+                id: String(req.params.messageId || ""),
+                sessionId,
+            },
+        });
+
+        if (!existing) {
+            return res.status(404).json({ error: "Message not found" });
+        }
+
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const ownsMessage =
+            existing.senderId != null && Number(existing.senderId) === Number(viewerId);
+
+        if (!(ownsMessage || context.access.isTeacher || context.access.isAdmin)) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const row = await prisma.classroomMessage.update({
+            where: { id: existing.id },
+            data: {
+                deletedAt: existing.deletedAt || new Date(),
+                deletedById: Number.isFinite(viewerId) ? viewerId : null,
+            },
+        });
+
+        return res.json({
+            ok: true,
+            message: shapeClassroomMessage(row, context.access, viewerId),
+        });
+    } catch (err) {
+        logger.error({ err }, "DELETE /sessions/:id/chat/messages/:messageId failed");
+        return res.status(500).json({ error: "Failed to delete chat message" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/chat/export - Export classroom transcript as text
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/chat/export", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        const rows = await prisma.classroomMessage.findMany({
+            where: { sessionId },
+            orderBy: { createdAt: "asc" },
+        });
+
+        const exportedAt = new Date().toISOString();
+        const transcript = [
+            `Speexify classroom transcript`,
+            `Session: ${sessionId}`,
+            `Exported: ${exportedAt}`,
+            "",
+            ...rows.map(formatTranscriptLine),
+        ].join("\n");
+
+        return res
+            .status(200)
+            .set({
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Disposition": `attachment; filename="classroom-chat-${sessionId}.txt"`,
+            })
+            .send(transcript);
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/chat/export failed");
+        return res.status(500).json({ error: "Failed to export chat transcript" });
+    }
+});
+
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/notes - Save/update teacher notes during session
 // --------------------------------------------------------------------------

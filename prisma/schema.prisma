@@ -69,6 +69,7 @@ model User {
   // Support tickets + messages
   supportTickets  SupportTicket[]
   supportMessages SupportMessage[]
+  classroomMessages ClassroomMessage[]
 
   // ✨ Support ticket assignment (admin can assign tickets to staff)
   assignedSupportTickets SupportTicket[] @relation("AssignedSupportTickets")
@@ -308,6 +309,7 @@ model Session {
 
   // New: participant membership (many learners per session)
   participants SessionParticipant[]
+  classroomMessages ClassroomMessage[]
 
   createdAt                       DateTime      @default(now())
   updatedAt                       DateTime      @updatedAt
@@ -358,6 +360,30 @@ model SessionParticipant {
   @@index([sessionId])
   @@index([userId, status], map: "SessionParticipant_userId_status_idx")
   @@index([sessionId, status], map: "SessionParticipant_sessionId_status_idx")
+}
+
+model ClassroomMessage {
+  id String @id @default(cuid())
+
+  sessionId Int
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  senderId Int?
+  sender   User? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  senderRole String
+  senderName String?
+  body       String
+
+  deletedAt   DateTime?
+  deletedById Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId, createdAt])
+  @@index([senderId, createdAt])
+  @@index([deletedAt])
 }
 
 model SessionFeedback {
