@@ -24,15 +24,18 @@ import {
   getOrderById,
   orderExists,
 } from "../services/orderService.js";
-import { convertToEGP } from "../services/currencyService.js";
+import {
+  buildPaymentQuote,
+  normalizeDiscountCode,
+  resolvePaymentCountry,
+  validateDiscount,
+} from "../services/paymentPricingService.js";
 import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
 const CreateIntentBodySchema = z
   .object({
-    amountCents: z.coerce.number().int().positive(),
-    currency: z.string().trim().min(3).max(8).default("EGP"),
     orderId: z.string().trim().min(1).max(120),
     customer: z
       .object({
@@ -43,6 +46,7 @@ const CreateIntentBodySchema = z
       })
       .default({}),
     packageId: z.coerce.number().int().positive(),
+    countryCode: z.string().trim().length(2).optional().nullable(),
     discountCode: z.string().trim().max(64).optional().nullable(),
   })
   .strict();
@@ -66,78 +70,125 @@ router.post(
   validateRequest({ body: CreateIntentBodySchema }),
   async (req, res) => {
     try {
-      const { amountCents, currency, orderId, customer, packageId, discountCode } =
-        req.body;
+      const { orderId, customer, packageId, countryCode, discountCode } = req.body;
       const userId = req.user.id;
 
       logger.info({ userId, orderId, packageId }, "Initiating payment intent");
 
       // Check if order already exists (idempotency)
       if (await orderExists(orderId)) {
-        logger.warn({ orderId }, "Order already exists, returning existing");
         const existingOrder = await getOrderById(orderId);
 
+        if (!existingOrder) {
+          return res.status(404).json({
+            ok: false,
+            message: "Order not found",
+          });
+        }
+
+        if (existingOrder.userId !== userId) {
+          logger.warn(
+            { orderId, orderUserId: existingOrder.userId, requestUserId: userId },
+            "User tried to reuse another user's payment order"
+          );
+          return res.status(403).json({
+            ok: false,
+            message: "Access denied",
+          });
+        }
+
         // If order is already paid, don't allow re-payment
-        if (existingOrder?.status === "paid") {
+        if (existingOrder.status === "paid") {
           return res.status(400).json({
             ok: false,
             message: "This order has already been paid",
           });
         }
-      }
 
-      // Look up discount code ID if provided
-      let discountCodeId = null;
-      if (discountCode) {
-        const discount = await prisma.discountCode.findUnique({
-          where: { code: discountCode },
+        const retryIntention = await createPaymentIntention({
+          amountCents: Number(existingOrder.amountCents),
+          currency: String(existingOrder.currency || "EGP").toUpperCase(),
+          orderId,
+          billingData: customer,
         });
-        if (discount) {
-          discountCodeId = discount.id;
-        }
-      }
 
-      // Convert display currency to EGP for Paymob (Paymob integration only supports EGP)
-      let egpAmountCents = amountCents;
-      let exchangeRate = 1;
-
-      if (currency !== "EGP") {
-        // Frontend sends amount in display currency cents, convert to EGP cents
-        const displayAmount = amountCents / 100; // Convert cents to whole units
-        const conversion = await convertToEGP(displayAmount, currency);
-        egpAmountCents = conversion.egpAmount * 100; // Convert back to cents
-        exchangeRate = conversion.rate;
-
-        logger.info(
+        logger.warn(
           {
             orderId,
-            displayCurrency: currency,
-            displayAmountCents: amountCents,
-            egpAmountCents,
-            exchangeRate,
+            userId,
+            amountCents: existingOrder.amountCents,
+            currency: existingOrder.currency,
+            intentionId: retryIntention.intentionId,
           },
-          "Converted display currency to EGP"
+          "Order already exists, returning a new checkout intention for stored amount"
         );
+
+        return res.json({
+          ok: true,
+          orderId,
+          iframeUrl: retryIntention.checkoutUrl,
+          intentionId: retryIntention.intentionId,
+        });
       }
 
+      const pkg = await prisma.package.findUnique({
+        where: { id: Number(packageId) },
+      });
+
+      const normalizedDiscountCode = normalizeDiscountCode(discountCode);
+      const discount = normalizedDiscountCode
+        ? await prisma.discountCode.findUnique({
+            where: { code: normalizedDiscountCode },
+          })
+        : null;
+      const validDiscount = validateDiscount(discount);
+
+      if (normalizedDiscountCode && !validDiscount) {
+        return res.status(400).json({
+          ok: false,
+          code: "INVALID_DISCOUNT",
+          message: "Discount code is invalid or no longer available",
+        });
+      }
+
+      const resolvedCountry = await resolvePaymentCountry(req, countryCode);
+      const quote = await buildPaymentQuote({
+        pkg,
+        discount: validDiscount,
+        countryCode: resolvedCountry.countryCode,
+      });
+
+      logger.info(
+        {
+          orderId,
+          packageId,
+          countryCode: quote.countryCode,
+          countrySource: resolvedCountry.source,
+          displayCurrency: quote.displayCurrency,
+          displayAmountCents: quote.displayAmountCents,
+          egpAmountCents: quote.egpAmountCents,
+          discountCodeId: quote.discountCodeId,
+        },
+        "Server-computed payment quote"
+      );
+
       // Create pending order in database BEFORE calling Paymob
-      // Store both display amount and EGP amount for audit
       await createPendingOrder({
         orderId,
         userId,
         packageId,
-        amountCents: egpAmountCents, // Store EGP amount (what Paymob charges)
-        currency: "EGP", // Always EGP in our system
-        displayAmountCents: amountCents, // Original display amount
-        displayCurrency: currency, // Original display currency
+        amountCents: quote.egpAmountCents,
+        currency: quote.egpCurrency,
+        displayAmountCents: quote.displayAmountCents,
+        displayCurrency: quote.displayCurrency,
         customerEmail: customer.email,
         customerPhone: customer.phone,
-        discountCodeId,
+        discountCodeId: quote.discountCodeId,
       });
 
       // Create Paymob payment intention (ALWAYS in EGP)
       const intention = await createPaymentIntention({
-        amountCents: egpAmountCents,
+        amountCents: quote.egpAmountCents,
         currency: "EGP", // Always EGP for Paymob
         orderId,
         billingData: customer,
@@ -154,11 +205,30 @@ router.post(
 
       return res.json({
         ok: true,
+        orderId,
         iframeUrl: intention.checkoutUrl,
         intentionId: intention.intentionId,
+        pricing: {
+          packageId: quote.packageId,
+          countryCode: quote.countryCode,
+          countrySource: resolvedCountry.source,
+          displayAmountCents: quote.displayAmountCents,
+          displayCurrency: quote.displayCurrency,
+          amountCents: quote.egpAmountCents,
+          currency: quote.egpCurrency,
+          discountPercentage: quote.discountPercentage,
+        },
       });
     } catch (err) {
       logger.error({ err }, "Create Intent Error");
+
+      if (err?.status && err.status >= 400 && err.status < 500) {
+        return res.status(err.status).json({
+          ok: false,
+          code: err.code,
+          message: err.message || "Invalid payment request",
+        });
+      }
 
       // Show Paymob error details in development only
       if (process.env.NODE_ENV !== "production") {

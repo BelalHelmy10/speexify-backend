@@ -14,6 +14,24 @@ import {
 
 const router = Router();
 
+function parseDateBoundary(value, boundary) {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+  const parsed = dateOnly
+    ? (() => {
+        const [year, month, day] = trimmed.split("-").map(Number);
+        return boundary === "end"
+          ? new Date(year, month - 1, day, 23, 59, 59, 999)
+          : new Date(year, month - 1, day, 0, 0, 0, 0);
+      })()
+    : new Date(trimmed);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 // GET /api/admin/sessions - List all sessions (admin)
 router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -22,7 +40,13 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       userId = "",
       teacherId = "",
       type = "",
+      status = "",
       range = "",
+      from = "",
+      to = "",
+      needsTeacher = "",
+      needsFeedback = "",
+      sort = "",
     } = req.query;
     const take = parseBoundedInt(req.query.limit, {
       fallback: ADMIN_SESSIONS_DEFAULT_LIMIT,
@@ -51,6 +75,19 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       where.type = type;
     }
 
+    if (["scheduled", "completed", "canceled"].includes(status)) {
+      where.status = status;
+    }
+
+    if (needsTeacher === "1" || needsTeacher === "true") {
+      where.teacherId = null;
+    }
+
+    if (needsFeedback === "1" || needsFeedback === "true") {
+      where.status = "completed";
+      where.feedbackScore = null;
+    }
+
     if (q) {
       where.AND = [
         ...(where.AND || []),
@@ -59,6 +96,20 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             { title: { contains: q, mode: "insensitive" } },
             { joinUrl: { contains: q, mode: "insensitive" } },
           ],
+        },
+      ];
+    }
+
+    const fromDate = parseDateBoundary(from, "start");
+    const toDate = parseDateBoundary(to, "end");
+    if (fromDate || toDate) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          startAt: {
+            ...(fromDate ? { gte: fromDate } : {}),
+            ...(toDate ? { lte: toDate } : {}),
+          },
         },
       ];
     }
@@ -81,6 +132,11 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       ];
     }
 
+    const orderBy =
+      sort === "start_asc"
+        ? [{ startAt: "asc" }, { id: "asc" }]
+        : [{ startAt: "desc" }, { id: "desc" }];
+
     const [items, total] = await Promise.all([
       prisma.session.findMany({
         where,
@@ -95,7 +151,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             },
           },
         },
-        orderBy: [{ startAt: "desc" }, { id: "desc" }],
+        orderBy,
         take,
         skip,
       }),

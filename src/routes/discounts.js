@@ -1,24 +1,30 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
+import {
+  normalizeDiscountCode,
+  validateDiscount,
+} from "../services/paymentPricingService.js";
 
 const router = Router();
 
 router.post("/validate", async (req, res) => {
-  const { code } = req.body;
+  const code = normalizeDiscountCode(req.body?.code);
 
-  const discount = await prisma.discountCode.findFirst({
-    where: {
-      code: code.toUpperCase(),
-      active: true,
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-    },
-  });
-
-  if (!discount) {
+  if (!code) {
     return res.status(400).json({ error: "Invalid code" });
   }
 
-  res.json({ percentage: discount.percentage });
+  const discount = await prisma.discountCode.findUnique({
+    where: { code },
+  });
+
+  const validDiscount = validateDiscount(discount);
+
+  if (!validDiscount) {
+    return res.status(400).json({ error: "Invalid code" });
+  }
+
+  res.json({ percentage: validDiscount.percentage });
 });
 
 export default router;
