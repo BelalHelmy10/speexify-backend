@@ -5,6 +5,7 @@ const publicUserSelect = {
   id: true,
   email: true,
   name: true,
+  avatarUrl: true,
   role: true,
   timezone: true,
   language: true,

@@ -58,6 +58,12 @@ import {
   recordHttpRequestStart,
   toPrometheusMetrics,
 } from "./observability/metrics.js";
+import {
+  deleteAvatarFile,
+  profileAvatarUpload,
+  resolveAvatarPath,
+  saveAvatarFile,
+} from "./lib/profileAvatarUpload.js";
 
 const app = express();
 
@@ -312,6 +318,15 @@ const ProfilePatchBodySchema = z
     }
   });
 
+function handleProfileAvatarUpload(req, res, next) {
+  profileAvatarUpload.single("avatar")(req, res, (error) => {
+    if (!error) return next();
+    return res.status(400).json({
+      error: error.message || "Failed to upload profile photo",
+    });
+  });
+}
+
 const ChangePasswordBodySchema = z
   .object({
     currentPassword: z.string().min(1),
@@ -461,6 +476,7 @@ if (ALLOW_LEGACY_REGISTER) {
           id: true,
           email: true,
           name: true,
+          avatarUrl: true,
           role: true,
           timezone: true,
           language: true,
@@ -496,6 +512,7 @@ app.get("/api/me", requireAuth, async (req, res) => {
         id: true,
         email: true,
         name: true,
+        avatarUrl: true,
         role: true,
         timezone: true,
         language: true,
@@ -538,6 +555,7 @@ app.patch(
           id: true,
           email: true,
           name: true,
+          avatarUrl: true,
           role: true,
           timezone: true,
           language: true,
@@ -553,6 +571,7 @@ app.patch(
         req.session.user = {
           ...req.session.user,
           name: updated.name,
+          avatarUrl: updated.avatarUrl,
           timezone: updated.timezone,
           language: updated.language,
         };
@@ -565,6 +584,116 @@ app.patch(
     }
   }
 );
+
+app.post(
+  "/api/me/avatar",
+  requireAuth,
+  handleProfileAvatarUpload,
+  async (req, res) => {
+    let nextAvatarUrl = "";
+    try {
+      const current = await prisma.user.findUnique({
+        where: { id: req.viewUserId },
+        select: { avatarUrl: true },
+      });
+
+      nextAvatarUrl = saveAvatarFile(req.viewUserId, req.file);
+      const updated = await prisma.user.update({
+        where: { id: req.viewUserId },
+        data: { avatarUrl: nextAvatarUrl },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          avatarUrl: true,
+          role: true,
+          timezone: true,
+          language: true,
+          notificationPreferences: true,
+          calendarFeedRevokedAt: true,
+          passwordChangedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      deleteAvatarFile(current?.avatarUrl);
+
+      if (req.viewUserId === req.user.id) {
+        req.session.user = {
+          ...req.session.user,
+          avatarUrl: updated.avatarUrl,
+        };
+      }
+
+      res.json(updated);
+    } catch (error) {
+      logger.warn(
+        { err: error, userId: req.viewUserId },
+        "Failed to upload profile photo"
+      );
+      deleteAvatarFile(nextAvatarUrl);
+      res
+        .status(error.statusCode || 500)
+        .json({ error: error.message || "Failed to upload profile photo" });
+    }
+  }
+);
+
+app.delete("/api/me/avatar", requireAuth, async (req, res) => {
+  try {
+    const current = await prisma.user.findUnique({
+      where: { id: req.viewUserId },
+      select: { avatarUrl: true },
+    });
+
+    const updated = await prisma.user.update({
+      where: { id: req.viewUserId },
+      data: { avatarUrl: null },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        avatarUrl: true,
+        role: true,
+        timezone: true,
+        language: true,
+        notificationPreferences: true,
+        calendarFeedRevokedAt: true,
+        passwordChangedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    deleteAvatarFile(current?.avatarUrl);
+
+    if (req.viewUserId === req.user.id) {
+      req.session.user = {
+        ...req.session.user,
+        avatarUrl: null,
+      };
+    }
+
+    res.json(updated);
+  } catch (error) {
+    logger.warn(
+      { err: error, userId: req.viewUserId },
+      "Failed to remove profile photo"
+    );
+    res.status(500).json({ error: "Failed to remove profile photo" });
+  }
+});
+
+app.get("/api/me/avatar/:filename", requireAuth, (req, res) => {
+  const filePath = resolveAvatarPath(req.params.filename);
+  if (!filePath) return res.status(404).json({ error: "Not found" });
+  res.sendFile(filePath, (error) => {
+    if (error && !res.headersSent) {
+      res.status(error.statusCode || 404).json({ error: "Not found" });
+    }
+  });
+});
 
 app.get("/api/me/notification-preferences", requireAuth, async (req, res) => {
   try {
