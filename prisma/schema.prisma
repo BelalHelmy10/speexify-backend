@@ -203,6 +203,22 @@ model SupportTicket {
   // Soft resolution timestamps
   resolvedAt DateTime?
 
+  firstResponseAt    DateTime?
+  lastCustomerReplyAt DateTime?
+  lastStaffReplyAt   DateTime?
+  slaDueAt           DateTime?
+  closedAt           DateTime?
+  reopenedAt         DateTime?
+  reopenCount        Int       @default(0)
+  satisfactionRating Int?
+  satisfactionComment String?
+  tags               String[]  @default([])
+  source             String    @default("widget")
+  relatedSessionId   Int?
+  relatedPaymentId   Int?
+  assignedTeamId     Int?
+  aiStatus           String    @default("off")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -216,6 +232,8 @@ model SupportTicket {
   @@index([category, updatedAt])
   @@index([priority, updatedAt])
   @@index([assignedToId, updatedAt])
+  @@index([slaDueAt])
+  @@index([lastCustomerReplyAt])
   @@index([userId, status, updatedAt], map: "SupportTicket_userId_status_updatedAt_idx")
   @@index([status, priority, updatedAt], map: "SupportTicket_status_priority_updatedAt_idx")
 }
