@@ -30,6 +30,7 @@ model Package {
   startingAtUSD   Int?
   userPackages    UserPackage[]
   orders          Order[]
+  deletedAt       DateTime?
 }
 
 model User {
@@ -82,8 +83,10 @@ model User {
 
   // ✨ NEW: User availability for scheduling
   availabilities Availability[]
+  deletedAt      DateTime?
 
   @@index([role])
+  @@index([deletedAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

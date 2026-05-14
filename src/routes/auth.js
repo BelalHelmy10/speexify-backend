@@ -9,7 +9,7 @@ import {
   sessionCookieOptions,
 } from "../config/session.js";
 import { sendEmail } from "../services/emailService.js";
-import { loginLimiter } from "../middleware/rateLimit.js";
+import { loginLimiter, authLimiter, emailCodeLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
 import {
@@ -73,6 +73,52 @@ async function randomHashedPassword() {
   return await bcrypt.hash(rand, 10);
 }
 
+function getErrorMessage(err) {
+  return (err && (err.message || err.toString())) || "unknown_error";
+}
+
+function isGoogleCertificateFetchError(message) {
+  const msg = String(message || "").toLowerCase();
+  return [
+    "failed to retrieve verification certificates",
+    "getaddrinfo",
+    "eai_again",
+    "enotfound",
+    "etimedout",
+    "timeout",
+    "network",
+  ].some((marker) => msg.includes(marker));
+}
+
+function isGoogleTokenVerificationError(message) {
+  const msg = String(message || "").toLowerCase();
+  return [
+    "wrong number of segments",
+    "invalid_token",
+    "token used too late",
+    "token used too early",
+    "audience mismatch",
+    "wrong recipient",
+    "invalid token signature",
+    "invalid signature",
+    "malformed",
+    "expired",
+    "no pem found",
+    "can't parse token envelope",
+    "can't parse token payload",
+    "invalid value",
+  ].some((marker) => msg.includes(marker));
+}
+
+function googleErrorBody(error, message, details) {
+  return {
+    ok: false,
+    error,
+    message,
+    ...(process.env.NODE_ENV !== "production" ? { details } : {}),
+  };
+}
+
 /* ========================================================================== */
 /*                                   LOGIN                                   */
 /* ========================================================================== */
@@ -113,7 +159,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 /*                           GOOGLE OAUTH (ID TOKEN)                          */
 /* ========================================================================== */
 
-router.post("/google", async (req, res) => {
+router.post("/google", authLimiter, async (req, res) => {
   try {
     if (!GOOGLE_CLIENT_ID) {
       logger.error(
@@ -135,10 +181,42 @@ router.post("/google", async (req, res) => {
       "[google] verify start"
     );
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
-    });
+    let ticket;
+    try {
+      ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: GOOGLE_CLIENT_ID,
+      });
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      logger.warn({ err: msg, origin }, "[google] token verification failed");
+
+      if (isGoogleCertificateFetchError(msg)) {
+        return res
+          .status(503)
+          .json(
+            googleErrorBody(
+              "google_verification_unavailable",
+              "Google sign-in could not be verified right now. Please try again in a moment.",
+              msg
+            )
+          );
+      }
+
+      if (isGoogleTokenVerificationError(msg)) {
+        return res
+          .status(401)
+          .json(
+            googleErrorBody(
+              "invalid_google_token",
+              "Google sign-in could not be verified. Please try again.",
+              msg
+            )
+          );
+      }
+
+      throw err;
+    }
 
     const payload = ticket.getPayload();
     const email = String(payload?.email || "")
@@ -212,23 +290,17 @@ router.post("/google", async (req, res) => {
       return res.json({ ok: true, user: req.session.user });
     });
   } catch (err) {
-    const msg = (err && (err.message || err.toString())) || "unknown_error";
-    logger.error({ err: msg }, "[google] verify error");
-
-    const tokenErr = [
-      "Wrong number of segments",
-      "invalid_token",
-      "Token used too late",
-      "audience mismatch",
-      "Invalid token signature",
-      "malformed",
-      "expired",
-    ].some((s) => msg.toLowerCase().includes(s.toLowerCase()));
-
-    if (tokenErr) {
-      return res.status(401).json({ ok: false, error: "invalid_google_token" });
-    }
-    return res.status(500).json({ ok: false, error: "server_error" });
+    const msg = getErrorMessage(err);
+    logger.error({ err: msg }, "[google] login error");
+    return res
+      .status(500)
+      .json(
+        googleErrorBody(
+          "server_error",
+          "Google login failed on the server. Please check the backend logs.",
+          msg
+        )
+      );
   }
 });
 
@@ -312,7 +384,7 @@ router.get("/ws-token", requireAuth, (req, res) => {
 /*                          PASSWORD RESET (2-step)                           */
 /* ========================================================================== */
 
-router.post("/password/reset/start", async (req, res) => {
+router.post("/password/reset/start", emailCodeLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -369,7 +441,7 @@ router.post("/password/reset/start", async (req, res) => {
   }
 });
 
-router.post("/password/reset/complete", async (req, res) => {
+router.post("/password/reset/complete", emailCodeLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -457,7 +529,7 @@ router.post("/password/reset/complete", async (req, res) => {
 /*                 EMAIL VERIFICATION REGISTER (2-step)                       */
 /* ========================================================================== */
 
-router.post("/register/start", async (req, res) => {
+router.post("/register/start", emailCodeLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -517,7 +589,7 @@ router.post("/register/start", async (req, res) => {
   }
 });
 
-router.post("/register/complete", async (req, res) => {
+router.post("/register/complete", emailCodeLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()

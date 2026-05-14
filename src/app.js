@@ -123,7 +123,11 @@ const SECURITY_TXT = [
 
 app.use(express.json());
 app.set("trust proxy", 1);
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  })
+);
 
 // Observability baseline: request context + structured access logs + metrics
 app.use((req, res, next) => {
