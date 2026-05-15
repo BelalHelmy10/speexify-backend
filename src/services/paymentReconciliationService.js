@@ -30,6 +30,18 @@ function hashPayload(payload) {
   return crypto.createHash("sha256").update(serialized).digest("hex");
 }
 
+export function hashWebhookSignature(signature) {
+  if (typeof signature !== "string") return null;
+
+  const normalized = signature.trim();
+  if (!normalized) return null;
+
+  return `sha256:${crypto
+    .createHash("sha256")
+    .update(normalized)
+    .digest("hex")}`;
+}
+
 async function ensureWebhookEventsTable() {
   if (ensureTablePromise) {
     return ensureTablePromise;
@@ -105,6 +117,7 @@ export async function beginPaymobWebhookReconciliation({
   await ensureWebhookEventsTable();
 
   const requestHash = hashPayload(payload);
+  const signatureHash = hashWebhookSignature(signature);
 
   const insertedRows = await prisma.$queryRaw`
     INSERT INTO payment_webhook_events (
@@ -128,7 +141,7 @@ export async function beginPaymobWebhookReconciliation({
       'processing',
       1,
       ${requestHash},
-      ${signature},
+      ${signatureHash},
       ${payload ? JSON.stringify(payload) : null}::jsonb,
       NOW(),
       NOW()
@@ -143,6 +156,7 @@ export async function beginPaymobWebhookReconciliation({
       recordId: Number(insertedRows[0].id),
       attemptCount: Number(insertedRows[0].attempt_count || 1),
       requestHash,
+      signatureHash,
     };
   }
 
@@ -213,10 +227,11 @@ export async function beginPaymobWebhookReconciliation({
 
   return {
     state: "retrying",
-    recordId: Number(claimedRows[0].id),
-    attemptCount: Number(claimedRows[0].attempt_count || 1),
-    requestHash,
-  };
+      recordId: Number(claimedRows[0].id),
+      attemptCount: Number(claimedRows[0].attempt_count || 1),
+      requestHash,
+      signatureHash,
+    };
 }
 
 export async function markWebhookEventProcessed(
@@ -287,4 +302,3 @@ export async function markWebhookEventFailed(
     );
   }
 }
-

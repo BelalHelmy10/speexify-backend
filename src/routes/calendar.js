@@ -2,13 +2,9 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
-import { SESSION_SECRET } from "../config/env.js";
+import { CALENDAR_FEED_SECRET } from "../config/env.js";
 
 const router = Router();
-
-// Use a dedicated secret if provided; fall back to SESSION_SECRET.
-const FEED_SECRET =
-  process.env.CALENDAR_FEED_SECRET || SESSION_SECRET || "dev-secret";
 
 function base64url(buf) {
   return Buffer.from(buf)
@@ -29,7 +25,9 @@ function base64urlDecodeToString(s) {
 function signToken(payloadObj) {
   const payload = base64url(JSON.stringify(payloadObj));
   const sig = base64url(
-    crypto.createHmac("sha256", FEED_SECRET).update(payload).digest()
+    crypto.createHmac("sha256", CALENDAR_FEED_SECRET)
+      .update(payload)
+      .digest()
   );
   return `${payload}.${sig}`;
 }
@@ -41,7 +39,9 @@ function verifyToken(token) {
 
   const [payload, sig] = parts;
   const expected = base64url(
-    crypto.createHmac("sha256", FEED_SECRET).update(payload).digest()
+    crypto.createHmac("sha256", CALENDAR_FEED_SECRET)
+      .update(payload)
+      .digest()
   );
 
   if (sig.length !== expected.length) return null;

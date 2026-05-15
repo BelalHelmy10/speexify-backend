@@ -5,6 +5,10 @@ import { z } from "zod";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { formatZodError } from "../middleware/validateRequest.js";
 import { logger } from "../lib/logger.js";
+import {
+  buildAssessmentReviewUpdateData,
+  parseAssessmentReviewBody,
+} from "../services/assessmentReviewService.js";
 
 const router = Router();
 
@@ -114,8 +118,14 @@ router.get(
             packageId: true,
             status: true,
             score: true,
+            cefr: true,
+            feedback: true,
+            reviewMeta: true,
+            reviewedAt: true,
+            reviewedById: true,
             wordCount: true,
             createdAt: true,
+            updatedAt: true,
           },
         }),
         prisma.assessmentSubmission.count({ where }),
@@ -136,29 +146,46 @@ router.post(
   async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const {
-        score = null,
-        cefr = null,
-        feedback = null,
-        meta = {},
-      } = req.body || {};
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "Invalid assessment id" });
+      }
+
+      const parsed = parseAssessmentReviewBody(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: formatZodError(parsed.error, "body"),
+        });
+      }
+
       const updated = await prisma.assessmentSubmission.update({
         where: { id },
-        data: {
-          status: "reviewed",
-          score: score !== null ? Number(score) : null,
-          meta: meta || {},
-        },
+        data: buildAssessmentReviewUpdateData({
+          review: parsed.data,
+          reviewerId: req.user.id,
+        }),
         select: {
           id: true,
+          userId: true,
+          packageId: true,
           status: true,
           score: true,
+          cefr: true,
+          feedback: true,
+          reviewMeta: true,
+          reviewedAt: true,
+          reviewedById: true,
+          wordCount: true,
           createdAt: true,
           updatedAt: true,
         },
       });
       res.json({ ok: true, assessment: updated });
     } catch (e) {
+      if (e?.code === "P2025") {
+        return res.status(404).json({ error: "Assessment not found" });
+      }
+
       logger.error({ err: e }, "admin.assessments.review error");
       res.status(500).json({ error: "Failed to review assessment" });
     }

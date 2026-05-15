@@ -408,6 +408,7 @@ export async function anonymizeUserForPrivacyDeletion({ userId }) {
       availabilityDeleted,
       onboardingFormsSanitized,
       assessmentsSanitized,
+      assessmentReviewsUnassigned,
       supportMessagesSanitized,
       supportTicketsSanitized,
       supportInternalNotesSanitized,
@@ -436,6 +437,14 @@ export async function anonymizeUserForPrivacyDeletion({ userId }) {
         where: { userId: uid },
         data: {
           text: PRIVACY_REDACTED_TEXT,
+          feedback: null,
+          reviewMeta: null,
+        },
+      }),
+      tx.assessmentSubmission.updateMany({
+        where: { reviewedById: uid },
+        data: {
+          reviewedById: null,
         },
       }),
       tx.supportMessage.updateMany({
@@ -471,6 +480,7 @@ export async function anonymizeUserForPrivacyDeletion({ userId }) {
         availabilityDeleted: availabilityDeleted.count,
         onboardingFormsSanitized: onboardingFormsSanitized.count,
         assessmentsSanitized: assessmentsSanitized.count,
+        assessmentReviewsUnassigned: assessmentReviewsUnassigned.count,
         supportMessagesSanitized: supportMessagesSanitized.count,
         supportTicketsSanitized: supportTicketsSanitized.count,
         supportInternalNotesSanitized: supportInternalNotesSanitized.count,
@@ -592,6 +602,11 @@ export async function buildUserPrivacyExport(userId) {
         wordCount: true,
         status: true,
         score: true,
+        cefr: true,
+        feedback: true,
+        reviewMeta: true,
+        reviewedAt: true,
+        reviewedById: true,
         createdAt: true,
         updatedAt: true,
       },

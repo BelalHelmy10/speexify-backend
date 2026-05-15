@@ -309,15 +309,23 @@ router.post("/webhook", async (req, res) => {
   try {
     const hmac = req.query.hmac;
     const body = req.body;
+    const hmacLength = typeof hmac === "string" ? hmac.length : null;
 
     logger.info(
-      { hasHmac: !!hmac, hasBody: !!body },
+      { hasHmac: !!hmac, hmacLength, hasBody: !!body },
       "Paymob Webhook Received"
     );
 
     // 1. Verify HMAC signature
     if (!verifyWebhookHMAC(body, hmac)) {
-      logger.warn({ hmac }, "Webhook HMAC verification failed");
+      logger.warn(
+        {
+          hasHmac: !!hmac,
+          hmacLength,
+          hmacType: Array.isArray(hmac) ? "array" : typeof hmac,
+        },
+        "Webhook HMAC verification failed"
+      );
       return res.status(401).json({ error: "Invalid HMAC signature" });
     }
 

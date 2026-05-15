@@ -5,25 +5,17 @@
 export const isProd = process.env.NODE_ENV === "production";
 export const isTest = process.env.NODE_ENV === "test";
 
+const DEV_SESSION_SECRET = "dev-secret-change-me";
+const INSECURE_SECRET_VALUES = new Set([
+  "dev-secret-change-me",
+  "dev-secret",
+  "secret",
+  "changeme",
+  "change-me",
+]);
+
 // Port
 export const PORT = process.env.PORT ? Number(process.env.PORT) : 5050;
-
-// Sessions / cookies
-export const SESSION_SECRET =
-  process.env.SESSION_SECRET || "dev-secret-change-me";
-
-if (isProd && !process.env.SESSION_SECRET) {
-  throw new Error("SESSION_SECRET must be set in production");
-}
-
-// Redis
-export const REDIS_URL = process.env.REDIS_URL || "";
-
-if (isProd && !REDIS_URL) {
-  throw new Error(
-    "REDIS_URL must be set in production (required for sessions)",
-  );
-}
 
 function parseBooleanEnv(name, fallback = false) {
   const rawValue = process.env[name];
@@ -58,6 +50,64 @@ function parseUnitIntervalEnv(name, fallback) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed > 1) return fallback;
   return parsed;
+}
+
+function readSecretEnv(name, fallback = "") {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === "") return fallback;
+  return String(rawValue).trim();
+}
+
+function requireProductionSecret(name, value, { minLength = 32 } = {}) {
+  if (!isProd) return;
+
+  if (!value) {
+    throw new Error(`${name} must be set in production`);
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (
+    INSECURE_SECRET_VALUES.has(normalized) ||
+    normalized.includes("change-me") ||
+    normalized.includes("dev-secret")
+  ) {
+    throw new Error(`${name} must not use an insecure development secret`);
+  }
+
+  if (String(value).length < minLength) {
+    throw new Error(`${name} must be at least ${minLength} characters`);
+  }
+}
+
+// Sessions / cookies
+const rawSessionSecret = readSecretEnv("SESSION_SECRET");
+export const SESSION_SECRET = rawSessionSecret || DEV_SESSION_SECRET;
+
+if (isProd && !rawSessionSecret) {
+  throw new Error("SESSION_SECRET must be set in production");
+}
+
+requireProductionSecret("SESSION_SECRET", SESSION_SECRET);
+
+export const WS_AUTH_TOKEN_SECRET = readSecretEnv(
+  "WS_AUTH_TOKEN_SECRET",
+  SESSION_SECRET
+);
+requireProductionSecret("WS_AUTH_TOKEN_SECRET", WS_AUTH_TOKEN_SECRET);
+
+export const CALENDAR_FEED_SECRET = readSecretEnv(
+  "CALENDAR_FEED_SECRET",
+  SESSION_SECRET
+);
+requireProductionSecret("CALENDAR_FEED_SECRET", CALENDAR_FEED_SECRET);
+
+// Redis
+export const REDIS_URL = process.env.REDIS_URL || "";
+
+if (isProd && !REDIS_URL) {
+  throw new Error(
+    "REDIS_URL must be set in production (required for sessions)",
+  );
 }
 
 // Session runtime behavior

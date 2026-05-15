@@ -17,12 +17,6 @@ import { logger } from "../lib/logger.js";
 
 const MemoryStore = session.MemoryStore;
 
-if (!SESSION_SECRET) {
-  logger.warn(
-    "[session] SESSION_SECRET is missing. Falling back to an insecure dev secret."
-  );
-}
-
 // Create Redis client/store once (module singleton).
 let redisClient = null;
 let store = new MemoryStore();
@@ -153,7 +147,7 @@ await initializeSessionStore();
 export const sessionMiddleware = session({
   name: SESSION_COOKIE_NAME,
   store,
-  secret: SESSION_SECRET || "dev-secret",
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   proxy: true,

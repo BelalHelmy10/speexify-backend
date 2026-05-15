@@ -40,6 +40,7 @@ import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 import { validateRequest, formatZodError } from "./middleware/validateRequest.js";
+import { contactEmailLimiter, contactIpLimiter } from "./middleware/rateLimit.js";
 import { logger } from "./lib/logger.js";
 import notificationsRoutes from "./routes/notifications.js";
 import devEmailTestRoutes from "./routes/devEmailTest.js";
@@ -285,6 +286,32 @@ function validatePasswordStrength(password, label = "New password") {
   return null;
 }
 
+const HTML_ESCAPE_CHARS = Object.freeze({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  "\"": "&quot;",
+  "'": "&#39;",
+});
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => HTML_ESCAPE_CHARS[char]);
+}
+
+function safeDisplayText(value, fallback = "-") {
+  const text = String(value ?? "").trim();
+  return text ? escapeHtml(text) : fallback;
+}
+
+function safeEmailSubject(value) {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+}
+
 const ContactBodySchema = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -294,6 +321,7 @@ const ContactBodySchema = z
     role: z.string().trim().max(80).optional(),
     topic: z.string().trim().max(120).optional(),
     budget: z.string().trim().max(80).optional(),
+    locale: z.enum(["en", "ar"]).optional(),
     message: z.string().trim().min(1).max(5000),
   })
   .strict();
@@ -422,25 +450,28 @@ app.get("/api/observability/summary", requireAuth, requireAdmin, (req, res) => {
 /* ========================================================================== */
 // NOTE: /api/packages is now handled by packagesRoutes (removed duplicate)
 
-app.post("/api/contact", validateRequest({ body: ContactBodySchema }), async (req, res) => {
+app.post("/api/contact", contactIpLimiter, validateRequest({ body: ContactBodySchema }), contactEmailLimiter, async (req, res) => {
   const { name, email, company, phone, role, topic, budget, message } =
     req.body;
+  const subject = safeEmailSubject(
+    `[Contact] ${topic || "General"} - ${name || "Website visitor"}`
+  );
 
   const html = `
     <h2>New contact form message</h2>
-    <p><b>Name:</b> ${name}</p>
-    <p><b>Email:</b> ${email}</p>
-    <p><b>Company:</b> ${company || "-"}</p>
-    <p><b>Phone:</b> ${phone || "-"}</p>
-    <p><b>Role:</b> ${role || "-"}</p>
-    <p><b>Topic:</b> ${topic || "-"}</p>
-    <p><b>Budget:</b> ${budget || "-"}</p>
+    <p><b>Name:</b> ${safeDisplayText(name)}</p>
+    <p><b>Email:</b> ${safeDisplayText(email)}</p>
+    <p><b>Company:</b> ${safeDisplayText(company)}</p>
+    <p><b>Phone:</b> ${safeDisplayText(phone)}</p>
+    <p><b>Role:</b> ${safeDisplayText(role)}</p>
+    <p><b>Topic:</b> ${safeDisplayText(topic)}</p>
+    <p><b>Budget:</b> ${safeDisplayText(budget)}</p>
     <hr/>
-    <pre style="font: inherit; white-space: pre-wrap;">${message}</pre>
+    <pre style="font: inherit; white-space: pre-wrap;">${escapeHtml(message)}</pre>
   `;
 
   try {
-    await sendEmail("hello@speexify.com", `[Contact] ${topic} — ${name}`, html);
+    await sendEmail("hello@speexify.com", subject || "[Contact] New message", html);
     res.json({ ok: true });
   } catch (e) {
     console.error(e);

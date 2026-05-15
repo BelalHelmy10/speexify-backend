@@ -1,25 +1,21 @@
 // src/lib/prisma.js
 import { PrismaClient } from "@prisma/client";
 
-/* 👇 ADD THIS BLOCK */
-if (process.env.DATABASE_URL) {
-  const u = new URL(process.env.DATABASE_URL);
-  console.log("[PRISMA BOOT] DATABASE_URL →", u.hostname, "port:", u.port);
-} else {
-  console.log("[PRISMA BOOT] DATABASE_URL is MISSING");
-}
-/* 👆 END ADD */
-
 const globalForPrisma = globalThis;
+const isDevelopment = process.env.NODE_ENV === "development";
+const queryLoggingFlag = String(process.env.PRISMA_LOG_QUERIES || "")
+  .trim()
+  .toLowerCase();
+const shouldLogQueries =
+  isDevelopment && ["1", "true", "yes", "on"].includes(queryLoggingFlag);
+const prismaLogLevels = shouldLogQueries
+  ? ["query", "error", "warn"]
+  : ["error", "warn"];
 
-// Log a bit more in dev, only problems in prod
 const prismaClient =
   globalForPrisma.prisma ||
   new PrismaClient({
-    log:
-      process.env.NODE_ENV === "development"
-        ? ["error", "warn"] // Removed "query"
-        : ["error", "warn"],
+    log: prismaLogLevels,
   });
 
 if (process.env.NODE_ENV !== "production") {

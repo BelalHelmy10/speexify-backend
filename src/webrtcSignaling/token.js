@@ -1,10 +1,7 @@
 // src/webrtcSignaling/token.js
 
 import crypto from "node:crypto";
-import { SESSION_SECRET } from "../config/env.js";
-
-const WS_AUTH_TOKEN_SECRET =
-  process.env.WS_AUTH_TOKEN_SECRET || SESSION_SECRET || "dev-secret-change-me";
+import { WS_AUTH_TOKEN_SECRET } from "../config/env.js";
 
 const DEFAULT_WS_AUTH_TTL_MS = (() => {
   const raw = Number(process.env.WS_AUTH_TOKEN_TTL_MS);
@@ -30,7 +27,10 @@ function base64urlDecode(input) {
 
 function signPayload(encodedPayload) {
   return base64urlEncode(
-    crypto.createHmac("sha256", WS_AUTH_TOKEN_SECRET).update(encodedPayload).digest()
+    crypto
+      .createHmac("sha256", WS_AUTH_TOKEN_SECRET)
+      .update(encodedPayload)
+      .digest()
   );
 }
 
