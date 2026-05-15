@@ -7,6 +7,7 @@ import { logger } from "../lib/logger.js";
 import { ALLOWED_ORIGINS, SESSION_SECRET, isProd } from "../config/env.js";
 import { SESSION_COOKIE_NAME } from "../config/session.js";
 import { sessionMiddleware } from "../middleware/session.js";
+import { verifyWsAuthToken } from "../webrtcSignaling/token.js";
 
 const OPEN_STATE = WebSocket.OPEN;
 const MAX_MESSAGE_SIZE_BYTES = 1_048_576;
@@ -389,10 +390,79 @@ async function getSessionData(sessionId) {
   });
 }
 
+function getWsTokenFromRequest(request) {
+  try {
+    const parsed = new URL(request.url || "", "http://localhost");
+    const token = parsed.searchParams.get("token");
+    if (token) return token;
+  } catch {
+    // Ignore URL parsing errors.
+  }
+
+  const protocols = request.headers["sec-websocket-protocol"];
+  if (typeof protocols === "string" && protocols.trim()) {
+    const candidate = protocols
+      .split(",")
+      .map((item) => item.trim())
+      .find((item) => item && item !== "websocket");
+    if (candidate) return candidate;
+  }
+
+  const authHeader = request.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  return null;
+}
+
+async function authenticateFromWsToken(request) {
+  const token = getWsTokenFromRequest(request);
+  if (!token) return null;
+
+  const result = verifyWsAuthToken(token);
+  if (!result.valid) {
+    return { authenticated: false, reason: result.reason || "Invalid token" };
+  }
+
+  const effectiveUserId = Number(result.userId);
+  if (!Number.isFinite(effectiveUserId)) {
+    return { authenticated: false, reason: "Invalid user in token" };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: effectiveUserId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isDisabled: true,
+    },
+  });
+
+  if (!user || user.isDisabled) {
+    return { authenticated: false, reason: "User is disabled or not found" };
+  }
+
+  return {
+    authenticated: true,
+    user,
+    actorUserId: user.id,
+    isImpersonating: false,
+  };
+}
+
 async function authenticateFromSession(request) {
+  const tokenAuth = await authenticateFromWsToken(request);
+  if (tokenAuth?.authenticated) return tokenAuth;
+
   const sessionId = getSessionIdFromCookie(request);
   if (!sessionId) {
-    return { authenticated: false, reason: "Missing session" };
+    return {
+      authenticated: false,
+      reason: tokenAuth?.reason || "Missing session",
+    };
   }
 
   const sessionData = await getSessionData(sessionId);

@@ -22,6 +22,36 @@ export const PrioritySchema = z
   .enum(["LOW", "NORMAL", "HIGH", "URGENT"])
   .default("NORMAL");
 
+export const CATEGORY_TAGS = {
+  PAYMENT: ["payment"],
+  BOOKING: ["scheduling"],
+  CLASSROOM_TECH: ["classroom", "technical"],
+  ACCOUNT: ["account"],
+  OTHER: ["general"],
+};
+
+export function getSupportSlaDueAt(priority = "NORMAL", from = new Date()) {
+  const hoursByPriority = {
+    LOW: 72,
+    NORMAL: 24,
+    HIGH: 8,
+    URGENT: 2,
+  };
+  const hours = hoursByPriority[priority] || hoursByPriority.NORMAL;
+  return new Date(from.getTime() + hours * 60 * 60 * 1000);
+}
+
+export function getDefaultSupportTags(category) {
+  return CATEGORY_TAGS[category] || ["general"];
+}
+
+export function getAttachmentMessageBody(file) {
+  const name = file?.originalname || "attachment";
+  const mimeType = file?.mimetype || "";
+  const label = mimeType.startsWith("image/") ? "Image" : "Attachment";
+  return `[${label}: ${name}]`;
+}
+
 export async function checkRateLimit(userId, action, maxAttempts, windowMs) {
   const result = await consumeRateLimit({
     key: `support:user:${Number(userId)}:${String(action || "").slice(0, 120)}`,
@@ -93,7 +123,7 @@ export async function requireTicketAccess(req, res, next) {
   try {
     const ticket = await prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, userId: true, status: true },
+      select: { id: true, userId: true, status: true, firstResponseAt: true },
     });
 
     if (!ticket) {

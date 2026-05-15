@@ -24,6 +24,9 @@ import {
   CategorySchema,
   PrioritySchema,
   checkRateLimit,
+  getAttachmentMessageBody,
+  getDefaultSupportTags,
+  getSupportSlaDueAt,
   parseBoundedInt,
   sanitizeDownloadName,
   loadAttachmentAccessContext,
@@ -48,6 +51,9 @@ router.post("/tickets", requireAuth, async (req, res) => {
       subject: z.string().trim().max(140).optional().nullable(),
       message: z.string().trim().min(1).max(5000),
       priority: PrioritySchema.optional(),
+      source: z.string().trim().max(40).optional(),
+      relatedSessionId: z.number().int().positive().optional().nullable(),
+      relatedPaymentId: z.number().int().positive().optional().nullable(),
     })
     .strict();
 
@@ -59,7 +65,16 @@ router.post("/tickets", requireAuth, async (req, res) => {
     });
   }
 
-  const { category, subject, message, priority } = parsed.data;
+  const {
+    category,
+    subject,
+    message,
+    priority = "NORMAL",
+    source = "widget",
+    relatedSessionId = null,
+    relatedPaymentId = null,
+  } = parsed.data;
+  const now = new Date();
 
   try {
     const ticket = await prisma.supportTicket.create({
@@ -67,7 +82,13 @@ router.post("/tickets", requireAuth, async (req, res) => {
         userId,
         category,
         subject: subject || null,
-        priority: priority || "NORMAL",
+        priority,
+        source,
+        relatedSessionId,
+        relatedPaymentId,
+        lastCustomerReplyAt: now,
+        slaDueAt: getSupportSlaDueAt(priority, now),
+        tags: getDefaultSupportTags(category),
         messages: {
           create: {
             authorId: userId,
@@ -253,7 +274,7 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
   try {
     const ticket = await prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, userId: true, status: true },
+      select: { id: true, userId: true, status: true, firstResponseAt: true },
     });
 
     if (!ticket) {
@@ -282,6 +303,17 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
       data: {
         status: ticket.status === "RESOLVED" && !isAdmin ? "OPEN" : undefined,
         resolvedAt: ticket.status === "RESOLVED" && !isAdmin ? null : undefined,
+        closedAt: ticket.status === "RESOLVED" && !isAdmin ? null : undefined,
+        reopenedAt:
+          ticket.status === "RESOLVED" && !isAdmin ? new Date() : undefined,
+        reopenCount:
+          ticket.status === "RESOLVED" && !isAdmin
+            ? { increment: 1 }
+            : undefined,
+        lastCustomerReplyAt: !isAdmin ? new Date() : undefined,
+        lastStaffReplyAt: isAdmin ? new Date() : undefined,
+        firstResponseAt:
+          isAdmin && !ticket.firstResponseAt ? new Date() : undefined,
       },
       include: {
         user: { select: { id: true, name: true, email: true } },
@@ -317,7 +349,7 @@ router.post(
         data: {
           ticketId,
           authorId: viewerId,
-          body: `[Image: ${req.file.originalname}]`,
+          body: getAttachmentMessageBody(req.file),
           isStaff: isAdmin,
           attachments: {
             create: {
@@ -331,6 +363,18 @@ router.post(
         include: {
           attachments: true,
           author: { select: { id: true, name: true, role: true } },
+        },
+      });
+
+      await prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          lastCustomerReplyAt: !isAdmin ? new Date() : undefined,
+          lastStaffReplyAt: isAdmin ? new Date() : undefined,
+          firstResponseAt:
+            isAdmin && !req.supportAccess?.ticket?.firstResponseAt
+              ? new Date()
+              : undefined,
         },
       });
 
@@ -357,6 +401,65 @@ router.post(
     }
   }
 );
+
+// POST /api/support/tickets/:id/satisfaction - Rate a resolved ticket
+router.post("/tickets/:id/satisfaction", requireAuth, async (req, res) => {
+  const ticketId = Number(req.params.id);
+  if (!Number.isFinite(ticketId)) {
+    return res.status(400).json({ error: "Invalid ticket id" });
+  }
+
+  const Body = z
+    .object({
+      rating: z.number().int().min(1).max(5),
+      comment: z.string().trim().max(1000).optional().nullable(),
+    })
+    .strict();
+
+  const parsed = Body.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Validation failed",
+      details: formatZodError(parsed.error, "body"),
+    });
+  }
+
+  const viewerId = req.viewUserId;
+
+  try {
+    const existing = await prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, userId: true, status: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    if (existing.userId !== viewerId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (existing.status !== "RESOLVED") {
+      return res.status(400).json({
+        error: "Only resolved tickets can be rated.",
+      });
+    }
+
+    const ticket = await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: {
+        satisfactionRating: parsed.data.rating,
+        satisfactionComment: parsed.data.comment || null,
+      },
+    });
+
+    return res.json({ ok: true, ticket });
+  } catch (e) {
+    logger.error({ err: e, ticketId }, "Failed to save ticket satisfaction");
+    return res.status(500).json({ error: "Failed to save rating" });
+  }
+});
 
 // GET /api/support/attachments/:attachmentId - Authorized attachment download
 router.get("/attachments/:attachmentId", requireAuth, async (req, res) => {

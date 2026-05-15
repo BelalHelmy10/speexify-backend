@@ -1,10 +1,8 @@
-// src/lib/supportUpload.js
-// IMPROVED: Better security, file validation, cloud storage ready
-
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { logger } from "./logger.js";
 
 const uploadDir = path.join(process.cwd(), "uploads", "support");
 
@@ -13,17 +11,43 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Allowed MIME types
-const ALLOWED_MIME_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-];
+const ALLOWED_FILE_TYPES = {
+  "image/jpeg": {
+    extensions: [".jpg", ".jpeg"],
+    signatures: [[0xff, 0xd8, 0xff]],
+  },
+  "image/jpg": {
+    extensions: [".jpg", ".jpeg"],
+    signatures: [[0xff, 0xd8, 0xff]],
+  },
+  "image/png": {
+    extensions: [".png"],
+    signatures: [[0x89, 0x50, 0x4e, 0x47]],
+  },
+  "image/gif": {
+    extensions: [".gif"],
+    signatures: [[0x47, 0x49, 0x46, 0x38]],
+  },
+  "image/webp": {
+    extensions: [".webp"],
+    signatures: [[0x52, 0x49, 0x46, 0x46]],
+  },
+  "application/pdf": {
+    extensions: [".pdf"],
+    signatures: [[0x25, 0x50, 0x44, 0x46]],
+  },
+  "application/msword": {
+    extensions: [".doc"],
+    signatures: [[0xd0, 0xcf, 0x11, 0xe0]],
+  },
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+    extensions: [".docx"],
+    signatures: [[0x50, 0x4b, 0x03, 0x04]],
+  },
+};
 
-// Max file size: 5MB
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = Object.keys(ALLOWED_FILE_TYPES);
+const MAX_FILE_SIZE = 12 * 1024 * 1024;
 
 /**
  * Generate secure filename
@@ -43,19 +67,10 @@ function generateSecureFilename(originalname) {
  * Validate file content (basic magic number check)
  */
 function validateFileContent(buffer, mimetype) {
-  // Check file signatures (magic numbers)
-  const signatures = {
-    "image/jpeg": [[0xff, 0xd8, 0xff]],
-    "image/png": [[0x89, 0x50, 0x4e, 0x47]],
-    "image/gif": [[0x47, 0x49, 0x46, 0x38]],
-    "image/webp": [[0x52, 0x49, 0x46, 0x46]],
-  };
+  const fileType = ALLOWED_FILE_TYPES[mimetype];
+  if (!fileType) return false;
 
-  const signature = signatures[mimetype];
-  if (!signature) return false;
-
-  // Check if buffer starts with any of the valid signatures
-  return signature.some((sig) => {
+  return fileType.signatures.some((sig) => {
     return sig.every((byte, index) => buffer[index] === byte);
   });
 }
@@ -76,14 +91,18 @@ const storage = multer.diskStorage({
  * File filter with strict validation
  */
 const fileFilter = (req, file, cb) => {
-  // Check MIME type
-  if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-    return cb(new Error("Invalid file type. Only images are allowed."), false);
-  }
-
-  // Sanitize original filename
   const sanitized = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
   file.originalname = sanitized;
+
+  const ext = path.extname(file.originalname).toLowerCase();
+  const fileType = ALLOWED_FILE_TYPES[file.mimetype];
+
+  if (!fileType || !fileType.extensions.includes(ext)) {
+    return cb(
+      new Error("Invalid file type. Upload images, PDF, DOC, or DOCX files."),
+      false
+    );
+  }
 
   cb(null, true);
 };
@@ -124,7 +143,7 @@ export function validateUploadedFile(req, res, next) {
 
     next();
   } catch (err) {
-    console.error("File validation error:", err);
+    logger.error({ err }, "Support file validation failed");
 
     // Clean up if file exists
     if (req.file?.path && fs.existsSync(req.file.path)) {
@@ -173,7 +192,7 @@ export function deleteFile(filename) {
     }
     return false;
   } catch (err) {
-    console.error("Failed to delete file:", err);
+    logger.warn({ err, filename }, "Failed to delete support upload");
     return false;
   }
 }
@@ -199,10 +218,10 @@ export function cleanupOldFiles(daysOld = 30) {
       }
     });
 
-    console.log(`Cleaned up ${deletedCount} old support files`);
+    logger.info({ deletedCount }, "Cleaned up old support uploads");
     return deletedCount;
   } catch (err) {
-    console.error("Cleanup failed:", err);
+    logger.warn({ err }, "Support upload cleanup failed");
     return 0;
   }
 }
