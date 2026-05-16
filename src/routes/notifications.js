@@ -2,8 +2,38 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
+import {
+  subscribeNotificationStream,
+  publishNotificationEvent,
+} from "../services/notificationStreamHub.js";
 
 const router = Router();
+
+// --------------------------------------------------------------------------
+// GET /api/notifications/stream
+// Server-Sent Events for live notification updates
+// --------------------------------------------------------------------------
+router.get("/notifications/stream", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+
+  const heartbeat = setInterval(() => {
+    res.write(`event: ping\ndata: {}\n\n`);
+  }, 25000);
+
+  subscribeNotificationStream(userId, res);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+  });
+});
 
 // --------------------------------------------------------------------------
 // GET /api/notifications
@@ -116,6 +146,14 @@ router.post("/notifications/:id/read", requireAuth, async (req, res) => {
       data: { readAt: new Date() },
     });
 
+    if (updated.count > 0) {
+      publishNotificationEvent(userId, {
+        kind: "read",
+        notificationId: id,
+        unreadDelta: -1,
+      });
+    }
+
     return res.json({ ok: true, updatedCount: updated.count });
   } catch (err) {
     return res.status(500).json({ error: "Failed to mark as read" });
@@ -133,9 +171,21 @@ router.post("/notifications/:id/delete", requireAuth, async (req, res) => {
     if (!Number.isFinite(id))
       return res.status(400).json({ error: "Invalid id" });
 
+    const existing = await prisma.notification.findFirst({
+      where: { id, userId },
+    });
+
     const deleted = await prisma.notification.deleteMany({
       where: { id, userId },
     });
+
+    if (deleted.count > 0 && existing) {
+      publishNotificationEvent(userId, {
+        kind: "deleted",
+        notificationId: id,
+        unreadDelta: existing.readAt ? 0 : -1,
+      });
+    }
 
     return res.json({ ok: true, deletedCount: deleted.count });
   } catch (err) {
@@ -150,10 +200,22 @@ router.post("/notifications/:id/delete", requireAuth, async (req, res) => {
 router.post("/notifications/read-all", requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+    const unreadBefore = await prisma.notification.count({
+      where: { userId, readAt: null },
+    });
+
     const updated = await prisma.notification.updateMany({
       where: { userId, readAt: null },
       data: { readAt: new Date() },
     });
+
+    if (updated.count > 0) {
+      publishNotificationEvent(userId, {
+        kind: "read_all",
+        unreadDelta: -unreadBefore,
+      });
+    }
+
     return res.json({ ok: true, updatedCount: updated.count });
   } catch (err) {
     return res.status(500).json({ error: "Failed to mark all as read" });
@@ -172,9 +234,16 @@ router.post("/notifications/clear-read", requireAuth, async (req, res) => {
     const deleted = await prisma.notification.deleteMany({
       where: {
         userId,
-        readAt: { not: null }, // Only delete notifications that have been read
+        readAt: { not: null },
       },
     });
+
+    if (deleted.count > 0) {
+      publishNotificationEvent(userId, {
+        kind: "cleared_read",
+        deletedCount: deleted.count,
+      });
+    }
 
     return res.json({ ok: true, deletedCount: deleted.count });
   } catch (err) {

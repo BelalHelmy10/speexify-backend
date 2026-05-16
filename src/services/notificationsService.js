@@ -2,6 +2,33 @@
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { sendEmail } from "./emailService.js";
+import { shouldDeliverInAppNotification } from "../lib/notificationPreferences.js";
+import { publishNotificationEvent } from "./notificationStreamHub.js";
+
+const REMINDER_TYPES = new Set(["reminder_24h", "reminder_6h", "reminder_1h"]);
+
+/**
+ * Skip duplicate reminder/session notifications within a short window.
+ */
+async function findRecentDuplicate(userId, type, data) {
+  const sessionId = data?.sessionId;
+  if (!sessionId) return null;
+
+  const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+  return prisma.notification.findFirst({
+    where: {
+      userId,
+      type: String(type),
+      createdAt: { gte: since },
+      data: {
+        path: ["sessionId"],
+        equals: sessionId,
+      },
+    },
+    orderBy: { id: "desc" },
+  });
+}
 
 /**
  * Format date in user's timezone for email display
@@ -32,15 +59,41 @@ export async function createNotification({
   title,
   body = null,
   data = null,
+  skipPreferenceCheck = false,
+  skipDedup = false,
 }) {
   if (!userId || !type || !title) {
     throw new Error("createNotification: userId, type, and title are required");
   }
 
+  const normalizedType = String(type);
+
+  if (!skipPreferenceCheck) {
+    const allowed = await shouldDeliverInAppNotification(userId, normalizedType);
+    if (!allowed) {
+      logger.info(
+        { userId, type: normalizedType },
+        "in-app notification skipped by user preferences"
+      );
+      return null;
+    }
+  }
+
+  if (!skipDedup && REMINDER_TYPES.has(normalizedType)) {
+    const duplicate = await findRecentDuplicate(userId, normalizedType, data);
+    if (duplicate) {
+      logger.info(
+        { userId, type: normalizedType, existingId: duplicate.id },
+        "in-app notification skipped as duplicate"
+      );
+      return duplicate;
+    }
+  }
+
   const notif = await prisma.notification.create({
     data: {
       userId,
-      type: String(type),
+      type: normalizedType,
       title: String(title),
       body: body ? String(body) : null,
       data,
@@ -51,6 +104,12 @@ export async function createNotification({
     { userId, notificationId: notif.id, type: notif.type },
     "notification created"
   );
+
+  publishNotificationEvent(userId, {
+    kind: "created",
+    notification: notif,
+    unreadDelta: 1,
+  });
 
   return notif;
 }
@@ -66,30 +125,14 @@ export async function createNotificationsForMany(
   const unique = Array.from(new Set((userIds || []).filter(Boolean)));
   if (!unique.length) return { count: 0 };
 
-  try {
-    const result = await prisma.notification.createMany({
-      data: unique.map((uid) => ({
-        userId: uid,
-        type: String(type),
-        title: String(title),
-        body: body ? String(body) : null,
-        data,
-      })),
-    });
+  const results = await Promise.all(
+    unique.map((uid) =>
+      createNotification({ userId: uid, type, title, body, data })
+    )
+  );
 
-    logger.info(
-      { userIds: unique, type, count: result.count },
-      "notifications created for multiple users"
-    );
-
-    return result;
-  } catch (e) {
-    logger.error(
-      { err: e, userIds: unique, type },
-      "Failed to create notifications for multiple users"
-    );
-    throw e;
-  }
+  const created = results.filter(Boolean);
+  return { count: created.length };
 }
 
 /**
