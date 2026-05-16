@@ -285,10 +285,32 @@ router.get("/me/assessment", requireAuth, async (req, res) => {
 // POST /api/me/assessment
 router.post("/me/assessment", requireAuth, async (req, res) => {
   try {
-    const { text = "", packageId = null } = req.body || {};
+    const {
+      text = "",
+      packageId = null,
+      score = null,
+      cefr = null,
+      feedback = null,
+      reviewMeta = null,
+    } = req.body || {};
     const input = String(text || "");
     const normalized = input.replace(/\r\n/g, "\n").trim();
     const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+    const normalizedScore = Number(score);
+    const cleanScore = Number.isFinite(normalizedScore)
+      ? Math.max(0, Math.min(100, Math.round(normalizedScore)))
+      : null;
+    const cleanCefr =
+      typeof cefr === "string" &&
+      /^(A1|A2|B1|B2|C1|C2)(\.[12])?$/i.test(cefr.trim())
+        ? cefr.trim().toUpperCase()
+        : null;
+    const cleanFeedback =
+      typeof feedback === "string" ? feedback.trim().slice(0, 5000) : null;
+    const cleanReviewMeta =
+      reviewMeta && typeof reviewMeta === "object" && !Array.isArray(reviewMeta)
+        ? reviewMeta
+        : null;
 
     if (wordCount === 0) {
       return res.status(400).json({ error: "Submission is empty" });
@@ -305,7 +327,11 @@ router.post("/me/assessment", requireAuth, async (req, res) => {
         packageId: packageId ? Number(packageId) : null,
         text: normalized,
         wordCount: Number(wordCount),
-        status: "submitted",
+        status: cleanCefr ? "auto_scored" : "submitted",
+        score: cleanScore,
+        cefr: cleanCefr,
+        feedback: cleanFeedback,
+        reviewMeta: cleanReviewMeta,
       },
     });
     res.status(201).json({ ok: true, submission: created });
