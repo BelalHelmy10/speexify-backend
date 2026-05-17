@@ -5,6 +5,10 @@ function hasValue(name) {
   return raw != null && String(raw).trim() !== "";
 }
 
+function readValue(name) {
+  return String(process.env[name] || "").trim();
+}
+
 function truthy(name, fallback = false) {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
@@ -19,6 +23,53 @@ function checkEnv(name, level = "fail", reason = "required") {
     ok,
     level,
     message: ok ? `${name} is set` : `${name} is missing (${reason})`,
+  };
+}
+
+function checkProductionSecret(name, level = "fail", minLength = 32) {
+  const value = readValue(name);
+  const normalized = value.toLowerCase();
+  const insecure =
+    normalized === "dev-secret-change-me" ||
+    normalized === "dev-secret" ||
+    normalized === "secret" ||
+    normalized === "changeme" ||
+    normalized === "change-me" ||
+    normalized.includes("change-me") ||
+    normalized.includes("dev-secret");
+
+  if (!value) {
+    return {
+      id: `env:${name}`,
+      ok: false,
+      level,
+      message: `${name} is missing (production secret)`,
+    };
+  }
+
+  if (insecure) {
+    return {
+      id: `env:${name}`,
+      ok: false,
+      level,
+      message: `${name} uses an insecure development value`,
+    };
+  }
+
+  if (value.length < minLength) {
+    return {
+      id: `env:${name}`,
+      ok: false,
+      level,
+      message: `${name} must be at least ${minLength} characters`,
+    };
+  }
+
+  return {
+    id: `env:${name}`,
+    ok: true,
+    level,
+    message: `${name} is set and meets production length requirements`,
   };
 }
 
@@ -68,10 +119,10 @@ function main() {
 
     checkEnv("DATABASE_URL", "fail", "database connection"),
     checkEnv("DIRECT_URL", "warn", "recommended for Prisma migrations"),
-    checkEnv("SESSION_SECRET", "fail", "session signing"),
+    checkProductionSecret("SESSION_SECRET", "fail"),
     checkEnv("ALLOWED_ORIGINS", "fail", "CORS boundary"),
 
-    checkEnv("REDIS_URL", "warn", "required for distributed sessions/rate limiting"),
+    checkEnv("REDIS_URL", "fail", "required for production sessions"),
     checkCustom(
       "runtime:redis_strict",
       truthy("SESSION_REDIS_STRICT", false),

@@ -6,7 +6,7 @@
     "dev": "nodemon index.js",
     "build": "node scripts/checkSyntax.js",
     "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
-    "prisma:migrate": "node ./node_modules/prisma/build/index.js migrate deploy",
+    "prisma:migrate": "node scripts/deployMigrations.js",
     "prisma:studio": "node ./node_modules/prisma/build/index.js studio",
     "start": "node index.js",
     "worker:session-reminders": "node worker/sessionRemindersWorker.js",

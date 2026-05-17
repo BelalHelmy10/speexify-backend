@@ -219,10 +219,9 @@ DATABASE_URL=postgresql://speexify:speexify@localhost:5432/speexify
 Environment variables
 All environment variables are read and centralized in src/config/env.js.
 
-Create a .env file in the backend root with values like these:
+Create a `.env` file in the backend root with values like these:
 
-bash
-Copy code
+```bash
 # Node / environment
 NODE_ENV=development
 PORT=5050
@@ -234,6 +233,7 @@ DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DB_NAME
 SESSION_SECRET=change-me-in-production
 COOKIE_DOMAIN=localhost
 ALLOWED_ORIGINS=http://localhost:3000
+REDIS_URL=redis://localhost:6379
 
 # WebSocket security
 WS_AUTH_ENABLED=true
@@ -250,6 +250,16 @@ PAYMOB_IFRAME_ID=
 
 # Logging
 LOG_LEVEL=debug
+```
+
+For production, `SESSION_SECRET` must be a long random value with at least 32 characters. Generate one locally with:
+
+```bash
+openssl rand -base64 48
+```
+
+Do not use `change-me-in-production`, `dev-secret`, or any human-readable phrase in production.
+
 What each variable does
 NODE_ENV – development or production; affects logging, some behavior.
 
@@ -257,11 +267,13 @@ PORT – Port where the backend listens (e.g. 5050).
 
 DATABASE_URL – Full PostgreSQL connection string for Prisma.
 
-SESSION_SECRET – Secret string used to sign session cookies (must be long & random in production).
+SESSION_SECRET – Secret string used to sign session cookies (must be long, random, and at least 32 characters in production).
 
 COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in production).
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
+
+REDIS_URL – Redis connection string. Required in production for sessions.
 
 WS_AUTH_ENABLED – Enables WebSocket auth for /ws/prep and /ws/classroom (set false only for local debugging).
 
@@ -285,13 +297,17 @@ NODE_ENV=production
 
 PORT=10000 (Render sets this internally – the app should use PORT from env)
 
-DATABASE_URL – connection string to your managed PostgreSQL
+DATABASE_URL – Supabase transaction pooler connection string for app runtime. It normally ends with `pooler.supabase.com:6543/postgres`.
 
-SESSION_SECRET – long random string
+DIRECT_URL – Supabase session pooler connection string for Prisma migrations on Render. It should use `pooler.supabase.com:5432/postgres`, not `db.<project-ref>.supabase.co:5432`, because Render cannot reach Supabase's IPv6-only direct host.
 
-COOKIE_DOMAIN – your domain (e.g. yourapp.com)
+SESSION_SECRET – long random string, at least 32 characters. Generate with `openssl rand -base64 48`.
 
-ALLOWED_ORIGINS – e.g. https://your-frontend-domain.com
+REDIS_URL – Render Redis connection string
+
+COOKIE_DOMAIN – your cookie parent domain, for example `.speexify.com`. Leave unset if the API and frontend do not share a parent domain.
+
+ALLOWED_ORIGINS – your exact frontend URL, for example `https://speexify.com`
 
 WS_AUTH_ENABLED – keep true in production
 
@@ -301,14 +317,17 @@ Paymob variables if payments are enabled
 
 Build command:
 
-bash
-Copy code
-npm ci
+```bash
+npm ci && npm run prisma:migrate
+```
+
+Do not enter the build command as `npm ci node ... generate node ... migrate deploy`; without `&&`, Render runs it as one command and the Prisma migration step will not run correctly.
+
 Start command:
 
-bash
-Copy code
+```bash
 node index.js
+```
 Session reminders now run in a separate worker process.
 
 Use this command in a dedicated worker service:
