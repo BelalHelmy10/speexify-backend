@@ -904,4 +904,118 @@ router.get("/me/progress", requireAuth, async (req, res) => {
     }
 });
 
+// --------------------------------------------------------------------------
+// GET /api/me/feedback - List all teacher feedback for current learner
+// --------------------------------------------------------------------------
+router.get("/me/feedback", requireAuth, async (req, res) => {
+    try {
+        const userId = req.viewUserId || req.user.id;
+        const { limit = "20", offset = "0" } = req.query;
+        const take = parseBoundedInt(limit, { fallback: 20, min: 1, max: 100 });
+        const skip = parseBoundedInt(offset, { fallback: 0, min: 0, max: 10000 });
+
+        const learnerSessionWhere = {
+            OR: [{ participants: { some: { userId } } }, { userId }],
+        };
+
+        const [feedbacks, totalCount] = await Promise.all([
+            prisma.session.findMany({
+                where: {
+                    status: "completed",
+                    ...learnerSessionWhere,
+                    AND: {
+                        OR: [
+                            { feedback: { isNot: null } },
+                            { teacherFeedbackMessageToLearner: { not: null } },
+                            { teacherFeedbackComments: { not: null } },
+                            { teacherFeedbackFutureSteps: { not: null } },
+                        ],
+                    },
+                },
+                orderBy: { startAt: "desc" },
+                take,
+                skip,
+                select: {
+                    id: true,
+                    title: true,
+                    startAt: true,
+                    endAt: true,
+                    type: true,
+                    status: true,
+                    teacher: { select: { id: true, name: true, email: true, avatarUrl: true } },
+                    feedback: {
+                        select: {
+                            id: true,
+                            messageToLearner: true,
+                            commentsOnSession: true,
+                            futureSteps: true,
+                            createdAt: true,
+                            updatedAt: true,
+                        },
+                    },
+                    teacherFeedbackMessageToLearner: true,
+                    teacherFeedbackComments: true,
+                    teacherFeedbackFutureSteps: true,
+                },
+            }),
+            prisma.session.count({
+                where: {
+                    status: "completed",
+                    ...learnerSessionWhere,
+                    AND: {
+                        OR: [
+                            { feedback: { isNot: null } },
+                            { teacherFeedbackMessageToLearner: { not: null } },
+                            { teacherFeedbackComments: { not: null } },
+                            { teacherFeedbackFutureSteps: { not: null } },
+                        ],
+                    },
+                },
+            }),
+        ]);
+
+        const shaped = feedbacks.map((s) => {
+            const fb = s.feedback;
+            const messageToLearner =
+                fb?.messageToLearner || s.teacherFeedbackMessageToLearner || "";
+            const commentsOnSession =
+                fb?.commentsOnSession || s.teacherFeedbackComments || "";
+            const futureSteps =
+                fb?.futureSteps || s.teacherFeedbackFutureSteps || "";
+
+            return {
+                id: s.id,
+                title: s.title || "Session",
+                startAt: s.startAt,
+                endAt: s.endAt,
+                type: s.type,
+                status: s.status,
+                teacher: s.teacher,
+                feedback: {
+                    id: fb?.id || null,
+                    messageToLearner,
+                    commentsOnSession,
+                    futureSteps,
+                    createdAt: fb?.createdAt || s.startAt,
+                    updatedAt: fb?.updatedAt || s.startAt,
+                },
+            };
+        }).filter((s) => {
+            const f = s.feedback;
+            return f.messageToLearner || f.commentsOnSession || f.futureSteps;
+        });
+
+        return res.json({
+            feedbacks: shaped,
+            total: totalCount,
+            hasMore: skip + take < totalCount,
+        });
+    } catch (err) {
+        logger.error({ err }, "GET /me/feedback failed");
+        return res
+            .status(500)
+            .json({ error: err?.message || "Failed to load feedback" });
+    }
+});
+
 export default router;
