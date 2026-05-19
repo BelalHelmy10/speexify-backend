@@ -2,57 +2,9 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 
 const router = Router();
-
-/* Shared user shape for auth checks (matches app.js) */
-const publicUserSelect = {
-  id: true,
-  email: true,
-  name: true,
-  role: true,
-  timezone: true,
-  isDisabled: true,
-  rateHourlyCents: true,
-  ratePerSessionCents: true,
-};
-
-/* ------------------------------------------------------------------ */
-/*  Auth helpers (local copy, same behavior as in app.js)             */
-/* ------------------------------------------------------------------ */
-async function requireAuth(req, res, next) {
-  const sessionUser = req.session.user;
-  if (!sessionUser) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
-
-  try {
-    const dbUser = await prisma.user.findUnique({
-      where: { id: sessionUser.id },
-      select: publicUserSelect,
-    });
-
-    if (!dbUser || dbUser.isDisabled) {
-      req.session.destroy(() => {});
-      return res.status(403).json({ error: "Account disabled" });
-    }
-
-    req.user = dbUser;
-    req.viewUserId = req.session.asUserId || dbUser.id;
-    next();
-  } catch (e) {
-    logger.error({ err: e }, "[packages] requireAuth error");
-    return res.status(500).json({ error: "Auth check failed" });
-  }
-}
-
-function requireAdmin(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ error: "Admin only" });
-  }
-  next();
-}
 
 /* ------------------------------------------------------------------ */
 /*  PUBLIC: /api/packages                                             */

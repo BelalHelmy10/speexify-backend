@@ -515,6 +515,7 @@ if (ALLOW_LEGACY_REGISTER) {
       });
 
       req.session.asUserId = null;
+      req.session.loginAt = Date.now();
       req.session.user = user;
       res.json({ user });
     } catch (err) {
@@ -1150,10 +1151,12 @@ app.post(
         return res.status(401).json({ error: "Current password is incorrect" });
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
+      const passwordChangedAt = new Date();
       await prisma.user.update({
         where: { id: user.id },
-        data: { hashedPassword, passwordChangedAt: new Date() },
+        data: { hashedPassword, passwordChangedAt },
       });
+      req.session.loginAt = passwordChangedAt.getTime();
 
       res.json({ ok: true });
     } catch (err) {

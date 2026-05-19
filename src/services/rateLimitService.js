@@ -1,6 +1,6 @@
 // src/services/rateLimitService.js
 import { createClient } from "redis";
-import { REDIS_URL } from "../config/env.js";
+import { REDIS_URL, isTest } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
 const KEY_PREFIX = "speexify:ratelimit:";
@@ -32,6 +32,7 @@ function normalizeKey(key) {
 }
 
 async function getRedisClient() {
+  if (isTest) return null;
   if (!REDIS_URL) return null;
 
   if (!redisClient) {

@@ -2,6 +2,7 @@
 import { isProd, COOKIE_DOMAIN } from "./env.js";
 
 export const SESSION_COOKIE_NAME = "speexify.sid";
+export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const sessionCookieOptions = {
   httpOnly: true,
@@ -9,6 +10,5 @@ export const sessionCookieOptions = {
   sameSite: "lax", // tighten to "strict" if your flow allows
   domain: COOKIE_DOMAIN || undefined,
   path: "/",
-  // If you want a fixed session lifetime, uncomment:
-  // maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  maxAge: SESSION_MAX_AGE_MS,
 };

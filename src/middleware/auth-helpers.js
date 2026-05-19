@@ -10,9 +10,20 @@ const publicUserSelect = {
   timezone: true,
   language: true,
   isDisabled: true,
+  passwordChangedAt: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,
 };
+
+export function isSessionInvalidatedByPasswordChange(req, dbUser) {
+  if (!dbUser?.passwordChangedAt) return false;
+
+  const passwordChangedAtMs = new Date(dbUser.passwordChangedAt).getTime();
+  if (!Number.isFinite(passwordChangedAtMs)) return false;
+
+  const loginAtMs = Number(req.session?.loginAt);
+  return !Number.isFinite(loginAtMs) || loginAtMs < passwordChangedAtMs;
+}
 
 export async function requireAuth(req, res, next) {
   const sessionUser = req.session.user;
@@ -29,6 +40,13 @@ export async function requireAuth(req, res, next) {
     if (!dbUser || dbUser.isDisabled) {
       req.session.destroy(() => {});
       return res.status(403).json({ error: "Account disabled" });
+    }
+
+    if (isSessionInvalidatedByPasswordChange(req, dbUser)) {
+      req.session.destroy(() => {});
+      return res
+        .status(401)
+        .json({ error: "Session expired, please log in again" });
     }
 
     req.user = dbUser;

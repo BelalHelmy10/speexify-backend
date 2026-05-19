@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { requireAdmin } from "../../src/middleware/auth-helpers.js";
+import {
+  isSessionInvalidatedByPasswordChange,
+  requireAdmin,
+} from "../../src/middleware/auth-helpers.js";
 
 function createRes() {
   return {
@@ -56,4 +59,37 @@ test("requireAdmin allows admin users", () => {
 
   assert.equal(nextCalled, true);
   assert.equal(res.statusCode, 200);
+});
+
+test("password change invalidates sessions without loginAt", () => {
+  const req = { session: {} };
+  const user = { passwordChangedAt: new Date("2026-05-19T10:00:00.000Z") };
+
+  assert.equal(isSessionInvalidatedByPasswordChange(req, user), true);
+});
+
+test("password change invalidates older sessions only", () => {
+  const passwordChangedAt = new Date("2026-05-19T10:00:00.000Z");
+
+  assert.equal(
+    isSessionInvalidatedByPasswordChange(
+      { session: { loginAt: passwordChangedAt.getTime() - 1 } },
+      { passwordChangedAt }
+    ),
+    true
+  );
+  assert.equal(
+    isSessionInvalidatedByPasswordChange(
+      { session: { loginAt: passwordChangedAt.getTime() } },
+      { passwordChangedAt }
+    ),
+    false
+  );
+  assert.equal(
+    isSessionInvalidatedByPasswordChange(
+      { session: { loginAt: passwordChangedAt.getTime() + 1 } },
+      { passwordChangedAt }
+    ),
+    false
+  );
 });

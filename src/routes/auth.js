@@ -11,7 +11,10 @@ import {
 import { sendEmail } from "../services/emailService.js";
 import { loginLimiter, authLimiter, emailCodeLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
-import { requireAuth } from "../middleware/auth-helpers.js";
+import {
+  isSessionInvalidatedByPasswordChange,
+  requireAuth,
+} from "../middleware/auth-helpers.js";
 import {
   createWsAuthToken,
   getWsAuthTokenTtlMs,
@@ -60,6 +63,7 @@ const publicUserSelect = {
   timezone: true,
   language: true,
   isDisabled: true,
+  passwordChangedAt: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,
 };
@@ -120,6 +124,20 @@ function googleErrorBody(error, message, details) {
   };
 }
 
+function establishLoginSession(req, user, { loginAtMs = Date.now() } = {}) {
+  req.session.asUserId = null;
+  req.session.loginAt = loginAtMs;
+  req.session.user = {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    avatarUrl: user.avatarUrl ?? null,
+    role: user.role,
+    timezone: user.timezone ?? null,
+    language: user.language ?? "en",
+  };
+}
+
 /* ========================================================================== */
 /*                                   LOGIN                                   */
 /* ========================================================================== */
@@ -148,8 +166,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       timezone: user.timezone ?? null,
       language: user.language ?? "en",
     };
-    req.session.asUserId = null;
-    req.session.user = sessionUser;
+    establishLoginSession(req, sessionUser);
     res.json({ user: sessionUser });
   } catch (err) {
     logger.error({ err }, "Login error");
@@ -267,15 +284,7 @@ router.post("/google", authLimiter, async (req, res) => {
       });
     }
 
-    req.session.asUserId = null;
-    req.session.user = {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      timezone: user.timezone ?? null,
-      language: user.language ?? "en",
-    };
+    establishLoginSession(req, user);
 
     req.session.save((saveErr) => {
       if (saveErr) {
@@ -337,6 +346,13 @@ router.get("/me", async (req, res) => {
   if (!adminUser || adminUser.isDisabled) {
     req.session.destroy(() => {});
     return res.json({ user: null });
+  }
+
+  if (isSessionInvalidatedByPasswordChange(req, adminUser)) {
+    req.session.destroy(() => {});
+    return res
+      .status(401)
+      .json({ error: "Session expired, please log in again" });
   }
 
   if (req.session.asUserId) {
@@ -504,23 +520,18 @@ router.post("/password/reset/complete", emailCodeLimiter, async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const passwordChangedAt = new Date();
     await prisma.user.update({
       where: { email },
-      data: { hashedPassword },
+      data: { hashedPassword, passwordChangedAt },
     });
 
     await prisma.passwordResetCode.delete({ where: { email } });
 
     // Log the user in immediately
-    req.session.asUserId = null;
-    req.session.user = {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      timezone: user.timezone ?? null,
-      language: user.language ?? "en",
-    };
+    establishLoginSession(req, user, {
+      loginAtMs: passwordChangedAt.getTime(),
+    });
 
     return res.json({ ok: true });
   } catch (err) {
@@ -665,8 +676,7 @@ router.post("/register/complete", emailCodeLimiter, async (req, res) => {
 
     await prisma.verificationCode.delete({ where: { email } });
 
-    req.session.asUserId = null;
-    req.session.user = user;
+    establishLoginSession(req, user);
 
     return res.json({ ok: true, user });
   } catch (err) {
