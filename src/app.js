@@ -107,7 +107,7 @@ function safeTokenCompare(given, expected) {
 }
 
 function isMetricsAuthorized(req) {
-  if (!OBS_METRICS_TOKEN) return true;
+  if (!OBS_METRICS_TOKEN) return false;
   const candidate =
     req.get("x-metrics-token") ||
     req.query.token ||

@@ -135,7 +135,7 @@ function main() {
     checkEnv("PAYMOB_IFRAME_ID", "fail", "payment provider"),
     checkEnv("PAYMOB_HMAC_SECRET", "fail", "webhook signature validation"),
 
-    checkEnv("OBS_METRICS_TOKEN", "warn", "protect /metrics endpoint"),
+    checkEnv("OBS_METRICS_TOKEN", "fail", "authorize /metrics scraping"),
     checkCustom(
       "runtime:alerts_enabled",
       truthy("OBS_ALERTS_ENABLED", true),

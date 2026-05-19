@@ -161,6 +161,7 @@ export const SENTRY_PROFILES_SAMPLE_RATE = parseUnitIntervalEnv(
 
 // Observability: metrics / alerting
 export const OBS_METRICS_TOKEN = (process.env.OBS_METRICS_TOKEN || "").trim();
+requireProductionSecret("OBS_METRICS_TOKEN", OBS_METRICS_TOKEN);
 
 export const OBS_ALERTS_ENABLED = parseBooleanEnv("OBS_ALERTS_ENABLED", !isTest);
 export const OBS_ALERT_WEBHOOK_URL = (process.env.OBS_ALERT_WEBHOOK_URL || "").trim();

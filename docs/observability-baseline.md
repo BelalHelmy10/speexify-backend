@@ -21,7 +21,7 @@ Completed request logs include method, route, status code, latency, identity hin
 
 - `GET /metrics`
   - Prometheus text format
-  - Protected by `OBS_METRICS_TOKEN` when set
+  - Requires `OBS_METRICS_TOKEN`
   - Pass token with header `x-metrics-token`
 
 - `GET /api/observability/summary?windowMs=<ms>`
@@ -46,7 +46,7 @@ Tracing / Sentry:
 
 Metrics:
 
-- `OBS_METRICS_TOKEN` (optional; when set, `/metrics` requires token)
+- `OBS_METRICS_TOKEN` (required in production; `/metrics` returns `401` without it)
 
 Alerts:
 

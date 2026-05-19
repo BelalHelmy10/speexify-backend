@@ -74,6 +74,7 @@ test("production env falls back token/feed secrets to a strong session secret", 
   const env = await importFreshEnv({
     NODE_ENV: "production",
     SESSION_SECRET: sessionSecret,
+    OBS_METRICS_TOKEN: "speexify-production-metrics-token-0001",
     WS_AUTH_TOKEN_SECRET: undefined,
     CALENDAR_FEED_SECRET: undefined,
     REDIS_URL: "redis://localhost:6379",
@@ -82,6 +83,19 @@ test("production env falls back token/feed secrets to a strong session secret", 
   assert.equal(env.SESSION_SECRET, sessionSecret);
   assert.equal(env.WS_AUTH_TOKEN_SECRET, sessionSecret);
   assert.equal(env.CALENDAR_FEED_SECRET, sessionSecret);
+});
+
+test("production env rejects missing OBS_METRICS_TOKEN", async () => {
+  await assert.rejects(
+    () =>
+      importFreshEnv({
+        NODE_ENV: "production",
+        SESSION_SECRET: "speexify-production-session-secret-0003",
+        OBS_METRICS_TOKEN: undefined,
+        REDIS_URL: "redis://localhost:6379",
+      }),
+    /OBS_METRICS_TOKEN must be set in production/
+  );
 });
 
 test("production env rejects insecure dedicated token secrets", async () => {

@@ -43,7 +43,7 @@ function isChatRateLimited(sessionId, userId) {
 }
 
 // Cleanup stale keys every 60 seconds to prevent memory leaks
-setInterval(() => {
+const chatRateLimitCleanupInterval = setInterval(() => {
     const cutoff = Date.now() - CHAT_RATE_LIMIT_WINDOW_MS * 2;
     for (const [key, timestamps] of chatRateLimitMap) {
         if (!timestamps.length || timestamps[timestamps.length - 1] <= cutoff) {
@@ -51,6 +51,7 @@ setInterval(() => {
         }
     }
 }, 60000);
+chatRateLimitCleanupInterval.unref?.();
 
 function parseSessionIdParam(raw) {
     const sessionId = Number(raw);
