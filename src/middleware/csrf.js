@@ -50,12 +50,17 @@ function shouldExcludeCsrf(url) {
 // Main CSRF middleware
 // ------------------------------------------------------------
 export function csrfMiddleware(req, res, next) {
-  // Skip entirely in automated test mode
+  const url = req.originalUrl || req.path || "";
+
+  // CSRF TOKEN ENDPOINT: must generate token, including in automated tests.
+  if (url.startsWith("/api/csrf-token")) {
+    return rawCsrf(req, res, next);
+  }
+
+  // Skip validation in automated test mode after token generation remains available.
   if (process.env.NODE_ENV === "test") {
     return next();
   }
-
-  const url = req.originalUrl || req.path || "";
 
   // Debug logging
   if (process.env.NODE_ENV !== "production") {
@@ -63,11 +68,6 @@ export function csrfMiddleware(req, res, next) {
     if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
       console.log("[CSRF] Checking:", method, url);
     }
-  }
-
-  // CSRF TOKEN ENDPOINT: must generate token
-  if (url.startsWith("/api/csrf-token")) {
-    return rawCsrf(req, res, next);
   }
 
   // Check exclusions
