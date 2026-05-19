@@ -68,6 +68,17 @@ const publicUserSelect = {
   ratePerSessionCents: true,
 };
 
+const googleUserSelect = {
+  id: true,
+  email: true,
+  name: true,
+  avatarUrl: true,
+  role: true,
+  timezone: true,
+  language: true,
+  isDisabled: true,
+};
+
 // ---- Codes + hashing ----
 const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
 const hashCode = (raw) =>
@@ -80,6 +91,10 @@ async function randomHashedPassword() {
 
 function getErrorMessage(err) {
   return (err && (err.message || err.toString())) || "unknown_error";
+}
+
+function isUniqueConstraintError(err) {
+  return err?.code === "P2002";
 }
 
 function isGoogleCertificateFetchError(message) {
@@ -138,6 +153,35 @@ function establishLoginSession(req, user, { loginAtMs = Date.now() } = {}) {
   };
 }
 
+async function findOrCreateGoogleUser({ email, name }) {
+  const existing = await prisma.user.findUnique({
+    where: { email },
+    select: googleUserSelect,
+  });
+  if (existing) return existing;
+
+  const hashedPassword = await randomHashedPassword();
+
+  try {
+    return await prisma.user.create({
+      data: { email, name, hashedPassword, role: "learner" },
+      select: googleUserSelect,
+    });
+  } catch (err) {
+    // Two Google callbacks for the same new account can arrive together.
+    // If one request wins the insert, the other should continue as a login.
+    if (isUniqueConstraintError(err)) {
+      logger.warn({ email }, "[google] user create raced with existing account");
+      return await prisma.user.findUnique({
+        where: { email },
+        select: googleUserSelect,
+      });
+    }
+
+    throw err;
+  }
+}
+
 /* ========================================================================== */
 /*                                   LOGIN                                   */
 /* ========================================================================== */
@@ -185,13 +229,25 @@ router.post("/google", authLimiter, async (req, res) => {
         {},
         "[google] Missing GOOGLE_CLIENT_ID env; cannot verify token."
       );
-      return res.status(500).json({ ok: false, error: "config_error" });
+      return res.status(500).json(
+        googleErrorBody(
+          "config_error",
+          "Google login is not configured on the server.",
+          "GOOGLE_CLIENT_ID is missing"
+        )
+      );
     }
 
     const credential =
       typeof req.body?.credential === "string" ? req.body.credential : "";
     if (!credential) {
-      return res.status(400).json({ ok: false, error: "missing_credential" });
+      return res.status(400).json(
+        googleErrorBody(
+          "missing_credential",
+          "Google did not return a login credential. Please try again.",
+          "credential is missing"
+        )
+      );
     }
 
     const origin = req.get("origin") || "unknown-origin";
@@ -245,43 +301,28 @@ router.post("/google", authLimiter, async (req, res) => {
     const name = payload?.name ? String(payload.name).trim() : null;
 
     if (!email || !emailVerified) {
-      return res.status(400).json({ ok: false, error: "unverified_email" });
+      return res.status(400).json(
+        googleErrorBody(
+          "unverified_email",
+          "Your Google account email must be verified before signing in.",
+          "missing or unverified email in Google token"
+        )
+      );
     }
 
-    let user = await prisma.user.findUnique({ where: { email } });
-    if (user?.isDisabled) {
-      return res.status(403).json({ ok: false, error: "account_disabled" });
-    }
-
+    const user = await findOrCreateGoogleUser({ email, name });
     if (!user) {
-      const hashedPassword = await randomHashedPassword();
-      user = await prisma.user.create({
-        data: { email, name, hashedPassword, role: "learner" },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          avatarUrl: true,
-          role: true,
-          timezone: true,
-          language: true,
-          isDisabled: true,
-        },
-      });
-    } else {
-      user = await prisma.user.findUnique({
-        where: { email },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          avatarUrl: true,
-          role: true,
-          timezone: true,
-          language: true,
-          isDisabled: true,
-        },
-      });
+      throw new Error("Google user lookup returned no user");
+    }
+
+    if (user?.isDisabled) {
+      return res.status(403).json(
+        googleErrorBody(
+          "account_disabled",
+          "This account is disabled. Please contact support.",
+          `disabled account: ${email}`
+        )
+      );
     }
 
     establishLoginSession(req, user);
@@ -289,7 +330,13 @@ router.post("/google", authLimiter, async (req, res) => {
     req.session.save((saveErr) => {
       if (saveErr) {
         logger.error({ err: saveErr }, "[google] session.save error");
-        return res.status(500).json({ ok: false, error: "session_error" });
+        return res.status(500).json(
+          googleErrorBody(
+            "session_error",
+            "Google sign-in worked, but the login session could not be saved. Please try again.",
+            getErrorMessage(saveErr)
+          )
+        );
       }
       res.set({
         "Cache-Control":
@@ -304,13 +351,13 @@ router.post("/google", authLimiter, async (req, res) => {
     });
   } catch (err) {
     const msg = getErrorMessage(err);
-    logger.error({ err: msg }, "[google] login error");
+    logger.error({ err }, "[google] login error");
     return res
       .status(500)
       .json(
         googleErrorBody(
           "server_error",
-          "Google login failed on the server. Please check the backend logs.",
+          "We could not complete Google sign-in. Please try again.",
           msg
         )
       );
