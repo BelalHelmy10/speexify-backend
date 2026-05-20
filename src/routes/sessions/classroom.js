@@ -118,6 +118,7 @@ function sanitizeScrollPatch(scroll) {
     if (scrollNorm === null) return null;
 
     return {
+        resourceId: safeString(scroll.resourceId, 300) ?? null,
         scrollNorm,
         updatedAt: new Date().toISOString(),
     };
@@ -155,6 +156,43 @@ function sanitizeAudioPatch(audio) {
     };
 }
 
+function sanitizeModerationPatch(moderation) {
+    if (!moderation || typeof moderation !== "object" || Array.isArray(moderation)) return null;
+
+    const next = {};
+    if (moderation.locked !== undefined) {
+        next.locked = Boolean(moderation.locked);
+    }
+
+    if (!Object.keys(next).length) return null;
+
+    return {
+        ...next,
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function sanitizeClassroomClientErrorReport(input) {
+    const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const location =
+        source.location && typeof source.location === "object" && !Array.isArray(source.location)
+            ? {
+                href: safeString(source.location.href, 1000),
+                pathname: safeString(source.location.pathname, 500),
+            }
+            : null;
+
+    return {
+        name: safeString(source.name, 200) || "Error",
+        message: safeString(source.message, 2000) || "Unknown classroom client error",
+        stack: safeString(source.stack, 12000),
+        componentStack: safeString(source.componentStack, 12000),
+        userAgent: safeString(source.userAgent, 1000),
+        location,
+        reportedAt: new Date().toISOString(),
+    };
+}
+
 function sanitizeClassroomStatePatch(input) {
     const source =
         input?.state && typeof input.state === "object" && !Array.isArray(input.state)
@@ -177,6 +215,9 @@ function sanitizeClassroomStatePatch(input) {
 
     const audio = sanitizeAudioPatch(source.audio);
     if (audio) patch.audio = audio;
+
+    const moderation = sanitizeModerationPatch(source.moderation);
+    if (moderation) patch.moderation = moderation;
 
     return patch;
 }
@@ -204,6 +245,14 @@ function mergeClassroomState(existingState, patch) {
     if (patch.contentScroll) next.contentScroll = patch.contentScroll;
     if (patch.pdfScroll) next.pdfScroll = patch.pdfScroll;
     if (patch.audio) next.audio = patch.audio;
+    if (patch.moderation) {
+        next.moderation = {
+            ...(existing.moderation && typeof existing.moderation === "object"
+                ? existing.moderation
+                : {}),
+            ...patch.moderation,
+        };
+    }
 
     return next;
 }
@@ -371,6 +420,44 @@ router.patch("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
     } catch (err) {
         logger.error({ err }, "PATCH /sessions/:id/classroom-state failed");
         return res.status(500).json({ error: "Failed to save classroom state" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/classroom-error - Report client-side classroom errors
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/classroom-error", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await findClassroomSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const { isLearner, isTeacher, isAdmin } = getClassroomAccess(req, session);
+        if (!(isLearner || isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const report = sanitizeClassroomClientErrorReport(req.body || {});
+        logger.error(
+            {
+                sessionId,
+                userId: req.user?.id,
+                viewUserId: req.viewUserId,
+                report,
+            },
+            "Classroom client render error reported"
+        );
+
+        return res.json({ ok: true });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/classroom-error failed");
+        return res.status(500).json({ error: "Failed to report classroom error" });
     }
 });
 

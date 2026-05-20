@@ -14,6 +14,16 @@ function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEG
     return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+function isClassroomLocked(session) {
+    const state = session?.classroomState;
+    return Boolean(
+        state &&
+        typeof state === "object" &&
+        !Array.isArray(state) &&
+        state.moderation?.locked
+    );
+}
+
 // --------------------------------------------------------------------------
 // GET /api/sessions - List sessions for current user (learner view)
 // FIX: Include both participants AND legacy userId field
@@ -103,6 +113,18 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 
         if (!(isLearner || isTeacher || isAdmin)) {
             return res.status(403).json({ error: "Forbidden" });
+        }
+
+        if (
+            req.query.classroomJoin === "1" &&
+            isClassroomLocked(session) &&
+            isLearner &&
+            !(isTeacher || isAdmin)
+        ) {
+            return res.status(423).json({
+                error: "This classroom is locked. Ask the teacher to let you in.",
+                code: "CLASSROOM_LOCKED",
+            });
         }
 
         // Build teacher feedback from either new relation or legacy fields

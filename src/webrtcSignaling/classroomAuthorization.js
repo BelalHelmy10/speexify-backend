@@ -26,17 +26,39 @@ function hasActiveParticipantSeat(session, userId) {
   );
 }
 
-function isAllowedClassroomMember({ user, session, userId }) {
-  if (!user || user.isDisabled) return false;
-  if (!session) return false;
+function getClassroomMembership({ user, session, userId }) {
+  if (!user || user.isDisabled || !session) {
+    return {
+      isAllowed: false,
+      isAdmin: false,
+      isTeacher: false,
+      isLearner: false,
+    };
+  }
 
   const role = String(user.role || "").toLowerCase();
   const isAdmin = role === "admin";
   const isTeacher = session.teacherId === userId;
   const isLegacyLearner = session.userId === userId;
   const isParticipant = hasActiveParticipantSeat(session, userId);
+  const isLearner = isLegacyLearner || isParticipant;
 
-  return isAdmin || isTeacher || isLegacyLearner || isParticipant;
+  return {
+    isAllowed: isAdmin || isTeacher || isLearner,
+    isAdmin,
+    isTeacher,
+    isLearner,
+  };
+}
+
+function isClassroomLocked(session) {
+  const state = session?.classroomState;
+  return Boolean(
+    state &&
+      typeof state === "object" &&
+      !Array.isArray(state) &&
+      state.moderation?.locked
+  );
 }
 
 export function createClassroomJoinAuthorizer({
@@ -73,6 +95,7 @@ export function createClassroomJoinAuthorizer({
           id: true,
           userId: true,
           teacherId: true,
+          classroomState: true,
           participants: {
             select: {
               userId: true,
@@ -83,8 +106,18 @@ export function createClassroomJoinAuthorizer({
       }),
     ]);
 
-    if (!isAllowedClassroomMember({ user, session, userId: numericUserId })) {
+    const membership = getClassroomMembership({ user, session, userId: numericUserId });
+    if (!membership.isAllowed) {
       return { allowed: false, reason: "forbidden_classroom_room" };
+    }
+
+    if (
+      isClassroomLocked(session) &&
+      membership.isLearner &&
+      !membership.isTeacher &&
+      !membership.isAdmin
+    ) {
+      return { allowed: false, reason: "classroom_locked" };
     }
 
     return {
@@ -97,4 +130,3 @@ export function createClassroomJoinAuthorizer({
 }
 
 export const authorizeClassroomJoin = createClassroomJoinAuthorizer();
-
