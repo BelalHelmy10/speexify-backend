@@ -163,6 +163,9 @@ function sanitizeModerationPatch(moderation) {
     if (moderation.locked !== undefined) {
         next.locked = Boolean(moderation.locked);
     }
+    if (moderation.lobbyEnabled !== undefined) {
+        next.lobbyEnabled = Boolean(moderation.lobbyEnabled);
+    }
 
     if (!Object.keys(next).length) return null;
 
@@ -1228,6 +1231,483 @@ router.get("/sessions/:id/summary", requireAuth, async (req, res) => {
     } catch (err) {
         logger.error({ err }, "GET /sessions/:id/summary failed");
         return res.status(500).json({ error: "Failed to load summary" });
+    }
+});
+
+// ==========================================================================
+// LOBBY / WAITING ROOM — Group session admission control
+// ==========================================================================
+
+// In-memory lobby state: sessionId → Map<learnerId, { id, name, email, joinedAt }>
+const lobbyMap = new Map();
+
+function getLobby(sessionId) {
+    if (!lobbyMap.has(sessionId)) {
+        lobbyMap.set(sessionId, new Map());
+    }
+    return lobbyMap.get(sessionId);
+}
+
+function getLobbyList(sessionId) {
+    const lobby = lobbyMap.get(sessionId);
+    if (!lobby || lobby.size === 0) return [];
+    return Array.from(lobby.values()).sort(
+        (a, b) => new Date(a.joinedAt) - new Date(b.joinedAt)
+    );
+}
+
+function removeLobbyLearner(sessionId, learnerId) {
+    const lobby = lobbyMap.get(sessionId);
+    if (lobby) {
+        lobby.delete(Number(learnerId));
+        if (lobby.size === 0) lobbyMap.delete(sessionId);
+    }
+}
+
+// Cleanup idle lobbies every 10 minutes (sessions older than 4 hours)
+const lobbyCleanupInterval = setInterval(() => {
+    const cutoff = Date.now() - 4 * 60 * 60 * 1000;
+    for (const [sessionId, lobby] of lobbyMap) {
+        let allOld = true;
+        for (const entry of lobby.values()) {
+            if (new Date(entry.joinedAt).getTime() > cutoff) {
+                allOld = false;
+                break;
+            }
+        }
+        if (allOld) lobbyMap.delete(sessionId);
+    }
+}, 10 * 60 * 1000);
+lobbyCleanupInterval.unref?.();
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/lobby/join - Learner requests admission to group session
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                type: true,
+                userId: true,
+                teacherId: true,
+                classroomState: true,
+                participants: {
+                    select: { userId: true, status: true },
+                },
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        // Check if lobby is enabled (enabled by default for all session types)
+        const classroomState = getStoredClassroomState(session.classroomState);
+        const lobbyEnabled = classroomState?.moderation?.lobbyEnabled !== false;
+
+        if (!lobbyEnabled) {
+            // No lobby needed — directly admitted
+            return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
+        }
+
+        // Check if classroom is locked
+        if (classroomState?.moderation?.locked) {
+            return res.status(403).json({
+                error: "Classroom is locked. Late joins are not allowed.",
+                status: "denied",
+            });
+        }
+
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const isTeacher = session.teacherId === Number(req.user?.id);
+
+        // Teachers skip the lobby
+        if (isTeacher) {
+            return res.json({ ok: true, status: "admitted", lobbyEnabled: true });
+        }
+
+        // Check if learner is an approved participant
+        const isParticipant = session.participants.some(
+            (p) => p.userId === viewerId && p.status !== "canceled"
+        );
+        const isLegacyLearner = session.userId === viewerId;
+
+        if (!(isParticipant || isLegacyLearner)) {
+            return res.status(403).json({ error: "You are not a participant of this session" });
+        }
+
+        // Check if already admitted (stored in classroomState.lobby.admitted)
+        const admittedList = classroomState?.lobby?.admitted || [];
+        if (admittedList.includes(viewerId)) {
+            return res.json({ ok: true, status: "admitted" });
+        }
+
+        // Add to lobby
+        const lobby = getLobby(sessionId);
+        const sender = Number.isFinite(viewerId)
+            ? await prisma.user.findUnique({
+                where: { id: viewerId },
+                select: { id: true, name: true, email: true },
+            })
+            : null;
+
+        lobby.set(viewerId, {
+            id: viewerId,
+            name: sender?.name || req.body?.name || "Learner",
+            email: sender?.email || null,
+            joinedAt: new Date().toISOString(),
+        });
+
+        return res.json({
+            ok: true,
+            status: "waiting",
+            position: lobby.size,
+        });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/lobby/join failed");
+        return res.status(500).json({ error: "Failed to join lobby" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/lobby - Teacher gets list of waiting learners
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                teacherId: true,
+                classroomState: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const isTeacher = session.teacherId === Number(req.user?.id);
+        const isAdmin = req.user?.role === "admin";
+
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only teachers can view the lobby" });
+        }
+
+        return res.json({
+            ok: true,
+            waiting: getLobbyList(sessionId),
+        });
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/lobby failed");
+        return res.status(500).json({ error: "Failed to get lobby" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/lobby/admit - Teacher admits a learner
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                teacherId: true,
+                classroomState: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const isTeacher = session.teacherId === Number(req.user?.id);
+        const isAdmin = req.user?.role === "admin";
+
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only teachers can admit learners" });
+        }
+
+        const learnerId = Number(req.body?.learnerId);
+        if (!learnerId || !Number.isFinite(learnerId)) {
+            return res.status(400).json({ error: "learnerId is required" });
+        }
+
+        // Remove from lobby
+        removeLobbyLearner(sessionId, learnerId);
+
+        // Persist admission in classroomState
+        const existing = getStoredClassroomState(session.classroomState);
+        const lobby = existing.lobby || {};
+        const admitted = Array.isArray(lobby.admitted) ? [...lobby.admitted] : [];
+        if (!admitted.includes(learnerId)) {
+            admitted.push(learnerId);
+        }
+
+        const nextState = {
+            ...existing,
+            lobby: { ...lobby, admitted },
+            updatedAt: new Date().toISOString(),
+        };
+
+        await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+        });
+
+        return res.json({
+            ok: true,
+            admitted: learnerId,
+            waiting: getLobbyList(sessionId),
+        });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/lobby/admit failed");
+        return res.status(500).json({ error: "Failed to admit learner" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/lobby/deny - Teacher denies a learner
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                teacherId: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const isTeacher = session.teacherId === Number(req.user?.id);
+        const isAdmin = req.user?.role === "admin";
+
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only teachers can deny learners" });
+        }
+
+        const learnerId = Number(req.body?.learnerId);
+        if (!learnerId || !Number.isFinite(learnerId)) {
+            return res.status(400).json({ error: "learnerId is required" });
+        }
+
+        // Remove from lobby
+        removeLobbyLearner(sessionId, learnerId);
+
+        return res.json({
+            ok: true,
+            denied: learnerId,
+            waiting: getLobbyList(sessionId),
+        });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/lobby/deny failed");
+        return res.status(500).json({ error: "Failed to deny learner" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/lobby/admit-all - Teacher admits all waiting learners
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                teacherId: true,
+                classroomState: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const isTeacher = session.teacherId === Number(req.user?.id);
+        const isAdmin = req.user?.role === "admin";
+
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only teachers can admit learners" });
+        }
+
+        // Get all waiting learner IDs
+        const waitingList = getLobbyList(sessionId);
+        const learnerIds = waitingList.map((l) => l.id);
+
+        // Clear lobby
+        lobbyMap.delete(sessionId);
+
+        // Persist admission in classroomState
+        const existing = getStoredClassroomState(session.classroomState);
+        const lobby = existing.lobby || {};
+        const admitted = Array.isArray(lobby.admitted) ? [...lobby.admitted] : [];
+        for (const id of learnerIds) {
+            if (!admitted.includes(id)) admitted.push(id);
+        }
+
+        const nextState = {
+            ...existing,
+            lobby: { ...lobby, admitted },
+            updatedAt: new Date().toISOString(),
+        };
+
+        await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+        });
+
+        return res.json({
+            ok: true,
+            admittedCount: learnerIds.length,
+            admittedIds: learnerIds,
+            waiting: [],
+        });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/lobby/admit-all failed");
+        return res.status(500).json({ error: "Failed to admit all learners" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/lobby/toggle - Teacher enables/disables lobby
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/lobby/toggle", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                teacherId: true,
+                classroomState: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const isTeacher = session.teacherId === Number(req.user?.id);
+        const isAdmin = req.user?.role === "admin";
+
+        if (!(isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Only teachers can toggle the lobby" });
+        }
+
+        const enabled = req.body?.enabled !== false;
+        const existing = getStoredClassroomState(session.classroomState);
+        const moderation = existing.moderation || {};
+
+        const nextState = {
+            ...existing,
+            moderation: { ...moderation, lobbyEnabled: enabled },
+            updatedAt: new Date().toISOString(),
+        };
+
+        await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+        });
+
+        return res.json({ ok: true, lobbyEnabled: enabled });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/lobby/toggle failed");
+        return res.status(500).json({ error: "Failed to toggle lobby" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/lobby/status - Learner checks their lobby status
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId },
+            select: {
+                id: true,
+                type: true,
+                teacherId: true,
+                classroomState: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const isTeacher = session.teacherId === Number(req.user?.id);
+
+        // Teachers are always admitted
+        if (isTeacher) {
+            return res.json({ ok: true, status: "admitted" });
+        }
+
+        const classroomState = getStoredClassroomState(session.classroomState);
+
+        // Check if lobby is even enabled
+        if (classroomState?.moderation?.lobbyEnabled === false) {
+            return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
+        }
+
+        // Check if already admitted
+        const admittedList = classroomState?.lobby?.admitted || [];
+        if (admittedList.includes(viewerId)) {
+            return res.json({ ok: true, status: "admitted" });
+        }
+
+        // Check if in lobby
+        const lobby = lobbyMap.get(sessionId);
+        if (lobby && lobby.has(viewerId)) {
+            return res.json({ ok: true, status: "waiting", position: Array.from(lobby.keys()).indexOf(viewerId) + 1 });
+        }
+
+        // Not in lobby yet (needs to join)
+        return res.json({ ok: true, status: "not_joined" });
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/lobby/status failed");
+        return res.status(500).json({ error: "Failed to check lobby status" });
     }
 });
 
