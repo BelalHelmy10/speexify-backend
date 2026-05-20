@@ -12,6 +12,7 @@ import {
 const router = Router();
 const SESSION_LIST_DEFAULT_LIMIT = 10;
 const SESSION_LIST_MAX_LIMIT = 100;
+const SESSION_LIST_MAX_OFFSET = 5000;
 const SESSIONS_BETWEEN_DEFAULT_LIMIT = 500;
 const SESSIONS_BETWEEN_MAX_LIMIT = 1000;
 
@@ -335,6 +336,11 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
             min: 1,
             max: SESSION_LIST_MAX_LIMIT,
         });
+        const requestedOffset = parseBoundedInt(req.query.offset, {
+            fallback: 0,
+            min: 0,
+            max: SESSION_LIST_MAX_OFFSET,
+        });
         const now = new Date();
 
         // Membership base: include both participants AND legacy userId
@@ -386,6 +392,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
             where,
             orderBy,
             take: requestedLimit,
+            skip: requestedOffset,
             select: {
                 id: true,
                 title: true,
