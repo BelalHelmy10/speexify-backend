@@ -208,6 +208,16 @@ app.use(
   })
 );
 
+app.get("/api/health", (_req, res) => {
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  });
+  return res.json({ ok: true });
+});
+
 app.use(sessionMiddleware);
 
 // CSRF protection (middleware decides which paths to skip)
