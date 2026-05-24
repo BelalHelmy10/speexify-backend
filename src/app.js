@@ -1216,6 +1216,10 @@ app.use((err, req, res, next) => {
     });
   }
 
+  if (err?.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "Origin not allowed" });
+  }
+
   res.status(500).json({ error: "Internal server error" });
 });
 

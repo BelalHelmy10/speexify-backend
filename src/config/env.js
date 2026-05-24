@@ -127,7 +127,8 @@ export const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
 
 // CORS allowed origins (comma-separated list in env)
 const rawAllowedOrigins =
-  process.env.ALLOWED_ORIGINS || "http://localhost:3000";
+  process.env.ALLOWED_ORIGINS ||
+  "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001";
 
 export const ALLOWED_ORIGINS = rawAllowedOrigins
   .split(",")
