@@ -115,12 +115,16 @@ function isGoogleTokenVerificationError(message) {
   return [
     "wrong number of segments",
     "invalid_token",
+    "invalid token",
     "token used too late",
     "token used too early",
+    "audience",
     "audience mismatch",
     "wrong recipient",
+    "issuer",
     "invalid token signature",
     "invalid signature",
+    "jwt",
     "malformed",
     "expired",
     "no pem found",
@@ -128,6 +132,19 @@ function isGoogleTokenVerificationError(message) {
     "can't parse token payload",
     "invalid value",
   ].some((marker) => msg.includes(marker));
+}
+
+function googleTokenVerificationMessage(message) {
+  const msg = String(message || "").toLowerCase();
+  if (
+    msg.includes("audience") ||
+    msg.includes("wrong recipient") ||
+    msg.includes("client id")
+  ) {
+    return "Google sign-in is using a different OAuth client ID than the server. Please check the Google login configuration.";
+  }
+
+  return "Google sign-in could not be verified. Please try again.";
 }
 
 function googleErrorBody(error, message, details) {
@@ -284,13 +301,21 @@ router.post("/google", authLimiter, async (req, res) => {
           .json(
             googleErrorBody(
               "invalid_google_token",
-              "Google sign-in could not be verified. Please try again.",
+              googleTokenVerificationMessage(msg),
               msg
             )
           );
       }
 
-      throw err;
+      return res
+        .status(401)
+        .json(
+          googleErrorBody(
+            "invalid_google_token",
+            googleTokenVerificationMessage(msg),
+            msg
+          )
+        );
     }
 
     const payload = ticket.getPayload();
