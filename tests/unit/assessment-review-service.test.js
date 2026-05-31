@@ -8,14 +8,14 @@ import {
 test("parseAssessmentReviewBody normalizes valid review input", () => {
   const parsed = parseAssessmentReviewBody({
     score: "87",
-    cefr: " b2 ",
+    cefr: " b2.2 ",
     feedback: "  Clear structure; work on article usage.  ",
     meta: { rubric: { grammar: 80, clarity: 90 } },
   });
 
   assert.equal(parsed.success, true);
   assert.equal(parsed.data.score, 87);
-  assert.equal(parsed.data.cefr, "B2");
+  assert.equal(parsed.data.cefr, "B2.2");
   assert.equal(parsed.data.feedback, "Clear structure; work on article usage.");
   assert.deepEqual(parsed.data.meta, { rubric: { grammar: 80, clarity: 90 } });
 });

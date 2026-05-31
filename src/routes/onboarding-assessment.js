@@ -64,28 +64,304 @@ const OnboardingAnswersSchema = z.object({
   consentRecording: z.boolean().optional().default(false),
 });
 
+const AdminIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+const AdminIntakeQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(""),
+  userId: z.coerce.number().int().positive().optional(),
+  status: z
+    .enum([
+      "all",
+      "onboarding_submitted",
+      "assessment_submitted",
+      "needs_review",
+      "reviewed",
+      "missing_onboarding",
+      "missing_assessment",
+    ])
+    .optional()
+    .default("all"),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+});
+
+const AdminListQuerySchema = z.object({
+  userId: z.union([z.coerce.number().int().positive(), z.literal("")]).optional().default(""),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+});
+
+const USER_PUBLIC_SELECT = {
+  id: true,
+  email: true,
+  name: true,
+  role: true,
+  timezone: true,
+  isDisabled: true,
+  createdAt: true,
+};
+
+const ONBOARDING_LIST_SELECT = {
+  id: true,
+  userId: true,
+  packageId: true,
+  status: true,
+  answers: true,
+  createdAt: true,
+  updatedAt: true,
+};
+
+const ASSESSMENT_LIST_SELECT = {
+  id: true,
+  userId: true,
+  packageId: true,
+  status: true,
+  score: true,
+  cefr: true,
+  feedback: true,
+  reviewMeta: true,
+  reviewedAt: true,
+  reviewedById: true,
+  wordCount: true,
+  createdAt: true,
+  updatedAt: true,
+};
+
+const ASSESSMENT_DETAIL_SELECT = {
+  ...ASSESSMENT_LIST_SELECT,
+  text: true,
+  user: { select: USER_PUBLIC_SELECT },
+  reviewedBy: {
+    select: {
+      id: true,
+      email: true,
+      name: true,
+    },
+  },
+};
+
+function buildLearnerSearchWhere({ q = "", userId } = {}) {
+  const where = { role: "learner" };
+
+  if (userId) {
+    where.id = Number(userId);
+  }
+
+  if (q) {
+    where.OR = [
+      { email: { contains: q, mode: "insensitive" } },
+      { name: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  return where;
+}
+
+function buildIntakeWhere({ q, userId, status }) {
+  const where = buildLearnerSearchWhere({ q, userId });
+
+  if (status === "onboarding_submitted") {
+    where.onboardingForms = { some: {} };
+  } else if (status === "assessment_submitted") {
+    where.assessmentSubmissions = { some: {} };
+  } else if (status === "needs_review") {
+    where.assessmentSubmissions = {
+      some: { status: { in: ["submitted", "auto_scored"] } },
+    };
+  } else if (status === "reviewed") {
+    where.assessmentSubmissions = { some: { status: "reviewed" } };
+  } else if (status === "missing_onboarding") {
+    where.onboardingForms = { none: {} };
+  } else if (status === "missing_assessment") {
+    where.assessmentSubmissions = { none: {} };
+  }
+
+  return where;
+}
+
+function latestOrNull(rows) {
+  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+}
+
 /* ========================================================================== */
 /*                        ADMIN: ONBOARDING + ASSESSMENTS                     */
 /* ========================================================================== */
 
+// GET /api/admin/intake?q=&userId=&status=&limit=&offset=
+router.get("/admin/intake", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const parsed = AdminIntakeQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "query"),
+      });
+    }
+
+    const { q, userId, status, limit, offset } = parsed.data;
+    const where = buildIntakeWhere({ q, userId, status });
+    const summaryUserWhere = buildLearnerSearchWhere({ q, userId });
+    const linkedUserWhere = { user: summaryUserWhere };
+
+    const [
+      users,
+      total,
+      learnersTotal,
+      onboardingFormsTotal,
+      assessmentsTotal,
+      needsReviewTotal,
+      reviewedAssessmentsTotal,
+    ] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+        select: {
+          ...USER_PUBLIC_SELECT,
+          onboardingForms: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: ONBOARDING_LIST_SELECT,
+          },
+          assessmentSubmissions: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: ASSESSMENT_LIST_SELECT,
+          },
+          _count: {
+            select: {
+              onboardingForms: true,
+              assessmentSubmissions: true,
+            },
+          },
+        },
+      }),
+      prisma.user.count({ where }),
+      prisma.user.count({ where: summaryUserWhere }),
+      prisma.onboardingForm.count({ where: linkedUserWhere }),
+      prisma.assessmentSubmission.count({ where: linkedUserWhere }),
+      prisma.assessmentSubmission.count({
+        where: {
+          ...linkedUserWhere,
+          status: { in: ["submitted", "auto_scored"] },
+        },
+      }),
+      prisma.assessmentSubmission.count({
+        where: {
+          ...linkedUserWhere,
+          status: "reviewed",
+        },
+      }),
+    ]);
+
+    const items = users.map((user) => ({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        timezone: user.timezone,
+        isDisabled: user.isDisabled,
+        createdAt: user.createdAt,
+      },
+      latestOnboarding: latestOrNull(user.onboardingForms),
+      latestAssessment: latestOrNull(user.assessmentSubmissions),
+      counts: user._count,
+    }));
+
+    res.json({
+      items,
+      total,
+      limit,
+      offset,
+      summary: {
+        learnersTotal,
+        onboardingFormsTotal,
+        assessmentsTotal,
+        needsReviewTotal,
+        reviewedAssessmentsTotal,
+      },
+    });
+  } catch (e) {
+    logger.error({ err: e }, "admin.intake.list error");
+    res.status(500).json({ error: "Failed to load learner intake" });
+  }
+});
+
+// GET /api/admin/users/:id/intake
+router.get(
+  "/admin/users/:id/intake",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const parsed = AdminIdParamsSchema.safeParse(req.params);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: formatZodError(parsed.error, "params"),
+        });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: parsed.data.id },
+        select: {
+          ...USER_PUBLIC_SELECT,
+          onboardingForms: {
+            orderBy: { createdAt: "desc" },
+            select: ONBOARDING_LIST_SELECT,
+          },
+          assessmentSubmissions: {
+            orderBy: { createdAt: "desc" },
+            select: ASSESSMENT_DETAIL_SELECT,
+          },
+        },
+      });
+
+      if (!user || user.role !== "learner") {
+        return res.status(404).json({ error: "Learner not found" });
+      }
+
+      const { onboardingForms, assessmentSubmissions, ...learner } = user;
+      res.json({
+        user: learner,
+        onboardingForms,
+        assessments: assessmentSubmissions,
+        latestOnboarding: latestOrNull(onboardingForms),
+        latestAssessment: latestOrNull(assessmentSubmissions),
+      });
+    } catch (e) {
+      logger.error({ err: e }, "admin.intake.detail error");
+      res.status(500).json({ error: "Failed to load learner intake detail" });
+    }
+  }
+);
+
 // GET /api/admin/onboarding?userId=&limit=&offset=
 router.get("/admin/onboarding", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { userId = "", limit = "50", offset = "0" } = req.query;
+    const parsed = AdminListQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: formatZodError(parsed.error, "query"),
+      });
+    }
+
+    const { userId, limit, offset } = parsed.data;
     const where = userId ? { userId: Number(userId) } : {};
     const [items, total] = await Promise.all([
       prisma.onboardingForm.findMany({
         where,
         orderBy: { createdAt: "desc" },
-        take: Number(limit),
-        skip: Number(offset),
+        take: limit,
+        skip: offset,
         select: {
-          id: true,
-          userId: true,
-          packageId: true,
-          status: true,
-          createdAt: true,
-          answers: true,
+          ...ONBOARDING_LIST_SELECT,
+          user: { select: USER_PUBLIC_SELECT },
         },
       }),
       prisma.onboardingForm.count({ where }),
@@ -104,28 +380,25 @@ router.get(
   requireAdmin,
   async (req, res) => {
     try {
-      const { userId = "", limit = "50", offset = "0" } = req.query;
+      const parsed = AdminListQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: formatZodError(parsed.error, "query"),
+        });
+      }
+
+      const { userId, limit, offset } = parsed.data;
       const where = userId ? { userId: Number(userId) } : {};
       const [items, total] = await Promise.all([
         prisma.assessmentSubmission.findMany({
           where,
           orderBy: { createdAt: "desc" },
-          take: Number(limit),
-          skip: Number(offset),
+          take: limit,
+          skip: offset,
           select: {
-            id: true,
-            userId: true,
-            packageId: true,
-            status: true,
-            score: true,
-            cefr: true,
-            feedback: true,
-            reviewMeta: true,
-            reviewedAt: true,
-            reviewedById: true,
-            wordCount: true,
-            createdAt: true,
-            updatedAt: true,
+            ...ASSESSMENT_LIST_SELECT,
+            user: { select: USER_PUBLIC_SELECT },
           },
         }),
         prisma.assessmentSubmission.count({ where }),
@@ -134,6 +407,38 @@ router.get(
     } catch (e) {
       logger.error({ err: e }, "admin.assessments.list error");
       res.status(500).json({ error: "Failed to load assessments" });
+    }
+  }
+);
+
+// GET /api/admin/assessments/:id
+router.get(
+  "/admin/assessments/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const parsed = AdminIdParamsSchema.safeParse(req.params);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: formatZodError(parsed.error, "params"),
+        });
+      }
+
+      const assessment = await prisma.assessmentSubmission.findUnique({
+        where: { id: parsed.data.id },
+        select: ASSESSMENT_DETAIL_SELECT,
+      });
+
+      if (!assessment) {
+        return res.status(404).json({ error: "Assessment not found" });
+      }
+
+      res.json({ assessment });
+    } catch (e) {
+      logger.error({ err: e }, "admin.assessments.detail error");
+      res.status(500).json({ error: "Failed to load assessment" });
     }
   }
 );

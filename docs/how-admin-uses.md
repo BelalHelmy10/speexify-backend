@@ -74,3 +74,27 @@ Shows:
 - teaching method
 
 Used for monthly invoices/payments.
+
+---
+
+## 6. Review learner intake and assessments
+
+Admins use `/admin/intake` to see each learner's onboarding form and latest
+writing assessment in one operational queue.
+
+Admin can:
+
+- search learners
+- filter by missing onboarding, missing assessment, needs review, or reviewed
+- open a learner intake detail view
+- read all onboarding submissions grouped by profile, goals, and needs analysis
+- read the full assessment attempt, including MCQ answers, reading, listening,
+  speaking descriptors, writing text, section scores, and final result
+- save CEFR, score, and review feedback
+
+Backend:
+
+- `GET /admin/intake`
+- `GET /admin/users/:id/intake`
+- `GET /admin/assessments/:id`
+- `POST /admin/assessments/:id/review`
