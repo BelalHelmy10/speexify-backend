@@ -1,13 +1,41 @@
 // src/routes/availability.js
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { logger } from "../lib/logger.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 
 const router = Router();
 const AVAILABILITY_ADMIN_DEFAULT_LIMIT = 100;
 const AVAILABILITY_ADMIN_MAX_LIMIT = 500;
 const AVAILABILITY_ADMIN_MAX_OFFSET = 10000;
+const TimeStringSchema = z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/);
+const AvailabilityIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+const AvailabilityBodySchema = z.object({
+  dayOfWeek: z.coerce.number().int().min(0).max(6).optional().nullable(),
+  specificDate: z.string().trim().min(1).max(40).optional().nullable(),
+  startTime: TimeStringSchema,
+  endTime: TimeStringSchema,
+  timezone: z.string().trim().min(1).max(80).optional(),
+  isRecurring: z.boolean().optional().default(true),
+  note: z.string().trim().max(1000).optional().nullable(),
+});
+const AvailabilityBulkBodySchema = z.object({
+  slots: z.array(AvailabilityBodySchema).min(1).max(50),
+});
+const AvailabilityPatchBodySchema = z.object({
+  startTime: TimeStringSchema.optional(),
+  endTime: TimeStringSchema.optional(),
+  note: z.string().trim().max(1000).optional().nullable(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+const AvailabilityBulkDeleteQuerySchema = z.object({
+  dayOfWeek: z.coerce.number().int().min(0).max(6).optional(),
+  isRecurring: z.enum(["true", "false"]).optional(),
+});
 
 function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
   const parsed = Number(value);
@@ -88,7 +116,7 @@ router.get("/availability", requireAuth, async (req, res) => {
  * POST /api/availability
  * Create a new availability slot
  */
-router.post("/availability", requireAuth, async (req, res) => {
+router.post("/availability", requireAuth, validateRequest({ body: AvailabilityBodySchema }), async (req, res) => {
   try {
     const userId = req.viewUserId;
     const {
@@ -196,7 +224,7 @@ router.post("/availability", requireAuth, async (req, res) => {
  * POST /api/availability/bulk
  * Create multiple availability slots at once
  */
-router.post("/availability/bulk", requireAuth, async (req, res) => {
+router.post("/availability/bulk", requireAuth, validateRequest({ body: AvailabilityBulkBodySchema }), async (req, res) => {
   try {
     const userId = req.viewUserId;
     const { slots } = req.body;
@@ -282,7 +310,11 @@ router.post("/availability/bulk", requireAuth, async (req, res) => {
  * PATCH /api/availability/:id
  * Update an availability slot
  */
-router.patch("/availability/:id", requireAuth, async (req, res) => {
+router.patch(
+  "/availability/:id",
+  requireAuth,
+  validateRequest({ params: AvailabilityIdParamsSchema, body: AvailabilityPatchBodySchema }),
+  async (req, res) => {
   try {
     const userId = req.viewUserId;
     const id = Number(req.params.id);
@@ -364,13 +396,18 @@ router.patch("/availability/:id", requireAuth, async (req, res) => {
     logger.error({ err }, "PATCH /availability/:id failed");
     res.status(500).json({ error: "Failed to update availability" });
   }
-});
+  }
+);
 
 /**
  * DELETE /api/availability/:id
  * Delete an availability slot
  */
-router.delete("/availability/:id", requireAuth, async (req, res) => {
+router.delete(
+  "/availability/:id",
+  requireAuth,
+  validateRequest({ params: AvailabilityIdParamsSchema }),
+  async (req, res) => {
   try {
     const userId = req.viewUserId;
     const id = Number(req.params.id);
@@ -401,13 +438,18 @@ router.delete("/availability/:id", requireAuth, async (req, res) => {
     logger.error({ err }, "DELETE /availability/:id failed");
     res.status(500).json({ error: "Failed to delete availability" });
   }
-});
+  }
+);
 
 /**
  * DELETE /api/availability
  * Clear all availability for current user (with optional filters)
  */
-router.delete("/availability", requireAuth, async (req, res) => {
+router.delete(
+  "/availability",
+  requireAuth,
+  validateRequest({ query: AvailabilityBulkDeleteQuerySchema }),
+  async (req, res) => {
   try {
     const userId = req.viewUserId;
     const { dayOfWeek, isRecurring } = req.query;
@@ -429,7 +471,8 @@ router.delete("/availability", requireAuth, async (req, res) => {
     logger.error({ err }, "DELETE /availability (bulk) failed");
     res.status(500).json({ error: "Failed to clear availability" });
   }
-});
+  }
+);
 
 /* ========================================================================== */
 /*                        ADMIN: AVAILABILITY MANAGEMENT                      */

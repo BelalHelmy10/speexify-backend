@@ -1,10 +1,69 @@
 // api/routes/packages.js
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 
 const router = Router();
+
+const PackageIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+const nullableText = (max) => z.string().trim().max(max).nullable().optional();
+const nullableNumber = z.coerce.number().finite().nonnegative().nullable().optional();
+const booleanLike = z.preprocess(
+  (value) => {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return value;
+  },
+  z.boolean()
+);
+
+const PackageAudienceSchema = z.enum(["INDIVIDUAL", "CORPORATE"]);
+const PackagePriceTypeSchema = z.enum(["PER_SESSION", "BUNDLE", "CUSTOM"]);
+
+const PackageBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    description: nullableText(1000),
+    audience: PackageAudienceSchema.default("INDIVIDUAL"),
+    priceType: PackagePriceTypeSchema.default("BUNDLE"),
+    priceUSD: nullableNumber.default(null),
+    startingAtUSD: nullableNumber.default(null),
+    sessionsPerPack: z.coerce.number().int().positive().nullable().optional().default(null),
+    durationMin: z.coerce.number().int().positive().nullable().optional().default(null),
+    isPopular: booleanLike.default(false),
+    active: booleanLike.default(true),
+    sortOrder: z.coerce.number().int().default(0),
+    image: nullableText(300),
+    features: z.string().max(5000).optional().default(""),
+  })
+  .strict();
+
+const PackagePatchBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(120).optional(),
+    description: nullableText(1000),
+    audience: PackageAudienceSchema.optional(),
+    priceType: PackagePriceTypeSchema.optional(),
+    priceUSD: nullableNumber,
+    startingAtUSD: nullableNumber,
+    sessionsPerPack: z.coerce.number().int().positive().nullable().optional(),
+    durationMin: z.coerce.number().int().positive().nullable().optional(),
+    isPopular: booleanLike.optional(),
+    active: booleanLike.optional(),
+    sortOrder: z.coerce.number().int().optional(),
+    image: nullableText(300),
+    features: z.string().max(5000).optional(),
+  })
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: "At least one package field is required",
+  });
 
 /* ------------------------------------------------------------------ */
 /*  PUBLIC: /api/packages                                             */
@@ -83,7 +142,12 @@ router.get("/admin/packages", requireAuth, requireAdmin, async (req, res) => {
 });
 
 // POST /api/admin/packages
-router.post("/admin/packages", requireAuth, requireAdmin, async (req, res) => {
+router.post(
+  "/admin/packages",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ body: PackageBodySchema }),
+  async (req, res) => {
   try {
     const {
       title,
@@ -101,30 +165,19 @@ router.post("/admin/packages", requireAuth, requireAdmin, async (req, res) => {
       features = "",
     } = req.body;
 
-    if (!title) return res.status(400).json({ error: "title is required" });
-    if (!["INDIVIDUAL", "CORPORATE"].includes(audience)) {
-      return res
-        .status(400)
-        .json({ error: "audience must be INDIVIDUAL or CORPORATE" });
-    }
-    if (!["PER_SESSION", "BUNDLE", "CUSTOM"].includes(priceType)) {
-      return res.status(400).json({ error: "priceType invalid" });
-    }
-
     const created = await prisma.package.create({
       data: {
         title,
         description: description || null,
         audience,
         priceType,
-        priceUSD: priceUSD !== null ? Number(priceUSD) : null,
-        startingAtUSD: startingAtUSD !== null ? Number(startingAtUSD) : null,
-        sessionsPerPack:
-          sessionsPerPack !== null ? Number(sessionsPerPack) : null,
-        durationMin: durationMin !== null ? Number(durationMin) : null,
-        isPopular: !!isPopular,
-        active: !!active,
-        sortOrder: Number(sortOrder || 0),
+        priceUSD,
+        startingAtUSD,
+        sessionsPerPack,
+        durationMin,
+        isPopular,
+        active,
+        sortOrder,
         image: image || null,
         features: features || "",
       },
@@ -142,9 +195,10 @@ router.patch(
   "/admin/packages/:id",
   requireAuth,
   requireAdmin,
+  validateRequest({ params: PackageIdParamsSchema, body: PackagePatchBodySchema }),
   async (req, res) => {
     try {
-      const id = Number(req.params.id);
+      const id = req.params.id;
       const data = {};
       const fields = [
         "title",
@@ -165,25 +219,6 @@ router.patch(
         if (req.body[k] !== undefined) data[k] = req.body[k];
       }
 
-      if (data.priceUSD !== undefined) {
-        data.priceUSD = data.priceUSD === null ? null : Number(data.priceUSD);
-      }
-      if (data.startingAtUSD !== undefined) {
-        data.startingAtUSD =
-          data.startingAtUSD === null ? null : Number(data.startingAtUSD);
-      }
-      if (data.sessionsPerPack !== undefined) {
-        data.sessionsPerPack =
-          data.sessionsPerPack === null ? null : Number(data.sessionsPerPack);
-      }
-      if (data.durationMin !== undefined) {
-        data.durationMin =
-          data.durationMin === null ? null : Number(data.durationMin);
-      }
-      if (data.sortOrder !== undefined) data.sortOrder = Number(data.sortOrder);
-      if (data.isPopular !== undefined) data.isPopular = !!data.isPopular;
-      if (data.active !== undefined) data.active = !!data.active;
-
       const updated = await prisma.package.update({ where: { id }, data });
       res.json(updated);
     } catch (err) {
@@ -198,9 +233,10 @@ router.delete(
   "/admin/packages/:id",
   requireAuth,
   requireAdmin,
+  validateRequest({ params: PackageIdParamsSchema }),
   async (req, res) => {
     try {
-      const id = Number(req.params.id);
+      const id = req.params.id;
       await prisma.package.delete({ where: { id } });
       res.json({ ok: true });
     } catch (err) {

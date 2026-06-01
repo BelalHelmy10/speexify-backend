@@ -8,8 +8,27 @@ import {
     sendFeedbackNotifications,
     logger,
 } from "./_shared.js";
+import { z } from "zod";
+import { validateRequest } from "../../middleware/validateRequest.js";
 
 const router = Router();
+
+const SessionIdParamsSchema = z.object({
+    id: z.coerce.number().int().positive(),
+});
+
+const FeedbackTextSchema = z.preprocess(
+    (value) => (value == null ? "" : value),
+    z.string().trim().max(5000)
+);
+
+const FeedbackBodySchema = z
+    .object({
+        messageToLearner: FeedbackTextSchema.default(""),
+        commentsOnSession: FeedbackTextSchema.default(""),
+        futureSteps: FeedbackTextSchema.default(""),
+    })
+    .strict();
 
 // --------------------------------------------------------------------------
 // GET /api/sessions/:id/feedback - Get detailed teacher feedback
@@ -77,7 +96,11 @@ router.get("/sessions/:id/feedback", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/feedback - Create/update detailed teacher feedback
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
+router.post(
+    "/sessions/:id/feedback",
+    requireAuth,
+    validateRequest({ params: SessionIdParamsSchema, body: FeedbackBodySchema }),
+    async (req, res) => {
     try {
         const id = Number(req.params.id);
         const session = await prisma.session.findUnique({
@@ -113,9 +136,7 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
                 .json({ error: "You can only leave feedback after the session" });
         }
 
-        const messageToLearner = String(req.body?.messageToLearner || "").trim();
-        const commentsOnSession = String(req.body?.commentsOnSession || "").trim();
-        const futureSteps = String(req.body?.futureSteps || "").trim();
+        const { messageToLearner, commentsOnSession, futureSteps } = req.body;
 
         // Check if feedback already exists (to know if this is new or update)
         const existingFeedback = await prisma.sessionFeedback.findUnique({
@@ -196,12 +217,10 @@ router.post("/sessions/:id/feedback", requireAuth, async (req, res) => {
 router.post(
     "/sessions/:id/feedback/teacher",
     requireAuth,
+    validateRequest({ params: SessionIdParamsSchema, body: FeedbackBodySchema }),
     async (req, res, next) => {
         try {
             const id = Number(req.params.id);
-            if (!id || Number.isNaN(id)) {
-                return res.status(400).json({ error: "Invalid session id" });
-            }
 
             const { messageToLearner, commentsOnSession, futureSteps } =
                 req.body || {};

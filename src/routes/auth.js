@@ -1,6 +1,7 @@
 // src/routes/auth.js
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { OAuth2Client } from "google-auth-library";
 import crypto from "node:crypto";
@@ -19,8 +20,31 @@ import {
   createWsAuthToken,
   getWsAuthTokenTtlMs,
 } from "../webrtcSignaling/token.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 
 const router = Router();
+
+const LoginBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(1).max(200),
+});
+const GoogleLoginBodySchema = z.object({
+  credential: z.string().trim().min(1).max(10_000),
+});
+const EmailOnlyBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+const PasswordResetCompleteBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  code: z.string().trim().regex(/^\d{6}$/),
+  newPassword: z.string().min(1).max(200),
+});
+const RegisterCompleteBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  code: z.string().trim().regex(/^\d{6}$/),
+  password: z.string().min(1).max(200),
+  name: z.string().trim().max(120).optional().default(""),
+});
 
 // ---------------------------------------------------------------------------
 // Password strength helper
@@ -203,10 +227,10 @@ async function findOrCreateGoogleUser({ email, name }) {
 /*                                   LOGIN                                   */
 /* ========================================================================== */
 
-router.post("/login", loginLimiter, async (req, res) => {
+router.post("/login", loginLimiter, validateRequest({ body: LoginBodySchema }), async (req, res) => {
   try {
     let { email, password } = req.body;
-    email = (email || "").toLowerCase().trim();
+    email = email.toLowerCase().trim();
     if (!email || !password)
       return res.status(400).json({ error: "Email and password are required" });
 
@@ -239,7 +263,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 /*                           GOOGLE OAUTH (ID TOKEN)                          */
 /* ========================================================================== */
 
-router.post("/google", authLimiter, async (req, res) => {
+router.post("/google", authLimiter, validateRequest({ body: GoogleLoginBodySchema }), async (req, res) => {
   try {
     if (!GOOGLE_CLIENT_ID) {
       logger.error(
@@ -476,7 +500,7 @@ router.get("/ws-token", requireAuth, (req, res) => {
 /*                          PASSWORD RESET (2-step)                           */
 /* ========================================================================== */
 
-router.post("/password/reset/start", emailCodeLimiter, async (req, res) => {
+router.post("/password/reset/start", emailCodeLimiter, validateRequest({ body: EmailOnlyBodySchema }), async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -533,7 +557,7 @@ router.post("/password/reset/start", emailCodeLimiter, async (req, res) => {
   }
 });
 
-router.post("/password/reset/complete", emailCodeLimiter, async (req, res) => {
+router.post("/password/reset/complete", emailCodeLimiter, validateRequest({ body: PasswordResetCompleteBodySchema }), async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -616,7 +640,7 @@ router.post("/password/reset/complete", emailCodeLimiter, async (req, res) => {
 /*                 EMAIL VERIFICATION REGISTER (2-step)                       */
 /* ========================================================================== */
 
-router.post("/register/start", emailCodeLimiter, async (req, res) => {
+router.post("/register/start", emailCodeLimiter, validateRequest({ body: EmailOnlyBodySchema }), async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -676,7 +700,7 @@ router.post("/register/start", emailCodeLimiter, async (req, res) => {
   }
 });
 
-router.post("/register/complete", emailCodeLimiter, async (req, res) => {
+router.post("/register/complete", emailCodeLimiter, validateRequest({ body: RegisterCompleteBodySchema }), async (req, res) => {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()

@@ -1,5 +1,7 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 import {
   normalizeDiscountCode,
   validateDiscount,
@@ -7,7 +9,13 @@ import {
 
 const router = Router();
 
-router.post("/validate", async (req, res) => {
+const DiscountValidateBodySchema = z
+  .object({
+    code: z.string().trim().min(1).max(64),
+  })
+  .strict();
+
+router.post("/validate", validateRequest({ body: DiscountValidateBodySchema }), async (req, res) => {
   const code = normalizeDiscountCode(req.body?.code);
 
   if (!code) {

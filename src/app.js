@@ -129,6 +129,15 @@ const SECURITY_TXT = [
 /* ========================================================================== */
 
 app.use(express.json());
+app.use((req, res, next) => {
+  if (!["POST", "PUT", "PATCH"].includes(req.method)) return next();
+  if (req.body == null) return next();
+  if (!req.is("application/json")) return next();
+  if (Array.isArray(req.body) || typeof req.body !== "object") {
+    return res.status(400).json({ error: "Request body must be a JSON object" });
+  }
+  return next();
+});
 app.set("trust proxy", 1);
 app.use(
   helmet({

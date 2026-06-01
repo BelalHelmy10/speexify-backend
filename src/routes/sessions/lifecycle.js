@@ -16,14 +16,31 @@ import {
     completeIdempotentRequest,
     abandonIdempotentRequest,
 } from "../../services/idempotencyService.js";
+import { z } from "zod";
+import { validateRequest } from "../../middleware/validateRequest.js";
 
 const router = Router();
+
+const SessionIdParamsSchema = z.object({
+    id: z.coerce.number().int().positive(),
+});
+
+const RescheduleBodySchema = z
+    .object({
+        startAt: z.coerce.date(),
+        endAt: z.coerce.date().nullable().optional(),
+    })
+    .strict();
 
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/complete - Mark session as completed
 // FIX: Unified credit consumption - consume for ALL non-canceled participants
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
+router.post(
+    "/sessions/:id/complete",
+    requireAuth,
+    validateRequest({ params: SessionIdParamsSchema }),
+    async (req, res) => {
     try {
         const id = Number(req.params.id);
         const session = await prisma.session.findUnique({
@@ -71,7 +88,11 @@ router.post("/sessions/:id/complete", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/cancel - Cancel session or participant seat
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
+router.post(
+    "/sessions/:id/cancel",
+    requireAuth,
+    validateRequest({ params: SessionIdParamsSchema }),
+    async (req, res) => {
     let idempotency = null;
 
     try {
@@ -334,7 +355,11 @@ router.post("/sessions/:id/cancel", requireAuth, async (req, res) => {
 // POST /api/sessions/:id/reschedule - Reschedule a session
 // FIX: Check conflicts for ALL participants in GROUP sessions
 // --------------------------------------------------------------------------
-router.post("/sessions/:id/reschedule", requireAuth, async (req, res) => {
+router.post(
+    "/sessions/:id/reschedule",
+    requireAuth,
+    validateRequest({ params: SessionIdParamsSchema, body: RescheduleBodySchema }),
+    async (req, res) => {
     try {
         const id = Number(req.params.id);
         const { startAt, endAt } = req.body;
