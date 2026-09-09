@@ -12,6 +12,8 @@ datasource db {
 }
 
 model Package {
+  catalogKey      String?       @unique
+  pricingOverrides Json?
   id              Int           @id @default(autoincrement())
   title           String
   description     String?
@@ -470,6 +472,7 @@ model PasswordResetCode {
 }
 
 model Order {
+  pricingSnapshot Json?
   id             String        @id
   amountCents    Int
   currency       String        @default("EGP")

@@ -29,7 +29,8 @@ export async function getExchangeRate(fromCurrency, toCurrency) {
     try {
         // Use exchangerate-api.com (free tier: 1500 requests/month)
         const response = await fetch(
-            `https://api.exchangerate-api.com/v4/latest/${fromCurrency}`
+            `https://api.exchangerate-api.com/v4/latest/${fromCurrency}`,
+            { signal: AbortSignal.timeout(5000) }
         );
 
         if (!response.ok) {
@@ -39,7 +40,7 @@ export async function getExchangeRate(fromCurrency, toCurrency) {
         const data = await response.json();
         const rate = data?.rates?.[toCurrency];
 
-        if (!rate) {
+        if (!Number.isFinite(rate) || rate <= 0) {
             throw new Error(`Rate not found for ${fromCurrency} -> ${toCurrency}`);
         }
 
@@ -59,7 +60,7 @@ export async function getExchangeRate(fromCurrency, toCurrency) {
         );
 
         // If we have a stale cached rate, use it as fallback
-        if (cached) {
+        if (cached && Date.now() - cached.timestamp < 6 * CACHE_TTL_MS) {
             logger.warn(
                 { cacheKey, rate: cached.rate },
                 "Using stale cached rate as fallback"

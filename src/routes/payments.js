@@ -24,14 +24,15 @@ import {
   getOrderById,
   orderExists,
 } from "../services/orderService.js";
-import {
-  buildPaymentQuote,
-  normalizeDiscountCode,
-  resolvePaymentCountry,
-  validateDiscount,
-} from "../services/paymentPricingService.js";
+import { normalizeDiscountCode, validateDiscount } from "../services/paymentPricingService.js";
+import { paymentResponse, orderPricing, pricingError, verifyQuoteForPurchase } from "../services/pricingQuoteService.js";
 import { prisma } from "../lib/prisma.js";
 
+const paymentDependencies = {prisma, requireAuth, createPaymentIntention, createPendingOrder,
+  getOrderById, orderExists, markOrderPendingForRetry};
+export function createPaymentsRouter(dependencies = {}) {
+const {prisma, requireAuth, createPaymentIntention, createPendingOrder,
+  getOrderById, orderExists, markOrderPendingForRetry} = {...paymentDependencies, ...dependencies};
 const router = Router();
 
 const CreateIntentBodySchema = z
@@ -48,6 +49,10 @@ const CreateIntentBodySchema = z
     packageId: z.coerce.number().int().positive(),
     countryCode: z.string().trim().length(2).optional().nullable(),
     discountCode: z.string().trim().max(64).optional().nullable(),
+    // New orders must provide a signed quote. Existing-order idempotency
+    // retries use the immutable amount already stored on the order.
+    quoteToken: z.string().min(1).max(12000).optional(),
+    priceVerification: z.object({displayAmount: z.number(), displayCurrency: z.string(), egpAmount: z.number()}).strict().optional(),
   })
   .strict();
 
@@ -70,7 +75,7 @@ router.post(
   validateRequest({ body: CreateIntentBodySchema }),
   async (req, res) => {
     try {
-      const { orderId, customer, packageId, countryCode, discountCode } = req.body;
+      const { orderId, customer, packageId, discountCode, quoteToken } = req.body;
       const userId = req.user.id;
 
       logger.info({ userId, orderId, packageId }, "Initiating payment intent");
@@ -105,6 +110,8 @@ router.post(
           });
         }
 
+        if (existingOrder.packageId !== packageId) throw pricingError("ORDER_PACKAGE_MISMATCH", "This order belongs to a different package.");
+        orderPricing(existingOrder);
         const retryIntention = await createPaymentIntention({
           amountCents: Number(existingOrder.amountCents),
           currency: String(existingOrder.currency || "EGP").toUpperCase(),
@@ -123,12 +130,7 @@ router.post(
           "Order already exists, returning a new checkout intention for stored amount"
         );
 
-        return res.json({
-          ok: true,
-          orderId,
-          iframeUrl: retryIntention.checkoutUrl,
-          intentionId: retryIntention.intentionId,
-        });
+        return res.json(paymentResponse(existingOrder, retryIntention));
       }
 
       const pkg = await prisma.package.findUnique({
@@ -151,44 +153,28 @@ router.post(
         });
       }
 
-      const resolvedCountry = await resolvePaymentCountry(req, countryCode);
-      const quote = await buildPaymentQuote({
-        pkg,
-        discount: validDiscount,
-        countryCode: resolvedCountry.countryCode,
-      });
-
-      logger.info(
-        {
-          orderId,
-          packageId,
-          countryCode: quote.countryCode,
-          countrySource: resolvedCountry.source,
-          displayCurrency: quote.displayCurrency,
-          displayAmountCents: quote.displayAmountCents,
-          egpAmountCents: quote.egpAmountCents,
-          discountCodeId: quote.discountCodeId,
-        },
-        "Server-computed payment quote"
-      );
+      if (!pkg || !pkg.active || pkg.deletedAt) throw pricingError("PACKAGE_UNAVAILABLE", "Package is not available.", 400);
+      if (!quoteToken) throw pricingError("QUOTE_REQUIRED", "Refresh the price before continuing.", 409);
+      const pricing = verifyQuoteForPurchase(quoteToken, pkg, validDiscount, normalizedDiscountCode);
 
       // Create pending order in database BEFORE calling Paymob
-      await createPendingOrder({
+      const order = await createPendingOrder({
         orderId,
         userId,
         packageId,
-        amountCents: quote.egpAmountCents,
-        currency: quote.egpCurrency,
-        displayAmountCents: quote.displayAmountCents,
-        displayCurrency: quote.displayCurrency,
+        amountCents: pricing.amountCents,
+        currency: pricing.currency,
+        displayAmountCents: pricing.displayAmountCents,
+        displayCurrency: pricing.displayCurrency,
         customerEmail: customer.email,
         customerPhone: customer.phone,
-        discountCodeId: quote.discountCodeId,
+        discountCodeId: validDiscount?.id || null,
+        pricingSnapshot: pricing,
       });
 
       // Create Paymob payment intention (ALWAYS in EGP)
       const intention = await createPaymentIntention({
-        amountCents: quote.egpAmountCents,
+        amountCents: pricing.amountCents,
         currency: "EGP", // Always EGP for Paymob
         orderId,
         billingData: customer,
@@ -203,22 +189,7 @@ router.post(
         "Paymob Intention Created"
       );
 
-      return res.json({
-        ok: true,
-        orderId,
-        iframeUrl: intention.checkoutUrl,
-        intentionId: intention.intentionId,
-        pricing: {
-          packageId: quote.packageId,
-          countryCode: quote.countryCode,
-          countrySource: resolvedCountry.source,
-          displayAmountCents: quote.displayAmountCents,
-          displayCurrency: quote.displayCurrency,
-          amountCents: quote.egpAmountCents,
-          currency: quote.egpCurrency,
-          discountPercentage: quote.discountPercentage,
-        },
-      });
+      return res.json(paymentResponse(order, intention));
     } catch (err) {
       logger.error({ err }, "Create Intent Error");
 
@@ -581,6 +552,7 @@ router.post(
           .json({ ok: false, error: "Order already paid", status: "paid" });
       }
 
+      orderPricing(order);
       await markOrderPendingForRetry(orderId, "retry_intent_requested");
 
       const [firstName = "User", ...rest] = String(req.user?.name || "User")
@@ -605,12 +577,7 @@ router.post(
         "Payment retry intention created"
       );
 
-      return res.json({
-        ok: true,
-        orderId,
-        iframeUrl: intention.checkoutUrl,
-        intentionId: intention.intentionId,
-      });
+      return res.json(paymentResponse(order, intention));
     } catch (err) {
       logger.error(
         { err, orderId: req.params?.orderId, userId: req.user?.id },
@@ -623,4 +590,6 @@ router.post(
   }
 );
 
-export default router;
+return router;
+}
+export default createPaymentsRouter();

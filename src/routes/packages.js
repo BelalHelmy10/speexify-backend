@@ -73,7 +73,7 @@ const PackagePatchBodySchema = z
 router.get("/packages", async (req, res) => {
   try {
     const aud = String(req.query?.audience || "").toUpperCase();
-    const where = { active: true };
+    const where = { active: true, deletedAt: null };
     if (aud === "INDIVIDUAL" || aud === "CORPORATE") where.audience = aud;
 
     const packages = await prisma.package.findMany({
@@ -81,6 +81,8 @@ router.get("/packages", async (req, res) => {
       orderBy: [{ sortOrder: "asc" }, { priceUSD: "asc" }],
       select: {
         id: true,
+        catalogKey: true,
+        pricingOverrides: true,
         title: true,
         description: true,
         priceUSD: true,
@@ -97,7 +99,7 @@ router.get("/packages", async (req, res) => {
       },
     });
 
-    const mapped = packages.map((p) => ({ ...p, featuresRaw: p.features }));
+    const mapped = packages.map((p) => ({ ...p, priceEGP: p.priceUSD, featuresRaw: p.features }));
     res.json(mapped);
   } catch (error) {
     logger.error({ err: error }, "[packages] list error");

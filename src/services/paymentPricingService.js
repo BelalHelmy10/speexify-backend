@@ -65,7 +65,7 @@ export function normalizeDiscountCode(raw) {
 
 export function getPricingRegion(countryCode) {
   const code = normalizeCountryCode(countryCode);
-  return PRICING_REGIONS[code] || PRICING_REGIONS.DEFAULT;
+  return code ? (PRICING_REGIONS[code] || PRICING_REGIONS.DEFAULT) : PRICING_REGIONS.EG;
 }
 
 export function getTrustedCountryFromHeaders(req) {
@@ -158,7 +158,7 @@ export async function resolvePaymentCountry(req, countryCodeHint) {
     return { countryCode: hint, source: "client_hint" };
   }
 
-  return { countryCode: null, source: "default" };
+  return { countryCode: "EG", source: "default" };
 }
 
 export function validateDiscount(discount) {
@@ -192,7 +192,7 @@ function applyDiscount(amount, percentage) {
 }
 
 export async function buildPaymentQuote({ pkg, discount, countryCode }) {
-  if (!pkg || !pkg.active) {
+  if (!pkg || !pkg.active || pkg.deletedAt) {
     const error = new Error("Package is not available for purchase");
     error.status = 400;
     error.code = "PACKAGE_UNAVAILABLE";
@@ -225,19 +225,7 @@ export async function buildPaymentQuote({ pkg, discount, countryCode }) {
     throw error;
   }
 
-  const region = getPricingRegion(countryCode);
-  const displayCurrency = region.currency;
-  const displayAmount =
-    displayCurrency === "EGP"
-      ? discountedBaseEGP
-      : Math.round(discountedBaseEGP * region.multiplier);
-
-  if (displayAmount <= 0) {
-    const error = new Error("Calculated payment amount is invalid");
-    error.status = 400;
-    error.code = "INVALID_PAYMENT_AMOUNT";
-    throw error;
-  }
+  const { displayAmount, displayCurrency, regionName } = buildDisplayPrice(pkg, countryCode, discountPercentage);
 
   const conversion =
     displayCurrency === "EGP"
@@ -259,8 +247,8 @@ export async function buildPaymentQuote({ pkg, discount, countryCode }) {
     baseAmountEGP,
     discountCodeId: validDiscount?.id || null,
     discountPercentage,
-    countryCode: normalizeCountryCode(countryCode) || "DEFAULT",
-    regionName: region.name,
+    countryCode: normalizeCountryCode(countryCode) || "EG",
+    regionName,
     displayAmount,
     displayAmountCents,
     displayCurrency,
@@ -268,4 +256,26 @@ export async function buildPaymentQuote({ pkg, discount, countryCode }) {
     egpCurrency: "EGP",
     exchangeRate: conversion.rate,
   };
+}
+
+// Regional offers are selling prices. Convert their value to EGP only on the
+// server, when a checkout quote is issued; never substitute the Egypt base.
+export function buildDisplayPrice(pkg, countryCode, discountPercentage = 0) {
+  const code = normalizeCountryCode(countryCode) || "EG";
+  const region = getPricingRegion(code);
+  const override = pkg.pricingOverrides?.[code];
+  const base = packageBaseAmountEGP(pkg);
+  if (!pkg.active || pkg.deletedAt || pkg.priceType === "CUSTOM" || base <= 0) {
+    throw Object.assign(new Error("Package is not available for purchase"), {status: 400, code: "PACKAGE_UNAVAILABLE"});
+  }
+  if (override && (override.currency !== region.currency || !Number.isFinite(override.total) || override.total <= 0)) {
+    throw Object.assign(new Error("Invalid regional package price"), {status: 400, code: "INVALID_REGIONAL_PRICE"});
+  }
+  const displayAmount = override
+    ? Math.round(override.total * (1 - discountPercentage / 100))
+    : Math.round(applyDiscount(base, discountPercentage) * region.multiplier);
+  if (!Number.isSafeInteger(displayAmount) || displayAmount <= 0 || displayAmount * 100 > 2147483647) {
+    throw Object.assign(new Error("Invalid package amount"), {status: 400, code: "INVALID_PAYMENT_AMOUNT"});
+  }
+  return {displayAmount, displayCurrency: region.currency, countryCode: code, regionName: region.name};
 }

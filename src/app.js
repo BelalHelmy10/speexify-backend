@@ -28,6 +28,7 @@ import {
 import { sessionMiddleware } from "./middleware/session.js";
 import authRoutes from "./routes/auth.js";
 import paymentsRoutes from "./routes/payments.js";
+import pricingRoutes from "./routes/pricing.js";
 import sessionsRoutes from "./routes/sessions/index.js";
 import packagesRoutes from "./routes/packages.js";
 import adminRoutes from "./routes/admin.js";
@@ -241,6 +242,7 @@ app.get("/api/csrf-token", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/discounts", discountRoutes);
 app.use("/api/payments", paymentsRoutes);
+app.use("/api/pricing", pricingRoutes);
 app.use("/api", sessionsRoutes);
 app.use("/api", packagesRoutes); // FIX: packages route handles /api/packages
 app.use("/api", adminRoutes);
