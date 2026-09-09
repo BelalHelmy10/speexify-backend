@@ -23,11 +23,7 @@ try {
     if (![oldPrice, priceEGP].includes(row.priceUSD) || (row.catalogKey && row.catalogKey !== catalogKey)) {
       throw new Error(`Unexpected existing price/key for ${title}; review before applying.`);
     }
-    const pricingOverrides = catalogKey === "1on1-24" ? {US: {total: 1800, currency: "USD"}} : null;
-    if (row.pricingOverrides && JSON.stringify(row.pricingOverrides) !== JSON.stringify(pricingOverrides)) {
-      throw new Error(`Unexpected existing regional override for ${title}.`);
-    }
-    return {row, catalogKey, priceEGP, pricingOverrides};
+    return {row, catalogKey, priceEGP, pricingOverrides: null};
   });
   console.table(changes.map(c => ({id: c.row.id, title: c.row.title, before: c.row.priceUSD, after: c.priceEGP, catalogKey: c.catalogKey})));
   if (process.argv.includes("--apply")) {

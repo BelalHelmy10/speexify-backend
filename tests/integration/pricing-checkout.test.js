@@ -11,7 +11,7 @@ import { readPricingToken, signPricingToken } from "../../src/services/pricingQu
 function setup(country = "EG") {
   const pkg = {id: 3, catalogKey: "1on1-24", title: "Intensive", active: true, deletedAt: null,
     priceUSD: 5040, priceType: "BUNDLE", sessionsPerPack: 24, durationMin: 60,
-    pricingOverrides: {US: {total: 1800, currency: "USD"}}};
+    pricingOverrides: null};
   const discount = {id: 9, code: "SAVE10", active: true, percentage: 10};
   const orders = new Map();
   const sent = [];
@@ -29,14 +29,9 @@ function setup(country = "EG") {
   return {app, pkg, discount, orders, sent};
 }
 
-test("catalog → signed quote → stored order → Paymob agree across regions, including US override and discount", async () => {
+test("catalog → signed quote → stored order → Paymob agree across regions with fixed EGP pricing", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async url => {
-    const code = String(url).split("/").at(-1);
-    const rate = {USD: 50, GBP: 65, AED: 13.6, SAR: 13.3}[code];
-    assert.ok(rate, `Unexpected external request ${url}`);
-    return {ok: true, json: async () => ({rates: {EGP: rate}})};
-  };
+  globalThis.fetch = async () => ({ok: false});
   clearRateCache();
   try {
     for (const country of ["EG", "US", "GB", "AE", "SA", "FR"]) {
@@ -45,7 +40,9 @@ test("catalog → signed quote → stored order → Paymob agree across regions,
       const quote = (await request(app).post("/pricing/quote").send({packageId: 3, regionToken: catalog.regionToken}).expect(200)).body;
       assert.equal(catalog.packages[0].pricing.displayAmount, quote.pricing.displayAmount);
       assert.equal(quote.pricing.countryCode, country);
-      if (country === "US") {assert.equal(quote.pricing.displayAmount, 1800); assert.equal(quote.pricing.amountCents, 9_000_000);}
+      assert.equal(quote.pricing.displayAmount, 5040);
+      assert.equal(quote.pricing.displayCurrency, "EGP");
+      assert.equal(quote.pricing.amountCents, 504000);
       const paid = (await request(app).post("/payments/create-intent").send({orderId: "fresh", packageId: 3, quoteToken: quote.quoteToken}).expect(200)).body;
       assert.equal(paid.pricing.amountCents, quote.pricing.amountCents);
       assert.equal(paid.chargeAmountEGP * 100, sent[0].amountCents);
@@ -54,7 +51,8 @@ test("catalog → signed quote → stored order → Paymob agree across regions,
       const discounted = (await request(app).post("/pricing/quote").send({packageId: 3, regionToken: catalog.regionToken, discountCode: " save10 "}).expect(200)).body;
       const discountedPayment = (await request(app).post("/payments/create-intent").send({orderId: "discounted", packageId: 3, quoteToken: discounted.quoteToken, discountCode: "SAVE10"}).expect(200)).body;
       assert.equal(discountedPayment.pricing.amountCents, discounted.pricing.amountCents);
-      if (country === "US") assert.equal(discounted.pricing.displayAmount, 1620);
+      assert.equal(discounted.pricing.displayAmount, 4536);
+      assert.equal(discounted.pricing.displayCurrency, "EGP");
     }
   } finally {globalThis.fetch = originalFetch; clearRateCache();}
 });

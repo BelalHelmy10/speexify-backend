@@ -9,28 +9,28 @@ const PRICING_REGIONS = {
     name: "Egypt",
   },
   US: {
-    currency: "USD",
-    multiplier: 0.375,
+    currency: "EGP",
+    multiplier: 1,
     name: "United States",
   },
   GB: {
-    currency: "GBP",
-    multiplier: 0.25,
+    currency: "EGP",
+    multiplier: 1,
     name: "United Kingdom",
   },
   AE: {
-    currency: "AED",
-    multiplier: 0.25,
+    currency: "EGP",
+    multiplier: 1,
     name: "United Arab Emirates",
   },
   SA: {
-    currency: "SAR",
-    multiplier: 0.25,
+    currency: "EGP",
+    multiplier: 1,
     name: "Saudi Arabia",
   },
   DEFAULT: {
-    currency: "USD",
-    multiplier: 0.25,
+    currency: "EGP",
+    multiplier: 1,
     name: "International",
   },
 };
@@ -258,24 +258,18 @@ export async function buildPaymentQuote({ pkg, discount, countryCode }) {
   };
 }
 
-// Regional offers are selling prices. Convert their value to EGP only on the
-// server, when a checkout quote is issued; never substitute the Egypt base.
+// All public and payment prices are EGP. Country is retained only as metadata
+// so analytics and future catalog changes can identify the visitor's region.
 export function buildDisplayPrice(pkg, countryCode, discountPercentage = 0) {
   const code = normalizeCountryCode(countryCode) || "EG";
   const region = getPricingRegion(code);
-  const override = pkg.pricingOverrides?.[code];
   const base = packageBaseAmountEGP(pkg);
   if (!pkg.active || pkg.deletedAt || pkg.priceType === "CUSTOM" || base <= 0) {
     throw Object.assign(new Error("Package is not available for purchase"), {status: 400, code: "PACKAGE_UNAVAILABLE"});
   }
-  if (override && (override.currency !== region.currency || !Number.isFinite(override.total) || override.total <= 0)) {
-    throw Object.assign(new Error("Invalid regional package price"), {status: 400, code: "INVALID_REGIONAL_PRICE"});
-  }
-  const displayAmount = override
-    ? Math.round(override.total * (1 - discountPercentage / 100))
-    : Math.round(applyDiscount(base, discountPercentage) * region.multiplier);
+  const displayAmount = Math.round(applyDiscount(base, discountPercentage));
   if (!Number.isSafeInteger(displayAmount) || displayAmount <= 0 || displayAmount * 100 > 2147483647) {
     throw Object.assign(new Error("Invalid package amount"), {status: 400, code: "INVALID_PAYMENT_AMOUNT"});
   }
-  return {displayAmount, displayCurrency: region.currency, countryCode: code, regionName: region.name};
+  return {displayAmount, displayCurrency: "EGP", countryCode: code, regionName: "Egypt"};
 }
