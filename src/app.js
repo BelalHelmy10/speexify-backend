@@ -129,7 +129,10 @@ const SECURITY_TXT = [
 /*                               MIDDLEWARE                                   */
 /* ========================================================================== */
 
-app.use(express.json());
+// Placement speaking samples are sent as short, size-limited data URLs.
+// Keep the parser large enough for a normal 60–90 second compressed recording;
+// individual routes still enforce their own payload limits.
+app.use(express.json({ limit: "5mb" }));
 app.use((req, res, next) => {
   if (!["POST", "PUT", "PATCH"].includes(req.method)) return next();
   if (req.body == null) return next();

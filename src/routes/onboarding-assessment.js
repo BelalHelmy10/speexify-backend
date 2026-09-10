@@ -1,5 +1,6 @@
 // src/routes/onboarding-assessment.js
 import { Router } from "express";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
@@ -9,6 +10,8 @@ import {
   buildAssessmentReviewUpdateData,
   parseAssessmentReviewBody,
 } from "../services/assessmentReviewService.js";
+import { validatePlacementEvidence } from "../services/placementEvidence.js";
+import { scoreObjectiveAssessment } from "../services/placementScoring.js";
 
 const router = Router();
 
@@ -16,10 +19,7 @@ const router = Router();
 /* Validation / constants for onboarding & assessment                         */
 /* -------------------------------------------------------------------------- */
 
-const ASSESS_MIN_HARD = 120; // match frontend HARD_MIN
-const ASSESS_MIN_SOFT = 150; // match frontend TARGET_MIN
-const ASSESS_MAX_SOFT = 250; // match frontend TARGET_MAX
-const ASSESS_MAX_HARD = 600; // match frontend HARD_MAX
+const ASSESS_MAX_HARD = 600;
 
 const SkillsEnum = z.enum([
   "Speaking",
@@ -31,27 +31,58 @@ const SkillsEnum = z.enum([
   "Vocabulary",
 ]);
 
+const PreferredFormatEnum = z.enum(["1:1", "group", "intensive"]);
+const UsageFrequencyEnum = z.enum(["never", "sometimes", "often", "daily"]);
+const UsageContextEnum = z.enum([
+  "work_emails",
+  "meetings_presentations",
+  "client_communication",
+  "academic_writing",
+  "research_reading",
+  "social_conversation",
+  "travel_situations",
+  "other",
+]);
+const MotivationEnum = z.enum([
+  "professional_development",
+  "academic_studies",
+  "exam_preparation",
+  "immigration_relocation",
+  "travel",
+  "social_personal_growth",
+  "other",
+]);
+const LearningStyleEnum = z.enum([
+  "structured_grammar",
+  "interactive_speaking",
+  "task_project",
+  "listening_video",
+  "reading_vocab",
+  "self_paced",
+]);
+const OnboardingStatusEnum = z.enum(["draft", "submitted"]);
+
 const OnboardingAnswersSchema = z.object({
   // Profile / logistics
-  timezone: z.string().min(1),
-  availability: z.string().optional().default(""),
-  preferredFormat: z.string().optional().default("1:1"),
+  timezone: z.string().trim().min(1).max(80),
+  availability: z.string().max(2000).optional().default(""),
+  preferredFormat: PreferredFormatEnum.optional().default("1:1"),
   notes: z.string().optional().default(""),
 
   // Goals & context
   goals: z.string().optional().default(""),
   context: z.string().optional().default(""),
   levelSelfEval: z.string().optional().default(""),
-  usageFrequency: z.string().optional().default(""),
-  usageContexts: z.array(z.string()).optional().default([]),
+  usageFrequency: UsageFrequencyEnum.or(z.literal("")).optional().default(""),
+  usageContexts: z.array(UsageContextEnum).max(8).optional().default([]),
 
   // Needs analysis
-  motivations: z.array(z.string()).optional().default([]),
+  motivations: z.array(MotivationEnum).max(7).optional().default([]),
   motivationOther: z.string().optional().default(""),
   examDetails: z.string().optional().default(""),
   skillPriority: z.record(SkillsEnum, z.number().min(1).max(5)).optional(),
   challenges: z.string().optional().default(""),
-  learningStyles: z.array(z.string()).optional().default([]),
+  learningStyles: z.array(LearningStyleEnum).max(6).optional().default([]),
 
   // Self-assessment
   confidence: z
@@ -60,7 +91,6 @@ const OnboardingAnswersSchema = z.object({
       z.number().min(1).max(10)
     )
     .optional(),
-  writingSample: z.string().optional().default(""),
   consentRecording: z.boolean().optional().default(false),
 });
 
@@ -121,7 +151,6 @@ const ASSESSMENT_LIST_SELECT = {
   score: true,
   cefr: true,
   feedback: true,
-  reviewMeta: true,
   reviewedAt: true,
   reviewedById: true,
   wordCount: true,
@@ -129,8 +158,10 @@ const ASSESSMENT_LIST_SELECT = {
   updatedAt: true,
 };
 
+const ASSESSMENT_RESPONSE_SELECT = { ...ASSESSMENT_LIST_SELECT, reviewMeta: true };
+
 const ASSESSMENT_DETAIL_SELECT = {
-  ...ASSESSMENT_LIST_SELECT,
+  ...ASSESSMENT_RESPONSE_SELECT,
   text: true,
   user: { select: USER_PUBLIC_SELECT },
   reviewedBy: {
@@ -163,17 +194,17 @@ function buildIntakeWhere({ q, userId, status }) {
   const where = buildLearnerSearchWhere({ q, userId });
 
   if (status === "onboarding_submitted") {
-    where.onboardingForms = { some: {} };
+    where.onboardingForms = { some: { status: "submitted" } };
   } else if (status === "assessment_submitted") {
     where.assessmentSubmissions = { some: {} };
   } else if (status === "needs_review") {
     where.assessmentSubmissions = {
-      some: { status: { in: ["submitted", "auto_scored"] } },
+      some: { status: { in: ["submitted", "auto_scored", "awaiting_review"] } },
     };
   } else if (status === "reviewed") {
     where.assessmentSubmissions = { some: { status: "reviewed" } };
   } else if (status === "missing_onboarding") {
-    where.onboardingForms = { none: {} };
+    where.onboardingForms = { none: { status: "submitted" } };
   } else if (status === "missing_assessment") {
     where.assessmentSubmissions = { none: {} };
   }
@@ -241,12 +272,14 @@ router.get("/admin/intake", requireAuth, requireAdmin, async (req, res) => {
       }),
       prisma.user.count({ where }),
       prisma.user.count({ where: summaryUserWhere }),
-      prisma.onboardingForm.count({ where: linkedUserWhere }),
+      prisma.onboardingForm.count({
+        where: { ...linkedUserWhere, status: "submitted" },
+      }),
       prisma.assessmentSubmission.count({ where: linkedUserWhere }),
       prisma.assessmentSubmission.count({
         where: {
           ...linkedUserWhere,
-          status: { in: ["submitted", "auto_scored"] },
+          status: { in: ["submitted", "auto_scored", "awaiting_review"] },
         },
       }),
       prisma.assessmentSubmission.count({
@@ -518,7 +551,28 @@ router.get("/me/onboarding", requireAuth, async (req, res) => {
 // POST /api/me/onboarding
 router.post("/me/onboarding", requireAuth, async (req, res) => {
   try {
-    const { answers = {}, packageId = null } = req.body || {};
+    const {
+      answers = {},
+      packageId = null,
+      status: requestedStatus = "submitted",
+    } = req.body || {};
+    const statusResult = OnboardingStatusEnum.safeParse(requestedStatus);
+    if (!statusResult.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: [{ path: "status", message: "Status must be draft or submitted" }],
+      });
+    }
+    const normalizedPackageId =
+      packageId === null || packageId === "" || typeof packageId === "undefined"
+        ? null
+        : Number(packageId);
+    if (
+      normalizedPackageId !== null &&
+      (!Number.isInteger(normalizedPackageId) || normalizedPackageId <= 0)
+    ) {
+      return res.status(400).json({ error: "Invalid package id" });
+    }
 
     // 1) Validate
     const parsed = OnboardingAnswersSchema.safeParse(answers);
@@ -539,17 +593,24 @@ router.post("/me/onboarding", requireAuth, async (req, res) => {
     clean.motivationOther = clamp(clean.motivationOther);
     clean.examDetails = clamp(clean.examDetails);
     clean.challenges = clamp(clean.challenges);
-    clean.writingSample = clamp(clean.writingSample, 8000);
 
-    // 3) Create submission
-    const created = await prisma.onboardingForm.create({
-      data: {
-        userId: req.viewUserId,
-        packageId: packageId ? Number(packageId) : null,
-        answers: clean,
-        status: "submitted",
-      },
+    // 3) Keep one current form per learner. Draft saves and final submission
+    // update the same record, so retries never create duplicate intake rows.
+    const current = await prisma.onboardingForm.findFirst({
+      where: { userId: req.viewUserId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
     });
+    const data = {
+      packageId: normalizedPackageId,
+      answers: clean,
+      status: statusResult.data,
+    };
+    const created = current
+      ? await prisma.onboardingForm.update({ where: { id: current.id }, data })
+      : await prisma.onboardingForm.create({
+          data: { userId: req.viewUserId, ...data },
+        });
 
     // 4) Copy timezone onto User if provided
     if (clean.timezone) {
@@ -579,6 +640,7 @@ router.get("/me/assessment", requireAuth, async (req, res) => {
     const row = await prisma.assessmentSubmission.findFirst({
       where: { userId: req.viewUserId },
       orderBy: { createdAt: "desc" },
+      select: { ...ASSESSMENT_RESPONSE_SELECT, text: true },
     });
     res.json(row || null);
   } catch (e) {
@@ -593,29 +655,45 @@ router.post("/me/assessment", requireAuth, async (req, res) => {
     const {
       text = "",
       packageId = null,
-      score = null,
-      cefr = null,
-      feedback = null,
+      attemptId: requestedAttemptId = null,
       reviewMeta = null,
     } = req.body || {};
+    const attemptId =
+      typeof requestedAttemptId === "string" && requestedAttemptId.trim().length >= 12
+        ? requestedAttemptId.trim().slice(0, 120)
+        : randomUUID();
     const input = String(text || "");
     const normalized = input.replace(/\r\n/g, "\n").trim();
     const wordCount = normalized.split(/\s+/).filter(Boolean).length;
-    const normalizedScore = Number(score);
-    const cleanScore = Number.isFinite(normalizedScore)
-      ? Math.max(0, Math.min(100, Math.round(normalizedScore)))
-      : null;
-    const cleanCefr =
-      typeof cefr === "string" &&
-      /^(A1|A2|B1|B2|C1|C2)(\.[12])?$/i.test(cefr.trim())
-        ? cefr.trim().toUpperCase()
-        : null;
-    const cleanFeedback =
-      typeof feedback === "string" ? feedback.trim().slice(0, 5000) : null;
     const cleanReviewMeta =
       reviewMeta && typeof reviewMeta === "object" && !Array.isArray(reviewMeta)
         ? reviewMeta
         : null;
+    if (!cleanReviewMeta?.answers || typeof cleanReviewMeta.answers !== "object") {
+      return res.status(400).json({ error: "Objective answer payload is required" });
+    }
+    const evidence = validatePlacementEvidence(cleanReviewMeta);
+    if (!evidence.ok) return res.status(evidence.status).json({ error: evidence.error });
+    let reviewMetaSize = 0;
+    try {
+      reviewMetaSize = JSON.stringify(cleanReviewMeta).length;
+    } catch {
+      return res.status(400).json({ error: "Invalid assessment metadata" });
+    }
+    if (reviewMetaSize > 3_500_000) {
+      return res.status(413).json({ error: "Assessment metadata is too large" });
+    }
+
+    const normalizedPackageId =
+      packageId === null || packageId === "" || typeof packageId === "undefined"
+        ? null
+        : Number(packageId);
+    if (
+      normalizedPackageId !== null &&
+      (!Number.isInteger(normalizedPackageId) || normalizedPackageId <= 0)
+    ) {
+      return res.status(400).json({ error: "Invalid package id" });
+    }
 
     if (wordCount === 0) {
       return res.status(400).json({ error: "Submission is empty" });
@@ -626,20 +704,65 @@ router.post("/me/assessment", requireAuth, async (req, res) => {
         .json({ error: `Submission too long (>${ASSESS_MAX_HARD} words)` });
     }
 
-    const created = await prisma.assessmentSubmission.create({
-      data: {
-        userId: req.viewUserId,
-        packageId: packageId ? Number(packageId) : null,
-        text: normalized,
-        wordCount: Number(wordCount),
-        status: cleanCefr ? "auto_scored" : "submitted",
-        score: cleanScore,
-        cefr: cleanCefr,
-        feedback: cleanFeedback,
-        reviewMeta: cleanReviewMeta,
+    const answers = cleanReviewMeta?.answers;
+    const objective = scoreObjectiveAssessment(answers);
+    if (!objective.complete) {
+      return res.status(400).json({
+        error: "Please complete all objective placement questions before submitting",
+        answered: objective.answered,
+        total: objective.total,
+      });
+    }
+
+    const safeMeta = {
+      placementVersion: String(cleanReviewMeta.placementVersion || "speexify-placement-v2"),
+      answers: cleanReviewMeta.answers,
+      speaking: evidence.speaking,
+      writingTaskId: evidence.writingTaskId,
+      listeningPlays: cleanReviewMeta.listeningPlays || {},
+      completedAt: new Date().toISOString(),
+      attemptId,
+      placementResult: {
+        version: objective.version,
+        score: objective.score,
+        band: objective.band,
+        sectionScores: objective.sectionScores,
+        status: "awaiting_review",
       },
+      scoring: {
+        source: "server",
+        version: objective.version,
+        objective,
+      },
+    };
+
+    // Serialize submissions per learner so simultaneous retries cannot create duplicates.
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(91831, ${req.viewUserId}::integer)`;
+      const existing = await tx.assessmentSubmission.findFirst({
+        where: { userId: req.viewUserId, reviewMeta: { path: ["attemptId"], equals: attemptId } },
+        select: ASSESSMENT_RESPONSE_SELECT,
+      });
+      if (existing) return { submission: existing, idempotent: true };
+      const created = await tx.assessmentSubmission.create({
+        data: {
+          userId: req.viewUserId,
+          packageId: normalizedPackageId,
+          text: normalized,
+          wordCount,
+          status: "awaiting_review",
+          score: objective.score,
+          cefr: null,
+          feedback: evidence.speaking.mode === "live"
+            ? "Your answers have been received. A coach will review your writing and complete a live speaking check before confirming your level."
+            : "Your answers and recording have been received. A coach will review your speaking and writing before confirming your level.",
+          reviewMeta: safeMeta,
+        },
+        select: ASSESSMENT_RESPONSE_SELECT,
+      });
+      return { submission: created, idempotent: false };
     });
-    res.status(201).json({ ok: true, submission: created });
+    res.status(result.idempotent ? 200 : 201).json({ ok: true, ...result });
   } catch (e) {
     logger.error({ err: e }, "POST /api/me/assessment failed");
     res.status(500).json({ error: "Failed to submit assessment" });
