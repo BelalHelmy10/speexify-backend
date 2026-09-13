@@ -1,0 +1,2 @@
+-- This migration was recorded during schema reconciliation. The resulting
+-- schema changes are already represented by the preceding migrations.
