@@ -1,3 +1,4 @@
+import { uploadRoot } from "../../lib/uploadStorage.js";
 // src/routes/support/shared.js
 import { z } from "zod";
 import path from "path";
@@ -5,7 +6,7 @@ import { prisma } from "../../lib/prisma.js";
 import { logger } from "../../lib/logger.js";
 import { consumeRateLimit } from "../../services/rateLimitService.js";
 
-export const SUPPORT_UPLOAD_DIR = path.join(process.cwd(), "uploads", "support");
+export const SUPPORT_UPLOAD_DIR = path.join(uploadRoot, "support");
 export const SUPPORT_TICKETS_DEFAULT_LIMIT = 50;
 export const SUPPORT_TICKETS_MAX_LIMIT = 200;
 export const SUPPORT_TICKETS_MAX_OFFSET = 10000;

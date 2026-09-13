@@ -28,6 +28,7 @@ const PackagePriceTypeSchema = z.enum(["PER_SESSION", "BUNDLE", "CUSTOM"]);
 
 const PackageBodySchema = z
   .object({
+    lessonType: z.enum(["ONE_ON_ONE", "GROUP"]).nullable().optional(),
     title: z.string().trim().min(1).max(120),
     description: nullableText(1000),
     audience: PackageAudienceSchema.default("INDIVIDUAL"),
@@ -46,6 +47,7 @@ const PackageBodySchema = z
 
 const PackagePatchBodySchema = z
   .object({
+    lessonType: z.enum(["ONE_ON_ONE", "GROUP"]).nullable().optional(),
     title: z.string().trim().min(1).max(120).optional(),
     description: nullableText(1000),
     audience: PackageAudienceSchema.optional(),
@@ -94,6 +96,7 @@ router.get("/packages", async (req, res) => {
         sortOrder: true,
         sessionsPerPack: true,
         durationMin: true,
+        lessonType: true,
         image: true,
         features: true,
       },
@@ -160,6 +163,7 @@ router.post(
       startingAtUSD = null,
       sessionsPerPack = null,
       durationMin = null,
+      lessonType = null,
       isPopular = false,
       active = true,
       sortOrder = 0,
@@ -177,6 +181,7 @@ router.post(
         startingAtUSD,
         sessionsPerPack,
         durationMin,
+        lessonType,
         isPopular,
         active,
         sortOrder,
@@ -214,6 +219,7 @@ router.patch(
         "sortOrder",
         "sessionsPerPack",
         "durationMin",
+        "lessonType",
         "priceUSD",
         "startingAtUSD",
       ];

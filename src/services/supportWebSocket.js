@@ -1,3 +1,4 @@
+import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "./realtimeBus.js";
 // src/services/supportWebSocket.js
 import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseCookie } from "cookie";
@@ -27,6 +28,7 @@ const adminConnections = new Set();
  * Setup WebSocket server for real-time support
  */
 export function setupSupportWebSocket(server) {
+  void startRealtimeBus().catch(err => logger.error({err}, "Realtime bus startup failed"));
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_MESSAGE_SIZE_BYTES,
@@ -248,6 +250,7 @@ async function broadcastTypingIndicator(ticket, user, isTyping) {
 
   // Send to all admins
   sendToConnections(adminConnections, message);
+  publishRealtimeEvent("support", {userId: ticket.userId, payload: message});
 }
 
 /**
@@ -271,6 +274,7 @@ export function broadcastNewMessage(ticketId, message, ticket) {
 
   // Send to all admins
   sendToConnections(adminConnections, payload);
+  publishRealtimeEvent("support", {userId: ticket.userId, payload});
 }
 
 /**
@@ -294,6 +298,7 @@ export function broadcastTicketStatusChange(ticketId, status, ticket) {
 
   // Send to all admins
   sendToConnections(adminConnections, payload);
+  publishRealtimeEvent("support", {userId: ticket.userId, payload});
 }
 
 /**
@@ -306,6 +311,7 @@ export function broadcastNewTicket(ticket) {
   });
 
   sendToConnections(adminConnections, payload);
+  publishRealtimeEvent("support", {userId: null, payload});
 }
 
 function safeSend(ws, data) {
@@ -524,3 +530,8 @@ async function getAuthorizedTicketForUser(user, ticketId) {
 
 // Export connection maps for testing/debugging
 export { userConnections, adminConnections };
+
+onRealtimeEvent("support", ({userId, payload}) => {
+  if (userId && userConnections.has(userId)) sendToConnections(userConnections.get(userId), payload);
+  sendToConnections(adminConnections, payload);
+});

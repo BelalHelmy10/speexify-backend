@@ -1,10 +1,11 @@
+import { uploadRoot } from "./uploadStorage.js";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { logger } from "./logger.js";
 
-const uploadDir = path.join(process.cwd(), "uploads", "support");
+const uploadDir = path.join(uploadRoot, "support");
 
 // Ensure directory exists
 if (!fs.existsSync(uploadDir)) {

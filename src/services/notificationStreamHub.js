@@ -1,3 +1,4 @@
+import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "./realtimeBus.js";
 // src/services/notificationStreamHub.js
 /** @type {Map<number, Set<import('http').ServerResponse>>} */
 const subscribersByUser = new Map();
@@ -12,6 +13,7 @@ function getSet(userId) {
 }
 
 export function subscribeNotificationStream(userId, res) {
+  void startRealtimeBus().catch(() => {});
   const set = getSet(userId);
   set.add(res);
 
@@ -22,6 +24,10 @@ export function subscribeNotificationStream(userId, res) {
 }
 
 export function publishNotificationEvent(userId, payload) {
+  deliverNotificationEvent(userId, payload);
+  publishRealtimeEvent("notification", {userId, payload});
+}
+function deliverNotificationEvent(userId, payload) {
   const set = subscribersByUser.get(userId);
   if (!set?.size) return;
 
@@ -34,3 +40,5 @@ export function publishNotificationEvent(userId, payload) {
     }
   }
 }
+
+onRealtimeEvent("notification", ({userId, payload}) => deliverNotificationEvent(userId, payload));

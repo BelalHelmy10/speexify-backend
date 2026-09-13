@@ -1,3 +1,4 @@
+import { snapshotEntitlements } from "../services/packageEntitlements.js";
 // src/routes/payments.js
 import { Router } from "express";
 import { z } from "zod";
@@ -169,7 +170,7 @@ router.post(
         customerEmail: customer.email,
         customerPhone: customer.phone,
         discountCodeId: validDiscount?.id || null,
-        pricingSnapshot: pricing,
+        pricingSnapshot: { ...pricing, entitlements: snapshotEntitlements(pkg) },
       });
 
       // Create Paymob payment intention (ALWAYS in EGP)

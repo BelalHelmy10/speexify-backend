@@ -1,3 +1,4 @@
+import { fulfillmentTerms } from "./packageEntitlements.js";
 // src/services/orderService.js
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
@@ -102,19 +103,21 @@ export async function markOrderPaid(orderId, paymobTxnId) {
                 throw new Error(`Package not found: ${order.packageId}`);
             }
 
+            const terms = fulfillmentTerms(order, pkg);
             try {
                 const userPackage = await tx.userPackage.create({
                     data: {
                         userId: order.userId,
                         packageId: order.packageId,
                         orderId: order.id,
-                        title: pkg.title,
-                        minutesPerSession: pkg.durationMin || null,
-                        sessionsTotal: pkg.sessionsPerPack || 1,
+                        title: terms.title,
+                        lessonType: terms.lessonType ?? pkg.lessonType ?? null,
+                        minutesPerSession: terms.minutesPerSession,
+                        sessionsTotal: terms.sessionsTotal,
                         sessionsUsed: 0,
                         status: "active",
-                        expiresAt: pkg.sessionsPerPack
-                            ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+                        expiresAt: terms.validityDays
+                            ? new Date(Date.now() + terms.validityDays * 24 * 60 * 60 * 1000)
                             : null,
                     },
                 });
@@ -274,19 +277,22 @@ export async function grantPackageCredits(order) {
             throw new Error(`Package not found: ${order.packageId}`);
         }
 
+        const terms = fulfillmentTerms(order, pkg);
+
         // Create UserPackage with credits
         const userPackage = await prisma.userPackage.create({
             data: {
                 userId: order.userId,
                 packageId: order.packageId,
                 orderId: order.id,
-                title: pkg.title,
-                minutesPerSession: pkg.durationMin || null,
-                sessionsTotal: pkg.sessionsPerPack || 1,
+                title: terms.title,
+                        lessonType: terms.lessonType ?? pkg.lessonType ?? null,
+                minutesPerSession: terms.minutesPerSession,
+                sessionsTotal: terms.sessionsTotal,
                 sessionsUsed: 0,
                 status: "active",
-                expiresAt: pkg.sessionsPerPack
-                    ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year expiry
+                expiresAt: terms.validityDays
+                    ? new Date(Date.now() + terms.validityDays * 24 * 60 * 60 * 1000)
                     : null,
             },
         });

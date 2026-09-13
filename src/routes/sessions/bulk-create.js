@@ -1,3 +1,4 @@
+import { consumeOneCreditWithClient } from "../../services/sessionsService.js";
 // src/routes/sessions/bulk-create.js
 // Bulk create recurring weekly sessions for a learner
 
@@ -218,6 +219,10 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
                     },
                 });
 
+                if (!allowNoCredit) {
+                    const debit = await consumeOneCreditWithClient(tx, session.userId, session.id);
+                    if (!debit.ok) throw new Error("Insufficient credits for all requested sessions");
+                }
                 results.push(session);
             }
 
@@ -225,18 +230,8 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
         });
 
         // Consume credits and send notifications for each session
-        let creditsConsumed = 0;
+        const creditsConsumed = allowNoCredit ? 0 : createdSessions.length;
         for (const session of createdSessions) {
-            // Consume credit
-            try {
-                await consumeOneCredit(session.userId, session.id);
-                creditsConsumed++;
-            } catch (err) {
-                if (!allowNoCredit) {
-                    logger.warn({ sessionId: session.id }, "Failed to consume credit");
-                }
-            }
-
             // Send notifications
             try {
                 await sendBookingNotifications({

@@ -1,3 +1,4 @@
+import { cancelBooking } from "../../../services/cancelBooking.js";
 // src/routes/sessions/admin/bulkRoutes.js
 
 import {
@@ -63,37 +64,8 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
           affected++;
         } else if (action === "cancel") {
           if (session.status !== "canceled") {
-            await prisma.session.update({
-              where: { id: session.id },
-              data: { status: "canceled" },
-            });
-
-            if (session.type === "GROUP") {
-              const seats = (session.participants || [])
-                .filter((p) => p.status !== "canceled")
-                .map((p) => p.userId);
-
-              for (const learnerId of seats) {
-                try {
-                  const resRef = await refundOneCredit(learnerId);
-                  if (resRef.ok) refundedCredits++;
-                } catch (e) {
-                  logger.error({ err: e, learnerId, sessionId: session.id }, "Bulk cancel refund failed");
-                }
-              }
-            } else {
-              const learnerId =
-                session.userId ||
-                (session.participants?.length ? session.participants[0].userId : null);
-              if (learnerId) {
-                try {
-                  const resRef = await refundOneCredit(learnerId);
-                  if (resRef.ok) refundedCredits++;
-                } catch (e) {
-                  logger.error({ err: e, learnerId, sessionId: session.id }, "Bulk cancel refund failed");
-                }
-              }
-            }
+            const cancellation = await cancelBooking(session.id);
+            refundedCredits += cancellation.refundResults.filter(r => r.refunded).length;
 
             await audit(req.user.id, "session_cancel", "Session", session.id, { bulk: true });
             affected++;

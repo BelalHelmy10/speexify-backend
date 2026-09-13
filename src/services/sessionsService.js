@@ -91,14 +91,22 @@ export async function getRemainingCredits(userId) {
  * Take 1 credit from the newest active pack that still has remaining credits.
  * Accepts either the root Prisma client or an active transaction client.
  */
-export async function consumeOneCreditWithClient(db, userId) {
+export async function consumeOneCreditWithClient(db, userId, sessionId) {
   const uid = Number(userId);
   const now = new Date();
+  if (!Number.isSafeInteger(Number(sessionId)) || Number(sessionId) <= 0) throw new Error("Session ID required for credit debit");
+  const booking = await db.session.findUnique({where: {id: Number(sessionId)}, select: {type: true, startAt: true, endAt: true}});
+  if (!booking) throw new Error("Session not found for credit debit");
+  const requiredMinutes = booking.endAt ? Math.ceil((new Date(booking.endAt) - new Date(booking.startAt)) / 60000) : null;
+  const previous = await db.creditDebit.findFirst({ where: {sessionId: Number(sessionId), userId: uid, reversedAt: null} });
+  if (previous) return {ok: true, packId: previous.userPackageId, alreadyConsumed: true};
 
   const candidatePacks = await db.userPackage.findMany({
     where: {
       userId: uid,
       status: "active",
+      lessonType: booking.type,
+      ...(requiredMinutes ? {minutesPerSession: {gte: requiredMinutes}} : {}),
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -139,6 +147,7 @@ export async function consumeOneCreditWithClient(db, userId) {
       return { ok: false, reason: "no_credits" };
     }
 
+    await db.creditDebit.create({data: {sessionId: Number(sessionId), userId: uid, userPackageId: pack.id}});
     return {
       ok: true,
       packId: pack.id,
@@ -152,69 +161,28 @@ export async function consumeOneCreditWithClient(db, userId) {
 /**
  * Take 1 credit from the newest active pack that still has remaining credits.
  */
-export async function consumeOneCredit(userId) {
+export async function consumeOneCredit(userId, sessionId) {
   return prisma.$transaction((tx) => {
-    return consumeOneCreditWithClient(tx, userId);
+    return consumeOneCreditWithClient(tx, userId, sessionId);
   });
 }
 
 /**
  * Give back 1 credit to the newest pack that has at least 1 used.
  */
-export async function refundOneCredit(userId) {
-  const uid = Number(userId);
-
-  return prisma.$transaction(async (tx) => {
-    const candidatePacks = await tx.userPackage.findMany({
-      where: {
-        userId: uid,
-        status: "active",
-        sessionsUsed: { gt: 0 },
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      select: {
-        id: true,
-        userId: true,
-      },
-    });
-
-    for (const pack of candidatePacks) {
-      const refunded = await tx.userPackage.updateMany({
-        where: {
-          id: pack.id,
-          userId: uid,
-          status: "active",
-          sessionsUsed: { gt: 0 },
-        },
-        data: { sessionsUsed: { decrement: 1 } },
-      });
-
-      if (refunded.count !== 1) {
-        continue;
-      }
-
-      const updated = await tx.userPackage.findUnique({
-        where: { id: pack.id },
-        select: { sessionsTotal: true, sessionsUsed: true },
-      });
-
-      if (!updated) {
-        logger.error(
-          { packId: pack.id, userId: uid },
-          "[credits] Pack missing after refund"
-        );
-        return { ok: false, reason: "nothing_to_refund" };
-      }
-
-      return {
-        ok: true,
-        packId: pack.id,
-        remaining: updated.sessionsTotal - updated.sessionsUsed,
-      };
-    }
-
-    return { ok: false, reason: "nothing_to_refund" };
-  });
+export async function refundOneCreditWithClient(tx, userId, sessionId) {
+  if (!Number.isSafeInteger(Number(sessionId)) || Number(sessionId) <= 0) throw new Error("Session ID required for refund");
+  const debit = await tx.creditDebit.findFirst({where: {userId: Number(userId), sessionId: Number(sessionId), reversedAt: null}});
+  // Never guess a package for historical bookings without a recorded debit.
+  if (!debit) return {ok: false, reason: "no_recorded_debit"};
+  const claimed = await tx.creditDebit.updateMany({where: {id: debit.id, reversedAt: null}, data: {reversedAt: new Date()}});
+  if (!claimed.count) return {ok: false, reason: "already_refunded"};
+  const restored = await tx.userPackage.updateMany({where: {id: debit.userPackageId, sessionsUsed: {gt: 0}}, data: {sessionsUsed: {decrement: 1}}});
+  if (restored.count !== 1) throw new Error("Credit ledger and package balance disagree");
+  return {ok: true, packId: debit.userPackageId};
+}
+export async function refundOneCredit(userId, sessionId) {
+  return prisma.$transaction(tx => refundOneCreditWithClient(tx, userId, sessionId));
 }
 
 /**

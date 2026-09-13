@@ -1,3 +1,6 @@
+import { cancelBooking } from "../../../services/cancelBooking.js";
+import { bookingTransaction, lockSession } from "../../../services/bookingTransaction.js";
+import { consumeOneCreditWithClient } from "../../../services/sessionsService.js";
 // src/routes/sessions/admin/participantRoutes.js
 
 import {
@@ -175,43 +178,34 @@ router.post(
         return res.status(idempotency.statusCode).json(idempotency.responseBody);
       }
 
-      await prisma.$transaction(async (tx) => {
-        for (const uid of toAdd) {
-          const existedStatus = existing.get(uid);
-          if (existedStatus === "canceled") {
-            await tx.sessionParticipant.updateMany({
-              where: { sessionId, userId: uid },
-              data: { status: "booked" },
-            });
-          } else {
-            await tx.sessionParticipant.create({
-              data: { sessionId, userId: uid, status: "booked" },
-            });
-          }
+      const creditResults = await bookingTransaction(async (tx) => {
+        await lockSession(tx, sessionId);
+        const current = await tx.session.findUnique({
+          where: { id: sessionId }, include: { participants: true },
+        });
+        if (!current || current.status !== "scheduled") {
+          throw Object.assign(new Error("Session is no longer available"), { statusCode: 409 });
         }
+        const activeIds = new Set(current.participants.filter(p => p.status !== "canceled").map(p => p.userId));
+        const additions = [...new Set(toAdd)].filter(uid => !activeIds.has(uid));
+        if (!allowOverCapacity && current.capacity && activeIds.size + additions.length > current.capacity) {
+          throw Object.assign(new Error("Session capacity exceeded"), { statusCode: 409 });
+        }
+        const results = [];
+        for (const uid of additions) {
+          if (!allowNoCredit) {
+            const debit = await consumeOneCreditWithClient(tx, uid, sessionId);
+            if (!debit.ok) throw Object.assign(new Error("Learner has no credits"), { statusCode: 422 });
+            results.push({ learnerId: uid, consumed: true, packId: debit.packId });
+          }
+          await tx.sessionParticipant.upsert({
+            where: { sessionId_userId: { sessionId, userId: uid } },
+            create: { sessionId, userId: uid, status: "booked" },
+            update: { status: "booked" },
+          });
+        }
+        return results;
       });
-
-      const creditResults = [];
-      if (!allowNoCredit) {
-        for (const uid of toAdd) {
-          try {
-            const result = await consumeOneCredit(uid);
-            creditResults.push({ learnerId: uid, consumed: result.ok });
-            if (!result.ok) {
-              logger.warn(
-                { userId: uid, sessionId },
-                "[credits] Failed to consume credit when adding participant"
-              );
-            }
-          } catch (e) {
-            logger.error(
-              { err: e, userId: uid, sessionId },
-              "[credits] consumeOneCredit failed when adding participant"
-            );
-            creditResults.push({ learnerId: uid, consumed: false });
-          }
-        }
-      }
 
       await audit(req.user.id, "session_add_participants", "Session", sessionId, {
         addedUserIds: toAdd,
@@ -302,36 +296,9 @@ router.delete(
         });
       }
 
-      await prisma.sessionParticipant.updateMany({
-        where: { sessionId, userId: targetUserId },
-        data: { status: "canceled" },
-      });
-
-      let refunded = false;
-
-      if (refund && session.status !== "completed") {
-        const startsAt = new Date(session.startAt);
-        const twelveHoursMs = 12 * 60 * 60 * 1000;
-        const refundable = startsAt.getTime() - Date.now() >= twelveHoursMs;
-
-        if (refundable) {
-          try {
-            const r = await refundOneCredit(targetUserId);
-            refunded = !!r.ok;
-            if (!r.ok) {
-              logger.warn(
-                { userId: targetUserId, sessionId },
-                "[credits] admin remove seat refund not applied (none to refund)"
-              );
-            }
-          } catch (e) {
-            logger.error(
-              { err: e, userId: targetUserId, sessionId },
-              "[credits] admin remove seat refund failed"
-            );
-          }
-        }
-      }
+      const refundable = !!refund && new Date(session.startAt).getTime() - Date.now() >= 12 * 60 * 60 * 1000;
+      const cancellation = await cancelBooking(sessionId, {userId: targetUserId, refund: refundable});
+      const refunded = cancellation.refundResults.some(r => r.refunded);
 
       await audit(req.user.id, "session_remove_participant", "Session", sessionId, {
         removedUserId: targetUserId,

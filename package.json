@@ -54,7 +54,7 @@
     "google-auth-library": "^10.3.0",
     "helmet": "^8.1.0",
     "multer": "^2.1.1",
-    "nodemailer": "^8.0.10",
+    "nodemailer": "^10.0.9",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.2",
     "prisma": "^6.19.3",
@@ -71,5 +71,8 @@
     "supertest": "^7.1.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.2"
   }
 }

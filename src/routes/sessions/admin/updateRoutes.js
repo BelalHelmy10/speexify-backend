@@ -1,3 +1,4 @@
+import { cancelBooking } from "../../../services/cancelBooking.js";
 // src/routes/sessions/admin/updateRoutes.js
 
 import {
@@ -118,6 +119,7 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       shouldRefund = true;
     }
 
+    const cancellation = shouldRefund ? await cancelBooking(id) : null;
     const updated = await prisma.session.update({
       where: { id },
       data: patch,
@@ -134,61 +136,7 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       },
     });
 
-    const creditResults = [];
-
-    if (shouldRefund) {
-      if (existing.type === "GROUP") {
-        const seats = (existing.participants || [])
-          .filter((p) => p.status !== "canceled")
-          .map((p) => p.userId);
-
-        for (const learnerId of seats) {
-          try {
-            const resRef = await refundOneCredit(learnerId);
-            creditResults.push({
-              learnerId,
-              action: "refund",
-              ok: resRef.ok,
-            });
-          } catch (e) {
-            logger.error(
-              { err: e, userId: learnerId, sessionId: updated.id },
-              "[credits] refund failed on admin cancel"
-            );
-            creditResults.push({
-              learnerId,
-              action: "refund",
-              ok: false,
-            });
-          }
-        }
-      } else {
-        const learnerId =
-          existing.userId ||
-          (existing.participants?.length ? existing.participants[0].userId : null);
-
-        if (learnerId) {
-          try {
-            const resRef = await refundOneCredit(learnerId);
-            creditResults.push({
-              learnerId,
-              action: "refund",
-              ok: resRef.ok,
-            });
-          } catch (e) {
-            logger.error(
-              { err: e, userId: learnerId, sessionId: updated.id },
-              "[credits] refund failed on admin cancel"
-            );
-            creditResults.push({
-              learnerId,
-              action: "refund",
-              ok: false,
-            });
-          }
-        }
-      }
-    }
+    const creditResults = cancellation?.refundResults || [];
 
     await audit(req.user.id, "session_update", "Session", id, {
       ...patch,

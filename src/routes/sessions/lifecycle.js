@@ -1,3 +1,4 @@
+import { cancelBooking } from "../../services/cancelBooking.js";
 // src/routes/sessions/lifecycle.js
 // Session lifecycle: complete, cancel, reschedule
 
@@ -177,28 +178,8 @@ router.post(
         // GROUP: learner cancels ONLY their seat
         // ─────────────────────────────────────────────
         if (sessionRow.type === "GROUP" && isLearner && !isAdmin && !isTeacher) {
-            // Mark this learner's participant row as canceled
-            await prisma.sessionParticipant.updateMany({
-                where: {
-                    sessionId: sessionRow.id,
-                    userId: viewerId,
-                },
-                data: { status: "canceled" },
-            });
-
-            // Refund only this learner if policy allows
-            let refunded = false;
-            if (refundableByLearner && sessionRow.status !== "completed") {
-                try {
-                    const r = await refundOneCredit(viewerId);
-                    refunded = r.ok;
-                } catch (e) {
-                    logger.error(
-                        { err: e, userId: viewerId, sessionId: sessionRow.id },
-                        "[credits] group seat cancel refund failed"
-                    );
-                }
-            }
+            const cancellation = await cancelBooking(sessionRow.id, {userId: viewerId, refund: refundableByLearner});
+            const refunded = cancellation.refundResults.some(r => r.refunded);
 
             // ✅ Send cancellation notifications (in-app + email)
             try {
@@ -236,62 +217,10 @@ router.post(
         // ─────────────────────────────────────────────
         // Otherwise: cancel the whole session
         // ─────────────────────────────────────────────
-        const updated = await prisma.session.update({
-            where: { id: sessionRow.id },
-            data: { status: "canceled" },
-            select: {
-                id: true,
-                status: true,
-                type: true,
-            },
-        });
-
-        const refundableWholeSession =
-            startsAt.getTime() - Date.now() >= twelveHoursMs &&
-            sessionRow.status !== "completed";
-
-        const refundResults = [];
-
-        // Handle refunds
-        if (refundableWholeSession) {
-            if (sessionRow.type === "GROUP") {
-                const seats = (sessionRow.participants || [])
-                    .filter((p) => p.status !== "canceled")
-                    .map((p) => p.userId);
-
-                for (const learnerId of seats) {
-                    try {
-                        const r = await refundOneCredit(learnerId);
-                        refundResults.push({ learnerId, refunded: r.ok });
-                    } catch (e) {
-                        logger.error(
-                            { err: e, userId: learnerId, sessionId: sessionRow.id },
-                            "[credits] group cancel refund failed"
-                        );
-                        refundResults.push({ learnerId, refunded: false });
-                    }
-                }
-            } else {
-                const learnerId =
-                    sessionRow.userId ||
-                    (sessionRow.participants?.length
-                        ? sessionRow.participants[0].userId
-                        : null);
-
-                if (learnerId) {
-                    try {
-                        const r = await refundOneCredit(learnerId);
-                        refundResults.push({ learnerId, refunded: r.ok });
-                    } catch (e) {
-                        logger.error(
-                            { err: e, userId: learnerId, sessionId: sessionRow.id },
-                            "[credits] cancel refund failed"
-                        );
-                        refundResults.push({ learnerId, refunded: false });
-                    }
-                }
-            }
-        }
+        const refundableWholeSession = startsAt.getTime() - Date.now() >= twelveHoursMs && sessionRow.status !== "completed";
+        const cancellation = await cancelBooking(sessionRow.id, {refund: refundableWholeSession});
+        const updated = cancellation.session;
+        const refundResults = cancellation.refundResults;
 
         // ✅ Determine recipients
         const learnerIds = [];
@@ -317,7 +246,7 @@ router.post(
                 teacherId: sessionRow.teacherId,
                 canceledBy: req.user.id,
                 scope: "session",
-                refunded: refundableWholeSession,
+                refunded: refundResults.some(r => r.refunded),
             });
         } catch (e) {
             logger.error(
@@ -329,7 +258,7 @@ router.post(
         const responseBody = {
             ok: true,
             scope: "session",
-            refunded: refundableWholeSession,
+            refunded: refundResults.some(r => r.refunded),
             refundResults,
             session: updated,
         };

@@ -164,12 +164,12 @@ async function ensureCredits({ learnerIds, allowNoCredit }) {
   }
 }
 
-async function consumeCreditsInTransaction({ tx, learnerIds, allowNoCredit }) {
+async function consumeCreditsInTransaction({ tx, learnerIds, allowNoCredit, sessionId }) {
   const creditResults = [];
   if (allowNoCredit) return creditResults;
 
   for (const learnerId of learnerIds) {
-    const result = await consumeOneCreditWithClient(tx, learnerId);
+    const result = await consumeOneCreditWithClient(tx, learnerId, sessionId);
     if (!result.ok) {
       throw httpError(422, {
         error: "no_credits",
@@ -371,6 +371,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       const consumedCredits = await consumeCreditsInTransaction({
         tx,
         learnerIds: finalLearnerIds,
+        sessionId: createdSession.id,
         allowNoCredit: allowCreditOverride,
       });
 

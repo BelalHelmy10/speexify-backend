@@ -1,9 +1,10 @@
+import { uploadRoot } from "./uploadStorage.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
 
-const AVATAR_UPLOAD_DIR = path.join(process.cwd(), "uploads", "avatars");
+const AVATAR_UPLOAD_DIR = path.join(uploadRoot, "avatars");
 const MAX_AVATAR_SIZE = 3 * 1024 * 1024;
 
 const MIME_TO_EXTENSION = {

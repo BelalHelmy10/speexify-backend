@@ -652,17 +652,27 @@ router.get(
   async (req, res) => {
     try {
       const { role } = req.query;
+      const query = String(req.query.q || "").trim();
+      const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+      const offset = Math.max(0, Number(req.query.offset) || 0);
 
       const userWhere = role
         ? { role }
         : { role: { in: ["learner", "teacher"] } };
 
       // Get all users with their availability count
-      const users = await prisma.user.findMany({
-        where: {
-          ...userWhere,
-          isDisabled: false,
-        },
+      const where = {
+        ...userWhere,
+        isDisabled: false,
+        ...(query ? { OR: [
+          { name: { contains: query, mode: "insensitive" } },
+          { email: { contains: query, mode: "insensitive" } },
+        ] } : {}),
+      };
+
+      const [users, totalUsers, usersWithAvailabilityTotal] = await Promise.all([
+        prisma.user.findMany({
+        where,
         select: {
           id: true,
           email: true,
@@ -678,7 +688,12 @@ router.get(
           },
         },
         orderBy: [{ role: "asc" }, { name: "asc" }],
-      });
+        skip: offset,
+        take: limit,
+      }),
+        prisma.user.count({ where }),
+        prisma.user.count({ where: { ...where, availabilities: { some: { status: "active" } } } }),
+      ]);
 
       // Get detailed availability for users who have set availability
       const usersWithAvailability = users.filter(
@@ -694,15 +709,18 @@ router.get(
         where: {
           status: "active",
           isRecurring: true,
-          user: userWhere,
+          user: where,
         },
         _count: { id: true },
       });
 
       res.json({
-        totalUsers: users.length,
-        usersWithAvailability: usersWithAvailability.length,
-        usersWithoutAvailability: usersWithoutAvailability.length,
+        totalUsers,
+        offset,
+        limit,
+        hasMore: offset + users.length < totalUsers,
+        usersWithAvailability: usersWithAvailabilityTotal,
+        usersWithoutAvailability: Math.max(0, totalUsers - usersWithAvailabilityTotal),
         users: users.map((u) => ({
           id: u.id,
           email: u.email,

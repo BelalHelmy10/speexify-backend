@@ -12,6 +12,7 @@ datasource db {
 }
 
 model Package {
+  lessonType SessionType?
   catalogKey      String?       @unique
   pricingOverrides Json?
   id              Int           @id @default(autoincrement())
@@ -515,9 +516,12 @@ model DiscountCode {
 }
 
 model UserPackage {
+  lessonType SessionType?
   id        Int @id @default(autoincrement())
   userId    Int
   packageId Int
+
+  creditDebits CreditDebit[]
 
   orderId String? @unique
   order   Order?  @relation(fields: [orderId], references: [id])
@@ -594,4 +598,17 @@ enum SessionStatus {
   scheduled
   completed
   canceled
+}
+
+// Each charge retains its source package and a single reversal timestamp.
+// Session/user IDs are historical identifiers retained when accounts are anonymized.
+model CreditDebit {
+  id Int @id @default(autoincrement())
+  sessionId Int
+  userId Int
+  userPackageId Int
+  userPackage UserPackage @relation(fields: [userPackageId], references: [id])
+  createdAt DateTime @default(now())
+  reversedAt DateTime?
+  @@index([sessionId, userId])
 }
