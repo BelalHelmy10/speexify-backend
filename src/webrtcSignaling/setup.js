@@ -141,7 +141,16 @@ function setupWebRtcSignaling(httpServer) {
                 },
                 `[${channelName}] Forbidden room join`
               );
-              safeSend(ws, { type: MSG_TYPES.ERROR, message: "Forbidden" });
+              safeSend(ws, {
+                type: MSG_TYPES.ERROR,
+                code: authorization.reason || "forbidden_classroom_room",
+                message:
+                  authorization.reason === "classroom_admission_required"
+                    ? "Waiting for teacher admission"
+                    : authorization.reason === "classroom_ended"
+                      ? "This classroom session has ended"
+                      : "Forbidden",
+              });
               try {
                 ws.close(1008, "Forbidden");
               } catch {

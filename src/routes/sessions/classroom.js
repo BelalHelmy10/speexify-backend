@@ -256,8 +256,64 @@ function mergeClassroomState(existingState, patch) {
             ...patch.moderation,
         };
     }
+    if (patch.lobby) {
+        next.lobby = {
+            ...(existing.lobby && typeof existing.lobby === "object"
+                ? existing.lobby
+                : {}),
+            ...patch.lobby,
+        };
+    }
 
     return next;
+}
+
+function normalizeLobbyIds(value) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+}
+
+function getDurableLobby(state) {
+    const lobby = state?.lobby && typeof state.lobby === "object" && !Array.isArray(state.lobby)
+        ? state.lobby
+        : {};
+    const waiting = Array.isArray(lobby.waiting)
+        ? lobby.waiting.filter((entry) => entry && Number.isSafeInteger(Number(entry.id)))
+        : [];
+    return {
+        ...lobby,
+        waiting,
+        admitted: normalizeLobbyIds(lobby.admitted),
+        denied: normalizeLobbyIds(lobby.denied),
+    };
+}
+
+function sortWaiting(waiting) {
+    return [...waiting].sort(
+        (a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime()
+    );
+}
+
+const MAX_ANNOTATION_BYTES = 1024 * 1024;
+
+function sanitizeAnnotationSnapshot(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+    const snapshot = {};
+    for (const key of ["strokes", "stickyNotes", "textBoxes", "masks", "lines", "boxes"]) {
+        if (Array.isArray(value[key])) snapshot[key] = value[key].slice(0, 5000);
+    }
+    if (typeof value.canvasData === "string" && value.canvasData.length <= MAX_ANNOTATION_BYTES) {
+        snapshot.canvasData = value.canvasData;
+    }
+
+    if (!Object.keys(snapshot).length) return null;
+    try {
+        if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") > MAX_ANNOTATION_BYTES) return null;
+    } catch {
+        return null;
+    }
+    return snapshot;
 }
 
 function sanitizeChatBody(value) {
@@ -423,6 +479,92 @@ router.patch("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
     } catch (err) {
         logger.error({ err }, "PATCH /sessions/:id/classroom-state failed");
         return res.status(500).json({ error: "Failed to save classroom state" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// GET /api/sessions/:id/annotations - Restore session-scoped annotations
+// --------------------------------------------------------------------------
+router.get("/sessions/:id/annotations", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        const resourceId = safeString(req.query.resourceId, 300);
+        if (!sessionId || !resourceId) {
+            return res.status(400).json({ error: "Valid sessionId and resourceId are required" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const state = getStoredClassroomState(context.session.classroomState);
+        const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
+        const admitted = getDurableLobby(state).admitted.includes(viewerId);
+        if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
+            return res.status(403).json({ error: "Waiting for classroom admission" });
+        }
+        const ownerIds = [viewerId];
+        if (context.session.teacherId && !ownerIds.includes(context.session.teacherId)) {
+            ownerIds.push(context.session.teacherId);
+        }
+
+        const annotations = await prisma.classroomAnnotation.findMany({
+            where: { sessionId, resourceId, userId: { in: ownerIds } },
+            orderBy: { updatedAt: "desc" },
+        });
+
+        return res.json({
+            ok: true,
+            annotations: annotations.map((annotation) => ({
+                userId: annotation.userId,
+                resourceId: annotation.resourceId,
+                payload: annotation.payload,
+                version: annotation.version,
+                updatedAt: annotation.updatedAt,
+            })),
+        });
+    } catch (err) {
+        logger.error({ err }, "GET /sessions/:id/annotations failed");
+        return res.status(500).json({ error: "Failed to load annotations" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// PUT /api/sessions/:id/annotations - Save the caller's annotation snapshot
+// --------------------------------------------------------------------------
+router.put("/sessions/:id/annotations", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        const resourceId = safeString(req.body?.resourceId, 300);
+        const payload = sanitizeAnnotationSnapshot(req.body?.payload);
+        const ownerId = Number(req.user?.id);
+        if (!sessionId || !resourceId || !payload || !Number.isSafeInteger(ownerId) || ownerId <= 0) {
+            return res.status(400).json({ error: "Valid resourceId and annotation payload are required" });
+        }
+
+        const context = await requireClassroomAccess(req, res, sessionId);
+        if (!context) return null;
+
+        const state = getStoredClassroomState(context.session.classroomState);
+        const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
+        const admitted = getDurableLobby(state).admitted.includes(Number(req.viewUserId || req.user?.id));
+        if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
+            return res.status(403).json({ error: "Waiting for classroom admission" });
+        }
+
+        const updated = await prisma.classroomAnnotation.upsert({
+            where: {
+                sessionId_userId_resourceId: { sessionId, userId: ownerId, resourceId },
+            },
+            create: { sessionId, userId: ownerId, resourceId, payload },
+            update: { payload, version: { increment: 1 } },
+            select: { userId: true, resourceId: true, payload: true, version: true, updatedAt: true },
+        });
+
+        return res.json({ ok: true, annotation: updated });
+    } catch (err) {
+        logger.error({ err }, "PUT /sessions/:id/annotations failed");
+        return res.status(500).json({ error: "Failed to save annotations" });
     }
 });
 
@@ -732,7 +874,7 @@ router.get("/sessions/:id/notes", requireAuth, async (req, res) => {
                 teacherId: true,
                 userId: true,
                 teacherNotes: true,
-                participants: { select: { userId: true } },
+                participants: { select: { userId: true, status: true } },
             },
         });
 
@@ -741,16 +883,20 @@ router.get("/sessions/:id/notes", requireAuth, async (req, res) => {
         }
 
         // Check permissions
-        const viewerId = req.viewUserId;
+        const viewerId = Number(req.viewUserId || req.user?.id);
         const isParticipant = session.participants.some(
-            (p) => p.userId === viewerId
+            (p) => p.userId === viewerId && p.status !== "canceled"
         );
         const isLearner = isParticipant || session.userId === viewerId;
-        const isTeacher = session.teacherId === req.user.id;
+        const isTeacher = session.teacherId === Number(req.user.id);
         const isAdmin = req.user.role === "admin";
 
         if (!(isLearner || isTeacher || isAdmin)) {
             return res.status(403).json({ error: "Forbidden" });
+        }
+
+        if (!isTeacher && !isAdmin) {
+            return res.status(403).json({ error: "Teacher notes are private" });
         }
 
         return res.json({ notes: session.teacherNotes || "" });
@@ -1238,48 +1384,6 @@ router.get("/sessions/:id/summary", requireAuth, async (req, res) => {
 // LOBBY / WAITING ROOM — Group session admission control
 // ==========================================================================
 
-// In-memory lobby state: sessionId → Map<learnerId, { id, name, email, joinedAt }>
-const lobbyMap = new Map();
-
-function getLobby(sessionId) {
-    if (!lobbyMap.has(sessionId)) {
-        lobbyMap.set(sessionId, new Map());
-    }
-    return lobbyMap.get(sessionId);
-}
-
-function getLobbyList(sessionId) {
-    const lobby = lobbyMap.get(sessionId);
-    if (!lobby || lobby.size === 0) return [];
-    return Array.from(lobby.values()).sort(
-        (a, b) => new Date(a.joinedAt) - new Date(b.joinedAt)
-    );
-}
-
-function removeLobbyLearner(sessionId, learnerId) {
-    const lobby = lobbyMap.get(sessionId);
-    if (lobby) {
-        lobby.delete(Number(learnerId));
-        if (lobby.size === 0) lobbyMap.delete(sessionId);
-    }
-}
-
-// Cleanup idle lobbies every 10 minutes (sessions older than 4 hours)
-const lobbyCleanupInterval = setInterval(() => {
-    const cutoff = Date.now() - 4 * 60 * 60 * 1000;
-    for (const [sessionId, lobby] of lobbyMap) {
-        let allOld = true;
-        for (const entry of lobby.values()) {
-            if (new Date(entry.joinedAt).getTime() > cutoff) {
-                allOld = false;
-                break;
-            }
-        }
-        if (allOld) lobbyMap.delete(sessionId);
-    }
-}, 10 * 60 * 1000);
-lobbyCleanupInterval.unref?.();
-
 // --------------------------------------------------------------------------
 // POST /api/sessions/:id/lobby/join - Learner requests admission to group session
 // --------------------------------------------------------------------------
@@ -1297,6 +1401,8 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
                 type: true,
                 userId: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
                 participants: {
                     select: { userId: true, status: true },
@@ -1308,8 +1414,33 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        // Check if lobby is enabled (enabled by default for all session types)
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({
+                error: "This classroom session has ended.",
+                status: "ended",
+            });
+        }
+
         const classroomState = getStoredClassroomState(session.classroomState);
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const isTeacher = session.teacherId === Number(req.user?.id);
+
+        // Validate membership before reporting an admission result. The
+        // WebSocket authorizer enforces the same boundary, so the HTTP API
+        // should never claim that an unrelated account is admitted.
+        const isParticipant = session.participants.some(
+            (p) => p.userId === viewerId && p.status !== "canceled"
+        );
+        const isLegacyLearner = session.userId === viewerId;
+        if (!isTeacher && !(isParticipant || isLegacyLearner)) {
+            return res.status(403).json({ error: "You are not a participant of this session" });
+        }
+
+        // Check if lobby is enabled (enabled by default for all session types)
         const lobbyEnabled = classroomState?.moderation?.lobbyEnabled !== false;
 
         if (!lobbyEnabled) {
@@ -1325,32 +1456,17 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             });
         }
 
-        const viewerId = Number(req.viewUserId || req.user?.id);
-        const isTeacher = session.teacherId === Number(req.user?.id);
-
         // Teachers skip the lobby
         if (isTeacher) {
             return res.json({ ok: true, status: "admitted", lobbyEnabled: true });
         }
 
-        // Check if learner is an approved participant
-        const isParticipant = session.participants.some(
-            (p) => p.userId === viewerId && p.status !== "canceled"
-        );
-        const isLegacyLearner = session.userId === viewerId;
-
-        if (!(isParticipant || isLegacyLearner)) {
-            return res.status(403).json({ error: "You are not a participant of this session" });
-        }
-
-        // Check if already admitted (stored in classroomState.lobby.admitted)
-        const admittedList = classroomState?.lobby?.admitted || [];
+        const durableLobby = getDurableLobby(classroomState);
+        const admittedList = durableLobby.admitted;
         if (admittedList.includes(viewerId)) {
             return res.json({ ok: true, status: "admitted" });
         }
 
-        // Add to lobby
-        const lobby = getLobby(sessionId);
         const sender = Number.isFinite(viewerId)
             ? await prisma.user.findUnique({
                 where: { id: viewerId },
@@ -1358,17 +1474,27 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             })
             : null;
 
-        lobby.set(viewerId, {
+        const waiting = durableLobby.waiting.filter((entry) => Number(entry.id) !== viewerId);
+        waiting.push({
             id: viewerId,
             name: sender?.name || req.body?.name || "Learner",
             email: sender?.email || null,
             joinedAt: new Date().toISOString(),
         });
 
+        const denied = durableLobby.denied.filter((id) => id !== viewerId);
+        const nextState = mergeClassroomState(classroomState, {
+            lobby: { waiting, denied },
+        });
+        await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+        });
+
         return res.json({
             ok: true,
             status: "waiting",
-            position: lobby.size,
+            position: sortWaiting(waiting).findIndex((entry) => Number(entry.id) === viewerId) + 1,
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/join failed");
@@ -1391,12 +1517,22 @@ router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
             },
         });
 
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({ error: "This classroom session has ended." });
         }
 
         const isTeacher = session.teacherId === Number(req.user?.id);
@@ -1406,9 +1542,10 @@ router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "Only teachers can view the lobby" });
         }
 
+        const lobbyState = getDurableLobby(getStoredClassroomState(session.classroomState));
         return res.json({
             ok: true,
-            waiting: getLobbyList(sessionId),
+            waiting: sortWaiting(lobbyState.waiting),
         });
     } catch (err) {
         logger.error({ err }, "GET /sessions/:id/lobby failed");
@@ -1431,12 +1568,22 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
             },
         });
 
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({ error: "This classroom session has ended." });
         }
 
         const isTeacher = session.teacherId === Number(req.user?.id);
@@ -1447,26 +1594,22 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
         }
 
         const learnerId = Number(req.body?.learnerId);
-        if (!learnerId || !Number.isFinite(learnerId)) {
+        if (!Number.isSafeInteger(learnerId) || learnerId <= 0) {
             return res.status(400).json({ error: "learnerId is required" });
         }
 
-        // Remove from lobby
-        removeLobbyLearner(sessionId, learnerId);
-
-        // Persist admission in classroomState
         const existing = getStoredClassroomState(session.classroomState);
-        const lobby = existing.lobby || {};
-        const admitted = Array.isArray(lobby.admitted) ? [...lobby.admitted] : [];
+        const lobby = getDurableLobby(existing);
+        const admitted = [...lobby.admitted];
         if (!admitted.includes(learnerId)) {
             admitted.push(learnerId);
         }
+        const waiting = lobby.waiting.filter((entry) => Number(entry.id) !== learnerId);
+        const denied = lobby.denied.filter((id) => id !== learnerId);
 
-        const nextState = {
-            ...existing,
-            lobby: { ...lobby, admitted },
-            updatedAt: new Date().toISOString(),
-        };
+        const nextState = mergeClassroomState(existing, {
+            lobby: { ...lobby, waiting, admitted, denied },
+        });
 
         await prisma.session.update({
             where: { id: sessionId },
@@ -1476,7 +1619,7 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
         return res.json({
             ok: true,
             admitted: learnerId,
-            waiting: getLobbyList(sessionId),
+            waiting: sortWaiting(waiting),
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/admit failed");
@@ -1499,11 +1642,22 @@ router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
+                classroomState: true,
             },
         });
 
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({ error: "This classroom session has ended." });
         }
 
         const isTeacher = session.teacherId === Number(req.user?.id);
@@ -1514,17 +1668,28 @@ router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
         }
 
         const learnerId = Number(req.body?.learnerId);
-        if (!learnerId || !Number.isFinite(learnerId)) {
+        if (!Number.isSafeInteger(learnerId) || learnerId <= 0) {
             return res.status(400).json({ error: "learnerId is required" });
         }
 
-        // Remove from lobby
-        removeLobbyLearner(sessionId, learnerId);
+        const existing = getStoredClassroomState(session.classroomState);
+        const lobby = getDurableLobby(existing);
+        const waiting = lobby.waiting.filter((entry) => Number(entry.id) !== learnerId);
+        const denied = lobby.denied.includes(learnerId)
+            ? lobby.denied
+            : [...lobby.denied, learnerId];
+        const nextState = mergeClassroomState(existing, {
+            lobby: { ...lobby, waiting, denied },
+        });
+        await prisma.session.update({
+            where: { id: sessionId },
+            data: { classroomState: nextState },
+        });
 
         return res.json({
             ok: true,
             denied: learnerId,
-            waiting: getLobbyList(sessionId),
+            waiting: sortWaiting(waiting),
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/deny failed");
@@ -1547,12 +1712,22 @@ router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
             },
         });
 
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({ error: "This classroom session has ended." });
         }
 
         const isTeacher = session.teacherId === Number(req.user?.id);
@@ -1562,26 +1737,17 @@ router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "Only teachers can admit learners" });
         }
 
-        // Get all waiting learner IDs
-        const waitingList = getLobbyList(sessionId);
-        const learnerIds = waitingList.map((l) => l.id);
-
-        // Clear lobby
-        lobbyMap.delete(sessionId);
-
-        // Persist admission in classroomState
         const existing = getStoredClassroomState(session.classroomState);
-        const lobby = existing.lobby || {};
-        const admitted = Array.isArray(lobby.admitted) ? [...lobby.admitted] : [];
+        const lobby = getDurableLobby(existing);
+        const waitingList = sortWaiting(lobby.waiting);
+        const learnerIds = waitingList.map((l) => l.id);
+        const admitted = [...lobby.admitted];
         for (const id of learnerIds) {
             if (!admitted.includes(id)) admitted.push(id);
         }
-
-        const nextState = {
-            ...existing,
-            lobby: { ...lobby, admitted },
-            updatedAt: new Date().toISOString(),
-        };
+        const nextState = mergeClassroomState(existing, {
+            lobby: { ...lobby, waiting: [], admitted },
+        });
 
         await prisma.session.update({
             where: { id: sessionId },
@@ -1615,12 +1781,22 @@ router.post("/sessions/:id/lobby/toggle", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
             },
         });
 
         if (!session) {
             return res.status(404).json({ error: "Session not found" });
+        }
+
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.status(403).json({ error: "This classroom session has ended." });
         }
 
         const isTeacher = session.teacherId === Number(req.user?.id);
@@ -1667,8 +1843,14 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
             select: {
                 id: true,
                 type: true,
+                userId: true,
                 teacherId: true,
+                status: true,
+                endAt: true,
                 classroomState: true,
+                participants: {
+                    select: { userId: true, status: true },
+                },
             },
         });
 
@@ -1676,11 +1858,32 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
+        if (
+            session.status === "completed" ||
+            session.status === "canceled" ||
+            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
+        ) {
+            return res.json({ ok: true, status: "ended", lobbyEnabled: false });
+        }
+
         const viewerId = Number(req.viewUserId || req.user?.id);
-        const isTeacher = session.teacherId === Number(req.user?.id);
+        const realUserId = Number(req.user?.id);
+        const isTeacher = session.teacherId === realUserId;
+        const isAdmin = req.user?.role === "admin";
+
+        if (!isTeacher && !isAdmin) {
+            const isParticipant = session.participants.some(
+                (participant) =>
+                    participant.userId === viewerId && participant.status !== "canceled"
+            );
+            const isLegacyLearner = session.userId === viewerId;
+            if (!isParticipant && !isLegacyLearner) {
+                return res.status(403).json({ error: "You are not a participant of this session" });
+            }
+        }
 
         // Teachers are always admitted
-        if (isTeacher) {
+        if (isTeacher || isAdmin) {
             return res.json({ ok: true, status: "admitted" });
         }
 
@@ -1692,15 +1895,21 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
         }
 
         // Check if already admitted
-        const admittedList = classroomState?.lobby?.admitted || [];
-        if (admittedList.includes(viewerId)) {
+        const lobby = getDurableLobby(classroomState);
+        if (lobby.admitted.includes(viewerId)) {
             return res.json({ ok: true, status: "admitted" });
         }
 
-        // Check if in lobby
-        const lobby = lobbyMap.get(sessionId);
-        if (lobby && lobby.has(viewerId)) {
-            return res.json({ ok: true, status: "waiting", position: Array.from(lobby.keys()).indexOf(viewerId) + 1 });
+        if (lobby.denied.includes(viewerId)) {
+            return res.json({ ok: true, status: "denied" });
+        }
+
+        // Check if in the durable waiting room
+        const position = sortWaiting(lobby.waiting).findIndex(
+            (entry) => Number(entry.id) === viewerId
+        );
+        if (position >= 0) {
+            return res.json({ ok: true, status: "waiting", position: position + 1 });
         }
 
         // Not in lobby yet (needs to join)

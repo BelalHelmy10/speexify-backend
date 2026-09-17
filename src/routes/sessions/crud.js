@@ -63,7 +63,11 @@ router.get("/sessions", requireAuth, async (req, res) => {
             skip,
         });
 
-        res.json(sessions);
+        // This endpoint is the learner session list. Keep coach working notes
+        // private even though Prisma returns scalar fields by default.
+        res.json(
+            sessions.map(({ teacherNotes: _privateNotes, ...safeSession }) => safeSession)
+        );
     } catch (err) {
         logger.error({ err }, "GET /sessions failed");
         res.status(500).json({ error: "Failed to load sessions" });
@@ -103,7 +107,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 
         const viewerId = req.viewUserId;
         const isParticipant = session.participants.some(
-            (p) => p.userId === viewerId
+            (p) => p.userId === viewerId && p.status !== "canceled"
         );
 
         // Permission: learner participant OR legacy owner OR teacher OR admin
@@ -177,6 +181,9 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
         delete shaped.teacherFeedbackMessageToLearner;
         delete shaped.teacherFeedbackComments;
         delete shaped.teacherFeedbackFutureSteps;
+        if (isLearner && !isTeacher && !isAdmin) {
+            delete shaped.teacherNotes;
+        }
 
         return res.json({ session: shaped });
     } catch (err) {

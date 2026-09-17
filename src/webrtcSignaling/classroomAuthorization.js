@@ -61,6 +61,18 @@ function isClassroomLocked(session) {
   );
 }
 
+function isClassroomEnded(session) {
+  if (!session) return true;
+  if (session.status === "completed" || session.status === "canceled") return true;
+  return Boolean(session.endAt && new Date(session.endAt).getTime() <= Date.now());
+}
+
+function getLobbyState(session) {
+  const state = session?.classroomState;
+  const lobby = state?.lobby;
+  return lobby && typeof lobby === "object" && !Array.isArray(lobby) ? lobby : {};
+}
+
 export function createClassroomJoinAuthorizer({
   prismaClient = prisma,
   authEnabled = CONFIG.AUTH_ENABLED,
@@ -95,6 +107,8 @@ export function createClassroomJoinAuthorizer({
           id: true,
           userId: true,
           teacherId: true,
+          status: true,
+          endAt: true,
           classroomState: true,
           participants: {
             select: {
@@ -111,6 +125,10 @@ export function createClassroomJoinAuthorizer({
       return { allowed: false, reason: "forbidden_classroom_room" };
     }
 
+    if (isClassroomEnded(session)) {
+      return { allowed: false, reason: "classroom_ended" };
+    }
+
     if (
       isClassroomLocked(session) &&
       membership.isLearner &&
@@ -118,6 +136,16 @@ export function createClassroomJoinAuthorizer({
       !membership.isAdmin
     ) {
       return { allowed: false, reason: "classroom_locked" };
+    }
+
+    const lobbyEnabled = session?.classroomState?.moderation?.lobbyEnabled !== false;
+    const lobby = getLobbyState(session);
+    const admitted = Array.isArray(lobby.admitted)
+      ? lobby.admitted.some((id) => Number(id) === numericUserId)
+      : false;
+
+    if (lobbyEnabled && membership.isLearner && !membership.isTeacher && !membership.isAdmin && !admitted) {
+      return { allowed: false, reason: "classroom_admission_required" };
     }
 
     return {

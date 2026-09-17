@@ -76,6 +76,7 @@ model User {
   supportTickets  SupportTicket[]
   supportMessages SupportMessage[]
   classroomMessages ClassroomMessage[]
+  classroomAnnotations ClassroomAnnotation[]
 
   // ✨ Support ticket assignment (admin can assign tickets to staff)
   assignedSupportTickets SupportTicket[] @relation("AssignedSupportTickets")
@@ -336,6 +337,7 @@ model Session {
   // New: participant membership (many learners per session)
   participants SessionParticipant[]
   classroomMessages ClassroomMessage[]
+  classroomAnnotations ClassroomAnnotation[]
 
   createdAt                       DateTime      @default(now())
   updatedAt                       DateTime      @updatedAt
@@ -410,6 +412,24 @@ model ClassroomMessage {
   @@index([sessionId, createdAt])
   @@index([senderId, createdAt])
   @@index([deletedAt])
+}
+
+model ClassroomAnnotation {
+  id         String   @id @default(cuid())
+  sessionId  Int
+  userId     Int
+  resourceId String
+  payload    Json
+  version    Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId, resourceId])
+  @@index([sessionId, resourceId])
+  @@index([userId, updatedAt])
 }
 
 model SessionFeedback {

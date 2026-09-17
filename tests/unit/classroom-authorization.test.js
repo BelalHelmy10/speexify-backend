@@ -19,6 +19,9 @@ function createSession(overrides = {}) {
     id: 42,
     userId: 10,
     teacherId: 20,
+    status: "scheduled",
+    endAt: null,
+    classroomState: { moderation: { lobbyEnabled: false } },
     participants: [],
     ...overrides,
   };
@@ -43,6 +46,7 @@ test("classroom join authorizer allows teachers, legacy learners, participants, 
       user: { id: 30, role: "learner", isDisabled: false },
       session: createSession({
         participants: [{ userId: 30, status: "booked" }],
+        classroomState: { lobby: { admitted: [30] } },
       }),
       userId: 30,
     },
@@ -100,6 +104,37 @@ test("classroom join authorizer rejects unrelated users and canceled seats", asy
   );
 });
 
+test("classroom join authorizer requires admission when lobby is enabled", async () => {
+  const authorize = createClassroomJoinAuthorizer({
+    prismaClient: createFakePrisma({
+      user: { id: 30, role: "learner", isDisabled: false },
+      session: createSession({
+        participants: [{ userId: 30, status: "booked" }],
+        classroomState: { moderation: { lobbyEnabled: true } },
+      }),
+    }),
+    authEnabled: true,
+  });
+
+  const result = await authorize({ roomId: "42", userId: "30" });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "classroom_admission_required");
+});
+
+test("classroom join authorizer rejects ended sessions", async () => {
+  const authorize = createClassroomJoinAuthorizer({
+    prismaClient: createFakePrisma({
+      user: { id: 20, role: "teacher", isDisabled: false },
+      session: createSession({ status: "completed" }),
+    }),
+    authEnabled: true,
+  });
+
+  const result = await authorize({ roomId: "42", userId: "20" });
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason, "classroom_ended");
+});
+
 test("classroom join authorizer rejects invalid room ids, missing users, and disabled users", async () => {
   const authorize = createClassroomJoinAuthorizer({
     prismaClient: createFakePrisma({
@@ -125,4 +160,3 @@ test("classroom join authorizer rejects invalid room ids, missing users, and dis
     false
   );
 });
-
