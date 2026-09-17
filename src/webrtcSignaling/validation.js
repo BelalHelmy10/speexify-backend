@@ -6,6 +6,10 @@ import { getMeta } from "./socketMeta.js";
 function checkRateLimit(ws) {
   if (!CONFIG.RATE_LIMIT_ENABLED) return true;
 
+  // Production WebSocket traffic uses the Redis-backed limiter in setup.js.
+  // Keep this synchronous helper only for backwards-compatible unit tests.
+  if (process.env.NODE_ENV !== "test") return true;
+
   const meta = getMeta(ws);
   const now = Date.now();
   const windowStart = now - CONFIG.RATE_LIMIT_WINDOW_MS;

@@ -2,6 +2,7 @@
 // Classroom experience endpoints: notes, resources, learner feedback, summary
 
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
+import { consumeRateLimit } from "../../services/rateLimitService.js";
 
 const router = Router();
 
@@ -13,45 +14,6 @@ const CHAT_MESSAGES_DEFAULT_LIMIT = 100;
 const CHAT_MESSAGES_MAX_LIMIT = 200;
 const CHAT_RATE_LIMIT_MAX = 5;       // max messages per window
 const CHAT_RATE_LIMIT_WINDOW_MS = 10000; // 10-second window
-
-// ── In-memory chat rate limiter ──────────────────────────────────────────────
-// Key: `${sessionId}:${userId}` → Array of timestamps
-const chatRateLimitMap = new Map();
-
-function isChatRateLimited(sessionId, userId) {
-    const key = `${sessionId}:${userId}`;
-    const now = Date.now();
-    const cutoff = now - CHAT_RATE_LIMIT_WINDOW_MS;
-
-    let timestamps = chatRateLimitMap.get(key);
-    if (!timestamps) {
-        timestamps = [];
-        chatRateLimitMap.set(key, timestamps);
-    }
-
-    // Remove expired entries
-    while (timestamps.length > 0 && timestamps[0] <= cutoff) {
-        timestamps.shift();
-    }
-
-    if (timestamps.length >= CHAT_RATE_LIMIT_MAX) {
-        return true;
-    }
-
-    timestamps.push(now);
-    return false;
-}
-
-// Cleanup stale keys every 60 seconds to prevent memory leaks
-const chatRateLimitCleanupInterval = setInterval(() => {
-    const cutoff = Date.now() - CHAT_RATE_LIMIT_WINDOW_MS * 2;
-    for (const [key, timestamps] of chatRateLimitMap) {
-        if (!timestamps.length || timestamps[timestamps.length - 1] <= cutoff) {
-            chatRateLimitMap.delete(key);
-        }
-    }
-}, 60000);
-chatRateLimitCleanupInterval.unref?.();
 
 function parseSessionIdParam(raw) {
     const sessionId = Number(raw);
@@ -665,10 +627,22 @@ router.post("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
 
         // Rate-limit: max 5 messages per 10 seconds per user per session
         const rateLimitUserId = Number(req.viewUserId || req.user?.id);
-        if (Number.isFinite(rateLimitUserId) && isChatRateLimited(sessionId, rateLimitUserId)) {
-            return res.status(429).json({
-                error: "Too many messages. Please wait a moment before sending again.",
+        if (Number.isFinite(rateLimitUserId)) {
+            const rateLimit = await consumeRateLimit({
+                key: `classroom-chat:${sessionId}:${rateLimitUserId}`,
+                limit: CHAT_RATE_LIMIT_MAX,
+                windowMs: CHAT_RATE_LIMIT_WINDOW_MS,
             });
+            if (rateLimit.unavailable) {
+                return res.status(503).json({
+                    error: "Chat rate limiting is temporarily unavailable. Please try again shortly.",
+                });
+            }
+            if (!rateLimit.allowed) {
+                return res.status(429).json({
+                    error: "Too many messages. Please wait a moment before sending again.",
+                });
+            }
         }
 
         const rawBody = typeof req.body?.text === "string" ? req.body.text : req.body?.body;

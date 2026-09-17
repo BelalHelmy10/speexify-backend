@@ -12,6 +12,8 @@ function getMeta(ws) {
       userId: null,
       authSource: null,
       ip: null,
+      connectionId: null,
+      distributedReleased: false,
       isAlive: true,
       messageTimestamps: [],
     };

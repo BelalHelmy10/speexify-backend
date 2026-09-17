@@ -7,6 +7,8 @@ const connectionsByIP = new Map();
 let totalConnections = 0;
 
 function trackConnection(ws, ip) {
+  const meta = getMeta(ws);
+  if (meta.connectionTracked) return;
   totalConnections++;
 
   let ipConnections = connectionsByIP.get(ip);
@@ -16,13 +18,15 @@ function trackConnection(ws, ip) {
   }
   ipConnections.add(ws);
 
-  getMeta(ws).ip = ip;
+  meta.ip = ip;
+  meta.connectionTracked = true;
 }
 
 function untrackConnection(ws) {
+  const meta = getMeta(ws);
+  if (!meta.connectionTracked) return;
   totalConnections = Math.max(0, totalConnections - 1);
 
-  const meta = getMeta(ws);
   if (meta.ip) {
     const ipConnections = connectionsByIP.get(meta.ip);
     if (ipConnections) {
@@ -32,6 +36,7 @@ function untrackConnection(ws) {
       }
     }
   }
+  meta.connectionTracked = false;
 }
 
 function canAcceptConnection(ip) {

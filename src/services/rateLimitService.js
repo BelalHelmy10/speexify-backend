@@ -1,9 +1,13 @@
 // src/services/rateLimitService.js
 import { createClient } from "redis";
-import { REDIS_URL, isTest } from "../config/env.js";
+import { REDIS_URL, isProd, isTest } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
 const KEY_PREFIX = "speexify:ratelimit:";
+const allowMemoryFallback =
+  !isProd || String(process.env.RATE_LIMIT_ALLOW_MEMORY_FALLBACK || "")
+    .trim()
+    .toLowerCase() === "true";
 
 let redisClient = null;
 let connectPromise = null;
@@ -41,6 +45,7 @@ async function getRedisClient() {
       socket: {
         tls: REDIS_URL.startsWith("rediss://"),
         rejectUnauthorized: true,
+        reconnectStrategy: false,
       },
     });
 
@@ -106,6 +111,17 @@ function consumeInMemory({ key, limit, windowMs }) {
   };
 }
 
+function unavailableResult(limit, windowMs) {
+  return {
+    allowed: false,
+    unavailable: true,
+    current: limit,
+    remaining: 0,
+    resetMs: windowMs,
+    source: "unavailable",
+  };
+}
+
 export async function consumeRateLimit({ key, limit, windowMs }) {
   const normalizedKey = normalizeKey(key);
   const normalizedLimit = normalizeLimit(limit);
@@ -114,6 +130,9 @@ export async function consumeRateLimit({ key, limit, windowMs }) {
   try {
     const client = await getRedisClient();
     if (!client) {
+      if (!allowMemoryFallback) {
+        return unavailableResult(normalizedLimit, normalizedWindowMs);
+      }
       return consumeInMemory({
         key: normalizedKey,
         limit: normalizedLimit,
@@ -153,10 +172,10 @@ export async function consumeRateLimit({ key, limit, windowMs }) {
       source: "redis",
     };
   } catch (err) {
-    logger.error(
-      { err, key: normalizedKey },
-      "[rate-limit] redis rate-limit failed, using memory fallback"
-    );
+    logger.error({ err, key: normalizedKey }, "[rate-limit] redis rate-limit failed");
+    if (!allowMemoryFallback) {
+      return unavailableResult(normalizedLimit, normalizedWindowMs);
+    }
     return consumeInMemory({
       key: normalizedKey,
       limit: normalizedLimit,
@@ -197,6 +216,13 @@ export function createRedisRateLimiter({
       res.setHeader("X-RateLimit-Remaining", String(result.remaining));
       res.setHeader("X-RateLimit-Reset", String(resetSeconds));
 
+      if (result.unavailable) {
+        res.setHeader("Retry-After", String(resetSeconds));
+        return res.status(503).json({
+          error: "Rate limiting service temporarily unavailable",
+        });
+      }
+
       if (!result.allowed) {
         res.setHeader("Retry-After", String(resetSeconds));
         return res.status(statusCode).json(message);
@@ -205,7 +231,11 @@ export function createRedisRateLimiter({
       return next();
     } catch (err) {
       logger.error({ err, scope: normalizedScope }, "[rate-limit] middleware error");
-      // Fail-open to avoid taking down auth/support if limiter infrastructure fails.
+      if (isProd && !allowMemoryFallback) {
+        return res.status(503).json({
+          error: "Rate limiting service temporarily unavailable",
+        });
+      }
       return next();
     }
   };

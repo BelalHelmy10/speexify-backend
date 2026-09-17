@@ -1,6 +1,7 @@
 // src/webrtcSignaling/setup.js
 
 import { WebSocketServer, WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 import { logger } from "../lib/logger.js";
 import { CONFIG, MSG_TYPES, validateOrigin } from "./config.js";
 import { getMeta } from "./socketMeta.js";
@@ -11,11 +12,18 @@ import {
   getTotalConnections,
 } from "./connectionTracker.js";
 import { getClientIP } from "./requestUtils.js";
-import { checkRateLimit, validateRoomId, validateSignalPayload } from "./validation.js";
+import { validateRoomId, validateSignalPayload } from "./validation.js";
 import { createRoomManager } from "./roomManager.js";
 import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
+import { consumeRateLimit } from "../services/rateLimitService.js";
+import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
+import {
+  acquireConnection,
+  releaseConnection,
+  touchConnection,
+} from "../services/distributedState.js";
 
 function setupWebRtcSignaling(httpServer) {
   const wssPrep = new WebSocketServer({
@@ -29,6 +37,8 @@ function setupWebRtcSignaling(httpServer) {
 
   let isDraining = false;
 
+  const publishRoomEvent = (event) => publishRealtimeEvent("webrtc-room", event);
+
   const videoRoomManager = createRoomManager({
     name: "WebRTC",
     maxPeers: CONFIG.MAX_VIDEO_PEERS,
@@ -37,6 +47,9 @@ function setupWebRtcSignaling(httpServer) {
     notifyOnJoin: true,
     notifyOnLeave: true,
     trackInitiator: true,
+    channelName: "prep",
+    roomLeaseMs: CONFIG.DISTRIBUTED_STATE_LEASE_MS,
+    publishRoomEvent,
   });
 
   const classroomRoomManager = createRoomManager({
@@ -47,7 +60,16 @@ function setupWebRtcSignaling(httpServer) {
     notifyOnJoin: false,
     notifyOnLeave: false,
     trackInitiator: false,
+    channelName: "classroom",
+    roomLeaseMs: CONFIG.DISTRIBUTED_STATE_LEASE_MS,
+    publishRoomEvent,
   });
+
+  onRealtimeEvent("webrtc-room", (event) => {
+    videoRoomManager.handleRemoteEvent(event);
+    classroomRoomManager.handleRemoteEvent(event);
+  });
+  void startRealtimeBus().catch((err) => logger.error({ err }, "[WebRTC] Realtime bus failed to start"));
 
   let heartbeatIntervalPrep = null;
   let heartbeatIntervalClassroom = null;
@@ -58,11 +80,15 @@ function setupWebRtcSignaling(httpServer) {
         const meta = getMeta(ws);
         if (!meta.isAlive) {
           logger.info("[WebRTC] Terminating unresponsive connection");
-          videoRoomManager.leave(ws);
+          void videoRoomManager.leave(ws);
+          meta.distributedReleased = true;
+          void releaseConnection({ connectionId: meta.connectionId, ip: meta.ip });
           untrackConnection(ws);
           return ws.terminate();
         }
         meta.isAlive = false;
+        void videoRoomManager.touch(ws);
+        void touchConnection({ connectionId: meta.connectionId, ip: meta.ip, leaseMs: CONFIG.DISTRIBUTED_STATE_LEASE_MS });
         ws.ping();
       });
     }, CONFIG.HEARTBEAT_INTERVAL_MS);
@@ -72,11 +98,15 @@ function setupWebRtcSignaling(httpServer) {
         const meta = getMeta(ws);
         if (!meta.isAlive) {
           logger.info("[Classroom] Terminating unresponsive connection");
-          classroomRoomManager.leave(ws);
+          void classroomRoomManager.leave(ws);
+          meta.distributedReleased = true;
+          void releaseConnection({ connectionId: meta.connectionId, ip: meta.ip });
           untrackConnection(ws);
           return ws.terminate();
         }
         meta.isAlive = false;
+        void classroomRoomManager.touch(ws);
+        void touchConnection({ connectionId: meta.connectionId, ip: meta.ip, leaseMs: CONFIG.DISTRIBUTED_STATE_LEASE_MS });
         ws.ping();
       });
     }, CONFIG.HEARTBEAT_INTERVAL_MS);
@@ -94,9 +124,24 @@ function setupWebRtcSignaling(httpServer) {
     const { authorizeJoin = null } = options;
 
     return async (ws, raw) => {
-      if (!checkRateLimit(ws)) {
-        safeSend(ws, { type: MSG_TYPES.ERROR, message: "Rate limit exceeded" });
-        return;
+      const meta = getMeta(ws);
+      if (CONFIG.RATE_LIMIT_ENABLED) {
+        const rateLimit = await consumeRateLimit({
+          key: `websocket:${channelName}:${meta.userId || meta.ip || "unknown"}`,
+          limit: CONFIG.RATE_LIMIT_MAX_MESSAGES,
+          windowMs: CONFIG.RATE_LIMIT_WINDOW_MS,
+        });
+        if (rateLimit.unavailable) {
+          safeSend(ws, {
+            type: MSG_TYPES.ERROR,
+            message: "Shared rate limiting is temporarily unavailable",
+          });
+          return;
+        }
+        if (!rateLimit.allowed) {
+          safeSend(ws, { type: MSG_TYPES.ERROR, message: "Rate limit exceeded" });
+          return;
+        }
       }
 
       let msg;
@@ -160,12 +205,12 @@ function setupWebRtcSignaling(httpServer) {
             }
           }
 
-          roomManager.join(ws, roomId);
+          await roomManager.join(ws, roomId);
           break;
         }
 
         case MSG_TYPES.LEAVE: {
-          roomManager.leave(ws);
+          await roomManager.leave(ws);
           break;
         }
 
@@ -209,6 +254,13 @@ function setupWebRtcSignaling(httpServer) {
       logger.info({ ip }, `[${channelName}] Client connected`);
 
       trackConnection(ws, ip);
+      meta.connectionId = request.__distributedConnectionId || randomUUID();
+
+      const releaseDistributedConnection = () => {
+        if (meta.distributedReleased) return;
+        meta.distributedReleased = true;
+        void releaseConnection({ connectionId: meta.connectionId, ip });
+      };
 
       if (CONFIG.HEARTBEAT_ENABLED) {
         meta.isAlive = true;
@@ -229,14 +281,16 @@ function setupWebRtcSignaling(httpServer) {
       });
 
       ws.on("close", () => {
-        roomManager.leave(ws);
+        void roomManager.leave(ws);
+        releaseDistributedConnection();
         untrackConnection(ws);
         logger.info({ ip }, `[${channelName}] Client disconnected`);
       });
 
       ws.on("error", (err) => {
         logger.error({ err, ip }, `[${channelName}] WebSocket error`);
-        roomManager.leave(ws);
+        void roomManager.leave(ws);
+        releaseDistributedConnection();
         untrackConnection(ws);
         try {
           ws.terminate();
@@ -331,9 +385,25 @@ function setupWebRtcSignaling(httpServer) {
       );
     }
 
+    const distributedConnectionId = randomUUID();
+    const distributedCheck = await acquireConnection({
+      connectionId: distributedConnectionId,
+      ip,
+      maxTotal: CONFIG.MAX_CONNECTIONS_TOTAL,
+      maxPerIp: CONFIG.MAX_CONNECTIONS_PER_IP,
+      leaseMs: CONFIG.DISTRIBUTED_STATE_LEASE_MS,
+    });
+    if (!distributedCheck.allowed) {
+      logger.warn({ ip, reason: distributedCheck.reason }, "[Security] Distributed connection capacity rejected");
+      socket.write("HTTP/1.1 503 Service Unavailable\\r\\n\\r\\n");
+      socket.destroy();
+      return;
+    }
+
     const wss = pathname === "/ws/prep" ? wssPrep : wssClassroom;
 
     request.__wsHandled = true;
+    request.__distributedConnectionId = distributedConnectionId;
     wss.handleUpgrade(request, socket, head, (ws) => {
       const meta = getMeta(ws);
       meta.userId = authResult.userId;

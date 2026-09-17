@@ -273,7 +273,13 @@ COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
 
-REDIS_URL – Redis connection string. Required in production for sessions.
+REDIS_URL – Redis connection string. Required in production for sessions, shared WebSocket rooms, connection limits, and rate limits.
+
+SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling back to memory. It defaults to enabled in production; keep it enabled outside local development too.
+
+SESSION_FORCE_MEMORY – Test/local-only switch for the in-memory session store. It is rejected in production.
+
+RATE_LIMIT_ALLOW_MEMORY_FALLBACK – Optional development override. Keep unset in production so rate limiting fails closed when Redis is unavailable.
 
 WS_AUTH_ENABLED – Enables WebSocket auth for /ws/prep and /ws/classroom (set false only for local debugging).
 

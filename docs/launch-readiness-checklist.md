@@ -25,7 +25,7 @@ Required to pass before go-live:
 
 Recommended hardening:
 
-- Redis configured with strict mode (`REDIS_URL`, `SESSION_REDIS_STRICT=true`)
+- Redis configured with strict mode (`REDIS_URL`, `SESSION_REDIS_STRICT=true`). Production startup must fail if Redis sessions cannot initialize; `SESSION_FORCE_MEMORY` and `RATE_LIMIT_ALLOW_MEMORY_FALLBACK` must remain disabled. Redis is also required for shared WebSocket rooms, connection admission, and rate limits.
 - Metrics protected (`OBS_METRICS_TOKEN`)
 - Alerts enabled (`OBS_ALERTS_ENABLED=true`)
 

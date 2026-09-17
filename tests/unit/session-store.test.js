@@ -76,3 +76,20 @@ test("strict mode fails startup when Redis is unavailable", () => {
     /Redis session store initialization failed in strict mode/
   );
 });
+
+test("production sessions fail startup when Redis is unavailable even if strict mode is disabled", () => {
+  const result = probeSessionStore({
+    NODE_ENV: "production",
+    SESSION_SECRET: "speexify-production-session-secret-0001",
+    OBS_METRICS_TOKEN: "speexify-production-metrics-token-0001",
+    REDIS_URL: "redis://127.0.0.1:6399",
+    SESSION_REDIS_CONNECT_TIMEOUT_MS: "200",
+    SESSION_REDIS_STRICT: "false",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stderr}\n${result.stdout}`,
+    /Redis session store initialization failed in strict mode/
+  );
+});

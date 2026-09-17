@@ -113,10 +113,17 @@ if (isProd && !REDIS_URL) {
 // Session runtime behavior
 export const SESSION_FORCE_MEMORY =
   isTest || parseBooleanEnv("SESSION_FORCE_MEMORY", false);
+
+if (isProd && SESSION_FORCE_MEMORY) {
+  throw new Error(
+    "SESSION_FORCE_MEMORY cannot be enabled in production; use Redis-backed sessions"
+  );
+}
+
 export const SESSION_REDIS_STRICT = parseBooleanEnv(
   "SESSION_REDIS_STRICT",
   false,
-);
+) || isProd;
 export const SESSION_REDIS_CONNECT_TIMEOUT_MS = parsePositiveIntEnv(
   "SESSION_REDIS_CONNECT_TIMEOUT_MS",
   3000,

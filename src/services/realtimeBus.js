@@ -14,7 +14,7 @@ export function startRealtimeBus() {
   if (initializing) return initializing;
   if (!process.env.REDIS_URL || process.env.NODE_ENV === 'test') return Promise.resolve();
   initializing = (async () => {
-    publisher = createClient({url: process.env.REDIS_URL});
+    publisher = createClient({url: process.env.REDIS_URL, socket: { reconnectStrategy: false }});
     const subscriber = publisher.duplicate();
     for (const client of [publisher, subscriber]) client.on('error', err => logger.error({err}, 'Realtime Redis error'));
     await Promise.all([publisher.connect(), subscriber.connect()]);
