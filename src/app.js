@@ -847,20 +847,37 @@ app.get("/api/teacher/summary", requireAuth, async (req, res) => {
         status: true,
         type: true,
         capacity: true,
+        user: { select: { id: true, name: true, email: true } },
         participants: {
           where: { status: { not: "canceled" } },
-          select: { userId: true },
+          select: {
+            userId: true,
+            user: { select: { id: true, name: true, email: true } },
+          },
         },
       },
     });
 
-    // Add participant count to next session
+    // Return the learner data the teacher card needs. GROUP sessions use the
+    // participant membership rows; legacy ONE_ON_ONE sessions may still use
+    // the session.user relation.
     const nextTeachShaped = nextTeach
       ? {
         ...nextTeach,
-        participantCount: nextTeach.participants?.length || 0,
+        learners: [
+          ...(nextTeach.user ? [nextTeach.user] : []),
+          ...(nextTeach.participants || []).map((participant) => participant.user),
+        ]
+          .filter(Boolean)
+          .filter((learner, index, learners) =>
+            learners.findIndex((candidate) => candidate.id === learner.id) === index
+          ),
       }
       : null;
+
+    if (nextTeachShaped) {
+      nextTeachShaped.participantCount = nextTeachShaped.learners.length;
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
