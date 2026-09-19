@@ -121,11 +121,27 @@ test("classroom join authorizer requires admission when lobby is enabled", async
   assert.equal(result.reason, "classroom_admission_required");
 });
 
-test("classroom join authorizer rejects ended sessions", async () => {
+test("classroom join authorizer keeps scheduled and completed rooms available", async () => {
   const authorize = createClassroomJoinAuthorizer({
     prismaClient: createFakePrisma({
       user: { id: 20, role: "teacher", isDisabled: false },
-      session: createSession({ status: "completed" }),
+      session: createSession({
+        status: "completed",
+        endAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    }),
+    authEnabled: true,
+  });
+
+  const result = await authorize({ roomId: "42", userId: "20" });
+  assert.equal(result.allowed, true);
+});
+
+test("classroom join authorizer still rejects canceled rooms", async () => {
+  const authorize = createClassroomJoinAuthorizer({
+    prismaClient: createFakePrisma({
+      user: { id: 20, role: "teacher", isDisabled: false },
+      session: createSession({ status: "canceled" }),
     }),
     authEnabled: true,
   });

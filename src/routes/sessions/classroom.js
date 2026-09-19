@@ -1388,11 +1388,7 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({
                 error: "This classroom session has ended.",
                 status: "ended",
@@ -1501,11 +1497,7 @@ router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({ error: "This classroom session has ended." });
         }
 
@@ -1552,11 +1544,7 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({ error: "This classroom session has ended." });
         }
 
@@ -1626,11 +1614,7 @@ router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({ error: "This classroom session has ended." });
         }
 
@@ -1696,11 +1680,7 @@ router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({ error: "This classroom session has ended." });
         }
 
@@ -1765,11 +1745,7 @@ router.post("/sessions/:id/lobby/toggle", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.status(403).json({ error: "This classroom session has ended." });
         }
 
@@ -1832,11 +1808,7 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
-        if (
-            session.status === "completed" ||
-            session.status === "canceled" ||
-            (session.endAt && new Date(session.endAt).getTime() <= Date.now())
-        ) {
+        if (session.status === "canceled") {
             return res.json({ ok: true, status: "ended", lobbyEnabled: false });
         }
 

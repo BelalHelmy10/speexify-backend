@@ -63,8 +63,9 @@ function isClassroomLocked(session) {
 
 function isClassroomEnded(session) {
   if (!session) return true;
-  if (session.status === "completed" || session.status === "canceled") return true;
-  return Boolean(session.endAt && new Date(session.endAt).getTime() <= Date.now());
+  // The scheduled end is informational. A classroom stays available until
+  // its members leave or an explicit moderation action locks/cancels it.
+  return session.status === "canceled";
 }
 
 function getLobbyState(session) {
