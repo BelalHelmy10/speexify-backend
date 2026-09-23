@@ -20,6 +20,11 @@ router.delete("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res)
     return res.json({ ok: true });
   } catch (err) {
     logger.error({ err }, "admin.sessions.delete error");
+    if (err?.code === "P2003" && String(err?.meta?.field_name || "").includes("TeacherEarning")) {
+      return res.status(409).json({
+        error: "This session has teacher earnings and cannot be deleted. Cancel it instead to preserve the earnings history.",
+      });
+    }
     return res.status(500).json({ error: "Failed to delete session" });
   }
 });

@@ -1,5 +1,6 @@
 // src/services/sessionsService.js
 import { prisma } from "../lib/prisma.js";
+import { snapshotTeacherEarningSafely } from "./teacherEarningsService.js";
 import { logger } from "../lib/logger.js";
 
 // Re-used in many places to check time overlaps
@@ -228,6 +229,7 @@ export async function finalizeExpiredSessionsForUser(userId) {
         where: { id: s.id },
         data: { status: "completed" },
       });
+      await snapshotTeacherEarningSafely(s.id);
 
       // Credits are consumed on booking, not on completion
       // No credit operations needed here
@@ -280,6 +282,7 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
         where: { id: s.id },
         data: { status: "completed" },
       });
+      await snapshotTeacherEarningSafely(s.id);
 
       // Credits are consumed on booking, not on completion
       // No credit operations needed here

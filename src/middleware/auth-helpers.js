@@ -13,6 +13,8 @@ const publicUserSelect = {
   passwordChangedAt: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,
+  rateHourlyEgpPiastres: true,
+  ratePerSessionEgpPiastres: true,
 };
 
 export function isSessionInvalidatedByPasswordChange(req, dbUser) {

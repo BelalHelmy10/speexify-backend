@@ -51,8 +51,13 @@ model User {
   calendarFeedRevokedAt DateTime?
   passwordChangedAt     DateTime?
   isDisabled            Boolean                @default(false)
+  // Legacy field names retained for API compatibility. Their historical
+  // currency is not trusted by the earnings ledger.
   rateHourlyCents       Int?
   ratePerSessionCents   Int?
+  // Canonical teacher compensation fields. Values are EGP piastres.
+  rateHourlyEgpPiastres     Int?
+  ratePerSessionEgpPiastres Int?
   assessmentSubmissions AssessmentSubmission[]
   reviewedAssessments   AssessmentSubmission[] @relation("AssessmentReviewReviewer")
   audits                Audit[]                @relation("Audit_actor")
@@ -89,6 +94,11 @@ model User {
 
   // ✨ NEW: User availability for scheduling
   availabilities Availability[]
+  teacherEarnings TeacherEarning[] @relation("TeacherEarningTeacher")
+  teacherPayouts TeacherPayout[] @relation("TeacherPayoutTeacher")
+  teacherEarningAdjustments TeacherEarningAdjustment[] @relation("TeacherEarningAdjustmentTeacher")
+  createdTeacherEarningAdjustments TeacherEarningAdjustment[] @relation("TeacherEarningAdjustmentCreator")
+  createdTeacherPayouts TeacherPayout[] @relation("TeacherPayoutCreator")
   deletedAt      DateTime?
 
   @@index([role])
@@ -359,6 +369,7 @@ model Session {
   resourcesUsed    Json?                    @default("[]")
   resourcesUsedAt  Json?                    @default("{}")
   learnerFeedbacks LearnerSessionFeedback[]
+  teacherEarning TeacherEarning?
 
   @@index([userId, startAt])
   @@index([teacherId, startAt])
@@ -366,6 +377,75 @@ model Session {
   @@index([status, startAt], map: "Session_status_startAt_idx")
   @@index([teacherId, status, startAt], map: "Session_teacherId_status_startAt_idx")
   @@index([userId, status, startAt], map: "Session_userId_status_startAt_idx")
+}
+
+// EGP teacher earnings are stored in piastres (the smallest EGP unit).
+// Entries are immutable snapshots of the rate and duration used for the
+// completed session. A payout only changes the settlement metadata.
+model TeacherEarning {
+  id              Int      @id @default(autoincrement())
+  teacherId       Int
+  sessionId       Int      @unique
+  amountMinor     Int
+  currencyCode    String   @default("EGP")
+  rateType        String   @default("none")
+  rateMinor       Int?
+  durationMinutes Int      @default(60)
+  status          String   @default("PENDING")
+  createdAt       DateTime @default(now())
+  paidAt          DateTime?
+  payoutId        Int?
+
+  // Keep historical earnings from disappearing if an account/session is removed.
+  teacher User @relation("TeacherEarningTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  payout TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([teacherId, status, createdAt])
+  @@index([payoutId])
+}
+
+model TeacherPayout {
+  id               Int      @id @default(autoincrement())
+  teacherId        Int
+  createdById      Int
+  totalMinor       Int
+  currencyCode     String   @default("EGP")
+  paymentMethod    String
+  paymentReference String?
+  note             String?
+  paidAt           DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  teacher  User @relation("TeacherPayoutTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  createdBy User @relation("TeacherPayoutCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  earnings TeacherEarning[]
+  adjustments TeacherEarningAdjustment[]
+
+  @@index([teacherId, paidAt])
+}
+
+// Signed admin adjustments are append-only ledger entries. Positive values
+// add to a teacher's pending balance; negative values correct it downward.
+// They are never deleted so every balance change remains explainable.
+model TeacherEarningAdjustment {
+  id          Int      @id @default(autoincrement())
+  teacherId   Int
+  createdById Int
+  amountMinor Int
+  currencyCode String  @default("EGP")
+  reason      String
+  status      String   @default("PENDING")
+  paidAt      DateTime?
+  payoutId    Int?
+  createdAt   DateTime @default(now())
+
+  teacher   User          @relation("TeacherEarningAdjustmentTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  createdBy User          @relation("TeacherEarningAdjustmentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  payout    TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([teacherId, status, createdAt])
+  @@index([payoutId])
 }
 
 model SessionParticipant {

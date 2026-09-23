@@ -48,6 +48,8 @@ const PatchUserBodySchema = z
     timezone: z.string().trim().max(80).nullable().optional(),
     rateHourlyCents: RateCentsSchema.optional(),
     ratePerSessionCents: RateCentsSchema.optional(),
+    rateHourlyEgpPiastres: RateCentsSchema.optional(),
+    ratePerSessionEgpPiastres: RateCentsSchema.optional(),
   })
   .strict()
   .refine((payload) => Object.keys(payload).length > 0, {
@@ -84,6 +86,8 @@ router.get(
           createdAt: true,
           rateHourlyCents: true,
           ratePerSessionCents: true,
+          rateHourlyEgpPiastres: true,
+          ratePerSessionEgpPiastres: true,
         },
         orderBy: { id: "asc" },
       });
@@ -173,6 +177,8 @@ router.patch(
         timezone,
         rateHourlyCents,
         ratePerSessionCents,
+        rateHourlyEgpPiastres,
+        ratePerSessionEgpPiastres,
       } = req.body;
 
       const before = await prisma.user.findUnique({
@@ -183,6 +189,8 @@ router.patch(
           isDisabled: true,
           rateHourlyCents: true,
           ratePerSessionCents: true,
+          rateHourlyEgpPiastres: true,
+          ratePerSessionEgpPiastres: true,
         },
       });
       if (!before) return res.status(404).json({ error: "Not found" });
@@ -210,6 +218,12 @@ router.patch(
                     : Number(ratePerSessionCents),
               }
             : {}),
+          ...(rateHourlyEgpPiastres !== undefined
+            ? { rateHourlyEgpPiastres: rateHourlyEgpPiastres === null || rateHourlyEgpPiastres === "" ? null : Number(rateHourlyEgpPiastres) }
+            : {}),
+          ...(ratePerSessionEgpPiastres !== undefined
+            ? { ratePerSessionEgpPiastres: ratePerSessionEgpPiastres === null || ratePerSessionEgpPiastres === "" ? null : Number(ratePerSessionEgpPiastres) }
+            : {}),
         },
         select: {
           id: true,
@@ -220,6 +234,8 @@ router.patch(
           isDisabled: true,
           rateHourlyCents: true,
           ratePerSessionCents: true,
+          rateHourlyEgpPiastres: true,
+          ratePerSessionEgpPiastres: true,
         },
       });
 
@@ -239,15 +255,19 @@ router.patch(
         );
       }
 
-      if (rateHourlyCents !== undefined || ratePerSessionCents !== undefined) {
+      if (rateHourlyCents !== undefined || ratePerSessionCents !== undefined || rateHourlyEgpPiastres !== undefined || ratePerSessionEgpPiastres !== undefined) {
         await audit(req.user.id, "teacher_rate_update", "User", id, {
           from: {
             rateHourlyCents: before.rateHourlyCents,
             ratePerSessionCents: before.ratePerSessionCents,
+            rateHourlyEgpPiastres: before.rateHourlyEgpPiastres,
+            ratePerSessionEgpPiastres: before.ratePerSessionEgpPiastres,
           },
           to: {
             rateHourlyCents: user.rateHourlyCents,
             ratePerSessionCents: user.ratePerSessionCents,
+            rateHourlyEgpPiastres: user.rateHourlyEgpPiastres,
+            ratePerSessionEgpPiastres: user.ratePerSessionEgpPiastres,
           },
         });
       }

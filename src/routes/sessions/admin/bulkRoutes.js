@@ -93,7 +93,15 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
         }
       } catch (e) {
         logger.error({ err: e, sessionId: session.id }, `Bulk ${action} failed for session`);
-        errors.push({ sessionId: session.id, error: e.message });
+        errors.push({
+          sessionId: session.id,
+          error:
+            action === "delete" &&
+            e?.code === "P2003" &&
+            String(e?.meta?.field_name || "").includes("TeacherEarning")
+              ? "Session has teacher earnings and cannot be deleted; cancel it instead."
+              : e.message,
+        });
       }
     }
 

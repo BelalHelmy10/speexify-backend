@@ -105,6 +105,8 @@ router.get(
           role: true,
           rateHourlyCents: true,
           ratePerSessionCents: true,
+          rateHourlyEgpPiastres: true,
+          ratePerSessionEgpPiastres: true,
         },
       });
 
@@ -122,40 +124,41 @@ router.get(
           const completedHours = Number((a.completedMinutes / 60).toFixed(2));
 
           let method = "none";
-          let payrollAppliedUSD = 0;
-          let rateHourlyCents = 0;
+          let payrollAppliedEGP = 0;
+          let rateHourlyEgpPiastres = 0;
 
           if (
-            typeof t.rateHourlyCents === "number" &&
-            t.rateHourlyCents > 0
+            typeof t.rateHourlyEgpPiastres === "number" &&
+            t.rateHourlyEgpPiastres > 0
           ) {
             method = "hourly";
-            rateHourlyCents = t.rateHourlyCents;
-            payrollAppliedUSD = Number(
-              ((completedHours * t.rateHourlyCents) / 100).toFixed(2)
+            rateHourlyEgpPiastres = t.rateHourlyEgpPiastres;
+            payrollAppliedEGP = Number(
+              ((completedHours * t.rateHourlyEgpPiastres) / 100).toFixed(2)
             );
           } else if (
-            typeof t.ratePerSessionCents === "number" &&
-            t.ratePerSessionCents > 0
+            typeof t.ratePerSessionEgpPiastres === "number" &&
+            t.ratePerSessionEgpPiastres > 0
           ) {
             method = "per_session";
-            payrollAppliedUSD = Number(
-              ((a.completedSessions * t.ratePerSessionCents) / 100).toFixed(2)
+            payrollAppliedEGP = Number(
+              ((a.completedSessions * t.ratePerSessionEgpPiastres) / 100).toFixed(2)
             );
 
             const avgSessionHours =
               a.completedSessions > 0 ? completedHours / a.completedSessions : 1;
             const derivedHourly =
-              avgSessionHours > 0 ? t.ratePerSessionCents / avgSessionHours : 0;
-            rateHourlyCents = Math.round(derivedHourly);
+              avgSessionHours > 0 ? t.ratePerSessionEgpPiastres / avgSessionHours : 0;
+            rateHourlyEgpPiastres = Math.round(derivedHourly);
           }
 
           return {
             teacher: { id: t.id, name: t.name || "", email: t.email },
             sessions: a.sessions,
             hours,
-            rateHourlyCents,
-            payrollAppliedUSD,
+            rateHourlyEgpPiastres,
+            payrollAppliedEGP,
+            currencyCode: "EGP",
             method,
           };
         })

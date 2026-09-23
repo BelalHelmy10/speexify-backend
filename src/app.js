@@ -48,6 +48,7 @@ import devEmailTestRoutes from "./routes/devEmailTest.js";
 import supportRoutes from "./routes/support.js";
 import availabilityRoutes from "./routes/availability.js";
 import calendarRoutes from "./routes/calendar.js";
+import teacherEarningsRoutes from "./routes/teacherEarnings.js";
 import discountRoutes from "./routes/discounts.js";
 import privacyRoutes from "./routes/privacy.js";
 import {
@@ -255,6 +256,7 @@ app.use("/api", devEmailTestRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api", availabilityRoutes);
 app.use("/api", calendarRoutes);
+app.use("/api", teacherEarningsRoutes);
 app.use("/api/privacy", privacyRoutes);
 
 /* ========================================================================== */

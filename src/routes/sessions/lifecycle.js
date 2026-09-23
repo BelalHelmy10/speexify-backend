@@ -19,6 +19,7 @@ import {
 } from "../../services/idempotencyService.js";
 import { z } from "zod";
 import { validateRequest } from "../../middleware/validateRequest.js";
+import { snapshotTeacherEarningSafely } from "../../services/teacherEarningsService.js";
 
 const router = Router();
 
@@ -75,6 +76,7 @@ router.post(
             where: { id },
             data: { status: "completed" },
         });
+        await snapshotTeacherEarningSafely(id);
 
         // Credits are consumed on booking, not on completion
         // No credit operations needed here

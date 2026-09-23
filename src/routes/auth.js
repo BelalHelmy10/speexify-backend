@@ -90,6 +90,8 @@ const publicUserSelect = {
   passwordChangedAt: true,
   rateHourlyCents: true,
   ratePerSessionCents: true,
+  rateHourlyEgpPiastres: true,
+  ratePerSessionEgpPiastres: true,
 };
 
 const googleUserSelect = {
