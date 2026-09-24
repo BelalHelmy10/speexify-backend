@@ -41,13 +41,16 @@ export function overlapsFilter(startAt, endAt) {
  * Find conflicting sessions for learner / teacher
  * Checks BOTH participant membership AND legacy userId field
  */
-export async function findSessionConflicts({
-  startAt,
-  endAt,
-  userId,
-  teacherId,
-  excludeId,
-}) {
+export async function findSessionConflictsWithClient(
+  db,
+  {
+    startAt,
+    endAt,
+    userId,
+    teacherId,
+    excludeId,
+  }
+) {
   const whereCommon = {
     status: { not: "canceled" },
     ...(excludeId ? { id: { not: excludeId } } : {}),
@@ -78,7 +81,7 @@ export async function findSessionConflicts({
 
   if (!clauses.length) return [];
 
-  return prisma.session.findMany({
+  return db.session.findMany({
     where: { OR: clauses },
     select: {
       id: true,
@@ -94,11 +97,40 @@ export async function findSessionConflicts({
   });
 }
 
+export async function findSessionConflicts(args) {
+  return findSessionConflictsWithClient(prisma, args);
+}
+
+/**
+ * Serialize writes that can create overlapping sessions for the same
+ * learner/teacher. PostgreSQL advisory locks are transaction-scoped, so the
+ * lock is released automatically on commit/rollback and works across API
+ * instances without a process-local mutex.
+ */
+export async function lockSchedulingResources(
+  db,
+  { learnerIds = [], teacherId = null } = {}
+) {
+  const keys = [
+    ...learnerIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)
+      .map((id) => `learner:${id}`),
+    ...(teacherId ? [`teacher:${Number(teacherId)}`] : []),
+  ];
+
+  for (const key of [...new Set(keys)].sort()) {
+    await db.$executeRaw`
+      SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))
+    `;
+  }
+}
+
 /**
  * How many total remaining credits does a user have right now?
  */
-export async function getRemainingCredits(userId) {
-  const packs = await prisma.userPackage.findMany({
+export async function getRemainingCredits(userId, db = prisma) {
+  const packs = await db.userPackage.findMany({
     where: {
       userId: Number(userId),
       status: "active",

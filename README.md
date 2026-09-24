@@ -273,11 +273,15 @@ COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
 
+UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars and support attachments. It is optional in local development and required in production; do not deploy production instances with the default process-local `uploads` directory.
+
 REDIS_URL – Redis connection string. Required in production and in the default E2E suite for sessions, shared WebSocket rooms, connection limits, and rate limits.
 
 SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling back to memory. It defaults to enabled in production; keep it enabled outside local development too.
 
 SESSION_FORCE_MEMORY – Local/unit-test-only switch for the in-memory session store. The default E2E suite deliberately uses Redis; use `npm run test:e2e:memory` only for an explicit fallback-mode test.
+
+Notification delivery – Email sends from booking, cancellation, feedback, and reminder flows are persisted in `NotificationDelivery`. Run `npm run worker:notification-delivery` in a durable worker process. Admins can inspect `/api/admin/notification-deliveries` and queue failed rows for retry.
 
 RATE_LIMIT_ALLOW_MEMORY_FALLBACK – Optional development override. Keep unset in production so rate limiting fails closed when Redis is unavailable.
 

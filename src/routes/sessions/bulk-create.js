@@ -1,4 +1,3 @@
-import { consumeOneCreditWithClient } from "../../services/sessionsService.js";
 // src/routes/sessions/bulk-create.js
 // Bulk create recurring weekly sessions for a learner
 
@@ -7,9 +6,10 @@ import {
     prisma,
     requireAuth,
     requireAdmin,
-    findSessionConflicts,
+    findSessionConflictsWithClient,
+    lockSchedulingResources,
     getRemainingCredits,
-    consumeOneCredit,
+    consumeOneCreditWithClient,
     sendBookingNotifications,
     logger
 } from "./_shared.js";
@@ -113,19 +113,10 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             currentDate.setDate(currentDate.getDate() + 7); // Add 7 days for next week
         }
 
-        // Check credits upfront
-        const creditsAvailable = await getRemainingCredits(Number(learnerId));
-        if (!allowNoCredit && creditsAvailable < numberOfSessions) {
-            return res.status(400).json({
-                error: "insufficient_credits",
-                creditsAvailable,
-                sessionsRequested: numberOfSessions,
-            });
-        }
-
-        // Build session start times and check for conflicts
+        // Build session start times. Conflict checks happen again inside the
+        // transaction after resource locks are held; a pre-transaction check
+        // alone is racy across concurrent API instances.
         const sessionsToCreate = [];
-        const conflicts = [];
 
         for (let i = 0; i < sessionDates.length; i++) {
             const sessionDate = sessionDates[i];
@@ -137,42 +128,16 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             const endAt = new Date(startAt);
             endAt.setMinutes(endAt.getMinutes() + Number(durationMin));
 
-            // Check for conflicts
-            const conflictList = await findSessionConflicts({
+            // Determine title for this specific session
+            const sessionTitle = (customTitles[i] || defaultTitle || "Lesson").trim();
+            sessionsToCreate.push({
+                type: "ONE_ON_ONE",
+                title: sessionTitle,
                 userId: Number(learnerId),
                 teacherId: teacherId ? Number(teacherId) : null,
                 startAt,
                 endAt,
-            });
-
-            // Determine title for this specific session
-            const sessionTitle = (customTitles[i] || defaultTitle || "Lesson").trim();
-
-            if (conflictList.length > 0) {
-                conflicts.push({
-                    date: sessionDate.toISOString().split("T")[0],
-                    startAt: startAt.toISOString(),
-                    conflicts: conflictList,
-                });
-            } else {
-                sessionsToCreate.push({
-                    type: "ONE_ON_ONE",
-                    title: sessionTitle,
-                    userId: Number(learnerId),
-                    teacherId: teacherId ? Number(teacherId) : null,
-                    startAt,
-                    endAt,
-                    status: "scheduled",
-                });
-            }
-        }
-
-        // If there are conflicts, return error
-        if (conflicts.length > 0) {
-            return res.status(409).json({
-                error: "time_conflict",
-                message: `Found conflicts on ${conflicts.length} date(s)`,
-                conflicts,
+                status: "scheduled",
             });
         }
 
@@ -209,7 +174,33 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
         const createdSessions = await prisma.$transaction(async (tx) => {
             const results = [];
 
+            await lockSchedulingResources(tx, {
+                learnerIds: [Number(learnerId)],
+                teacherId: teacherId ? Number(teacherId) : null,
+            });
+
             for (const sessionData of sessionsToCreate) {
+                const conflictList = await findSessionConflictsWithClient(tx, {
+                    userId: Number(learnerId),
+                    teacherId: teacherId ? Number(teacherId) : null,
+                    startAt: sessionData.startAt,
+                    endAt: sessionData.endAt,
+                });
+                if (conflictList.length > 0) {
+                    const error = new Error("A requested session overlaps an existing session");
+                    error.statusCode = 409;
+                    error.responseBody = {
+                        error: "time_conflict",
+                        message: "One or more requested sessions overlap an existing session",
+                        conflicts: [{
+                            date: sessionData.startAt.toISOString().split("T")[0],
+                            startAt: sessionData.startAt.toISOString(),
+                            conflicts: conflictList,
+                        }],
+                    };
+                    throw error;
+                }
+
                 // Create the session
                 const session = await tx.session.create({
                     data: sessionData,
@@ -221,7 +212,15 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
 
                 if (!allowNoCredit) {
                     const debit = await consumeOneCreditWithClient(tx, session.userId, session.id);
-                    if (!debit.ok) throw new Error("Insufficient credits for all requested sessions");
+                    if (!debit.ok) {
+                        const error = new Error("Insufficient credits for all requested sessions");
+                        error.statusCode = 400;
+                        error.responseBody = {
+                            error: "insufficient_credits",
+                            message: "There are not enough credits for all requested sessions",
+                        };
+                        throw error;
+                    }
                 }
                 results.push(session);
             }
@@ -282,6 +281,9 @@ bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, 
             await abandonIdempotentRequest(idempotency.recordId);
         }
         logger.error({ err }, "bulk-create recurring sessions error");
+        if (err?.statusCode && err?.responseBody) {
+            return res.status(err.statusCode).json(err.responseBody);
+        }
         return res.status(500).json({
             error: "Failed to create sessions",
             details: err.message,

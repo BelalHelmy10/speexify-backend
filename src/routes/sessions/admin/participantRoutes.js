@@ -9,6 +9,8 @@ import {
   requireAuth,
   requireAdmin,
   findSessionConflicts,
+  findSessionConflictsWithClient,
+  lockSchedulingResources,
   getRemainingCredits,
   consumeOneCredit,
   refundOneCredit,
@@ -188,11 +190,28 @@ router.post(
         }
         const activeIds = new Set(current.participants.filter(p => p.status !== "canceled").map(p => p.userId));
         const additions = [...new Set(toAdd)].filter(uid => !activeIds.has(uid));
+        await lockSchedulingResources(tx, {
+          learnerIds: additions,
+          teacherId: current.teacherId,
+        });
         if (!allowOverCapacity && current.capacity && activeIds.size + additions.length > current.capacity) {
           throw Object.assign(new Error("Session capacity exceeded"), { statusCode: 409 });
         }
         const results = [];
         for (const uid of additions) {
+          const conflicts = await findSessionConflictsWithClient(tx, {
+            startAt: current.startAt,
+            endAt: current.endAt,
+            userId: uid,
+            teacherId: current.teacherId || undefined,
+            excludeId: sessionId,
+          });
+          if (conflicts.length) {
+            throw Object.assign(new Error("Learner has a time conflict"), {
+              statusCode: 409,
+              responseBody: { error: "Time conflict", userId: uid, conflicts },
+            });
+          }
           if (!allowNoCredit) {
             const debit = await consumeOneCreditWithClient(tx, uid, sessionId);
             if (!debit.ok) throw Object.assign(new Error("Learner has no credits"), { statusCode: 422 });
@@ -241,6 +260,12 @@ router.post(
         await abandonIdempotentRequest(idempotency.recordId);
       }
       logger.error({ err: e }, "admin.sessions.addParticipants error");
+      if (e?.statusCode && e?.responseBody) {
+        return res.status(e.statusCode).json(e.responseBody);
+      }
+      if (e?.statusCode) {
+        return res.status(e.statusCode).json({ error: e.message });
+      }
       return res.status(500).json({ error: "Failed to add participants" });
     }
   }

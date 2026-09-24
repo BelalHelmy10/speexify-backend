@@ -6,6 +6,8 @@ import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../../middleware/auth-helpers.js";
 import {
     findSessionConflicts,
+    findSessionConflictsWithClient,
+    lockSchedulingResources,
     getRemainingCredits,
     consumeOneCreditWithClient,
     consumeOneCredit,
@@ -32,6 +34,8 @@ export {
     requireAuth,
     requireAdmin,
     findSessionConflicts,
+    findSessionConflictsWithClient,
+    lockSchedulingResources,
     getRemainingCredits,
     consumeOneCreditWithClient,
     consumeOneCredit,

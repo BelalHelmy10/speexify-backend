@@ -5,7 +5,8 @@ import {
   prisma,
   requireAuth,
   requireAdmin,
-  findSessionConflicts,
+  findSessionConflictsWithClient,
+  lockSchedulingResources,
   getRemainingCredits,
   consumeOneCreditWithClient,
   sendBookingNotifications,
@@ -110,11 +111,11 @@ async function ensureLearners(learnerIds) {
   return learners;
 }
 
-async function ensureNoConflicts({ startAt, endAt, learnerIds, teacherId }) {
+async function ensureNoConflicts({ db = prisma, startAt, endAt, learnerIds, teacherId }) {
   const learnerChecks = await Promise.all(
     learnerIds.map(async (learnerId) => ({
       learnerId,
-      conflicts: await findSessionConflicts({
+      conflicts: await findSessionConflictsWithClient(db, {
         startAt,
         endAt,
         userId: learnerId,
@@ -133,7 +134,7 @@ async function ensureNoConflicts({ startAt, endAt, learnerIds, teacherId }) {
   }
 
   if (teacherId) {
-    const conflicts = await findSessionConflicts({
+    const conflicts = await findSessionConflictsWithClient(db, {
       startAt,
       endAt,
       teacherId: Number(teacherId),
@@ -149,11 +150,11 @@ async function ensureNoConflicts({ startAt, endAt, learnerIds, teacherId }) {
   }
 }
 
-async function ensureCredits({ learnerIds, allowNoCredit }) {
+async function ensureCredits({ db = prisma, learnerIds, allowNoCredit }) {
   if (allowNoCredit) return;
 
   for (const learnerId of learnerIds) {
-    const remaining = await getRemainingCredits(learnerId);
+    const remaining = await getRemainingCredits(learnerId, db);
     if (remaining <= 0) {
       throw httpError(422, {
         error: "no_credits",
@@ -295,17 +296,6 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     }
 
     await ensureLearners(finalLearnerIds);
-    await ensureNoConflicts({
-      startAt: start,
-      endAt: finalEndAt,
-      learnerIds: finalLearnerIds,
-      teacherId: finalTeacherId,
-    });
-    await ensureCredits({
-      learnerIds: finalLearnerIds,
-      allowNoCredit: allowCreditOverride,
-    });
-
     idempotency = await beginIdempotentRequest({
       actorId: req.user.id,
       scope: "admin.sessions.create",
@@ -337,6 +327,23 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     }
 
     const { session, creditResults } = await prisma.$transaction(async (tx) => {
+      await lockSchedulingResources(tx, {
+        learnerIds: finalLearnerIds,
+        teacherId: finalTeacherId,
+      });
+      await ensureNoConflicts({
+        db: tx,
+        startAt: start,
+        endAt: finalEndAt,
+        learnerIds: finalLearnerIds,
+        teacherId: finalTeacherId,
+      });
+      await ensureCredits({
+        db: tx,
+        learnerIds: finalLearnerIds,
+        allowNoCredit: allowCreditOverride,
+      });
+
       const createdSession = await tx.session.create({
         data: {
           type: finalType,

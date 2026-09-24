@@ -30,14 +30,19 @@ const AdjustmentBodySchema = z.object({
   reason: z.string().trim().min(3).max(500),
 }).strict();
 
+const PAYMENT_METHODS = ["bank_transfer", "cash", "wallet", "other"];
+
 const PayoutBodySchema = z.object({
   teacherId: z.coerce.number().int().positive(),
   earningIds: z.array(z.coerce.number().int().positive()).max(500).optional().default([]),
   adjustmentIds: z.array(z.coerce.number().int().positive()).max(500).optional().default([]),
-  paymentMethod: z.string().trim().min(1).max(40),
+  paymentMethod: z.enum(PAYMENT_METHODS),
   paymentReference: z.string().trim().max(120).optional().nullable(),
   note: z.string().trim().max(500).optional().nullable(),
-  paidAt: z.coerce.date().optional(),
+  paidAt: z.coerce.date().refine(
+    (value) => value.getTime() <= Date.now(),
+    "paidAt cannot be in the future"
+  ).optional(),
 }).strict().refine((payload) => payload.earningIds.length + payload.adjustmentIds.length > 0, {
   message: "Select at least one earning or adjustment",
 });

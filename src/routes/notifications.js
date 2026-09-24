@@ -1,13 +1,108 @@
 // src/routes/notifications.js
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth } from "../middleware/auth-helpers.js";
+import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import {
   subscribeNotificationStream,
   publishNotificationEvent,
 } from "../services/notificationStreamHub.js";
 
 const router = Router();
+
+// --------------------------------------------------------------------------
+// GET /api/admin/notification-deliveries
+// Durable email delivery/retry dashboard data for operations.
+// --------------------------------------------------------------------------
+router.get(
+  "/admin/notification-deliveries",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const allowedStatuses = new Set(["PENDING", "PROCESSING", "SENT", "FAILED"]);
+      const requestedStatus = String(req.query.status || "").toUpperCase();
+      const status = allowedStatuses.has(requestedStatus) ? requestedStatus : null;
+      const limitRaw = Number(req.query.limit ?? 50);
+      const limit = Number.isFinite(limitRaw)
+        ? Math.min(Math.max(Math.floor(limitRaw), 1), 100)
+        : 50;
+
+      const where = status ? { status } : {};
+      const [items, counts] = await prisma.$transaction([
+        prisma.notificationDelivery.findMany({
+          where,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: limit,
+          select: {
+            id: true,
+            userId: true,
+            notificationId: true,
+            channel: true,
+            eventType: true,
+            recipient: true,
+            subject: true,
+            status: true,
+            attempts: true,
+            nextAttemptAt: true,
+            lastAttemptAt: true,
+            sentAt: true,
+            lastError: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        prisma.notificationDelivery.groupBy({
+          by: ["status"],
+          _count: { _all: true },
+        }),
+      ]);
+
+      return res.json({
+        items,
+        counts: Object.fromEntries(
+          counts.map((row) => [row.status, row._count._all])
+        ),
+        limit,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to load notification delivery status" });
+    }
+  }
+);
+
+// --------------------------------------------------------------------------
+// POST /api/admin/notification-deliveries/:id/retry
+// Make one failed delivery immediately eligible for the worker.
+// --------------------------------------------------------------------------
+router.post(
+  "/admin/notification-deliveries/:id/retry",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "Invalid delivery id" });
+      }
+
+      const updated = await prisma.notificationDelivery.updateMany({
+        where: { id, status: { in: ["FAILED", "PENDING"] } },
+        data: {
+          status: "PENDING",
+          nextAttemptAt: new Date(),
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+      if (!updated.count) {
+        return res.status(404).json({ error: "Retryable delivery not found" });
+      }
+      return res.json({ ok: true, queued: true });
+    } catch (err) {
+      return res.status(500).json({ error: "Failed to queue notification delivery retry" });
+    }
+  }
+);
 
 // --------------------------------------------------------------------------
 // GET /api/notifications/stream

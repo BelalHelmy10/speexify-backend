@@ -12,57 +12,57 @@ datasource db {
 }
 
 model Package {
-  lessonType SessionType?
-  catalogKey      String?       @unique
+  lessonType       SessionType?
+  catalogKey       String?       @unique
   pricingOverrides Json?
-  id              Int           @id @default(autoincrement())
-  title           String
-  description     String?
-  priceUSD        Int?
-  features        String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  active          Boolean       @default(true)
-  audience        Audience      @default(INDIVIDUAL)
-  durationMin     Int?
-  image           String?
-  isPopular       Boolean       @default(false)
-  priceType       PriceType     @default(BUNDLE)
-  sessionsPerPack Int?
-  sortOrder       Int           @default(0)
-  startingAtUSD   Int?
-  userPackages    UserPackage[]
-  orders          Order[]
-  deletedAt       DateTime?
+  id               Int           @id @default(autoincrement())
+  title            String
+  description      String?
+  priceUSD         Int?
+  features         String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  active           Boolean       @default(true)
+  audience         Audience      @default(INDIVIDUAL)
+  durationMin      Int?
+  image            String?
+  isPopular        Boolean       @default(false)
+  priceType        PriceType     @default(BUNDLE)
+  sessionsPerPack  Int?
+  sortOrder        Int           @default(0)
+  startingAtUSD    Int?
+  userPackages     UserPackage[]
+  orders           Order[]
+  deletedAt        DateTime?
 }
 
 model User {
-  id                    Int                    @id @default(autoincrement())
-  email                 String                 @unique
-  name                  String?
-  avatarUrl             String?
-  hashedPassword        String
-  role                  String                 @default("learner")
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  timezone              String?
-  language              String?                @default("en")
-  notificationPreferences Json?
-  calendarFeedRevokedAt DateTime?
-  passwordChangedAt     DateTime?
-  isDisabled            Boolean                @default(false)
+  id                        Int                    @id @default(autoincrement())
+  email                     String                 @unique
+  name                      String?
+  avatarUrl                 String?
+  hashedPassword            String
+  role                      String                 @default("learner")
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
+  timezone                  String?
+  language                  String?                @default("en")
+  notificationPreferences   Json?
+  calendarFeedRevokedAt     DateTime?
+  passwordChangedAt         DateTime?
+  isDisabled                Boolean                @default(false)
   // Legacy field names retained for API compatibility. Their historical
   // currency is not trusted by the earnings ledger.
-  rateHourlyCents       Int?
-  ratePerSessionCents   Int?
+  rateHourlyCents           Int?
+  ratePerSessionCents       Int?
   // Canonical teacher compensation fields. Values are EGP piastres.
   rateHourlyEgpPiastres     Int?
   ratePerSessionEgpPiastres Int?
-  assessmentSubmissions AssessmentSubmission[]
-  reviewedAssessments   AssessmentSubmission[] @relation("AssessmentReviewReviewer")
-  audits                Audit[]                @relation("Audit_actor")
-  onboardingForms       OnboardingForm[]
-  teachingSessions      Session[]              @relation("SessionTeacher")
+  assessmentSubmissions     AssessmentSubmission[]
+  reviewedAssessments       AssessmentSubmission[] @relation("AssessmentReviewReviewer")
+  audits                    Audit[]                @relation("Audit_actor")
+  onboardingForms           OnboardingForm[]
+  teachingSessions          Session[]              @relation("SessionTeacher")
 
   // Legacy 1:1 learner ownership (Session.userId)
   sessions Session[]
@@ -75,12 +75,13 @@ model User {
   orders           Order[]
 
   // In-app notifications
-  notifications Notification[]
+  notifications          Notification[]
+  notificationDeliveries NotificationDelivery[]
 
   // Support tickets + messages
-  supportTickets  SupportTicket[]
-  supportMessages SupportMessage[]
-  classroomMessages ClassroomMessage[]
+  supportTickets       SupportTicket[]
+  supportMessages      SupportMessage[]
+  classroomMessages    ClassroomMessage[]
   classroomAnnotations ClassroomAnnotation[]
 
   // ✨ Support ticket assignment (admin can assign tickets to staff)
@@ -93,16 +94,16 @@ model User {
   learnerFeedbacks LearnerSessionFeedback[] @relation("LearnerFeedbacks")
 
   // ✨ NEW: User availability for scheduling
-  availabilities Availability[]
-  teacherEarnings TeacherEarning[] @relation("TeacherEarningTeacher")
-  teacherRateHistory TeacherRateHistory[] @relation("TeacherRateHistoryTeacher")
-  createdTeacherRateHistory TeacherRateHistory[] @relation("TeacherRateHistoryCreator")
-  teacherEarningSnapshotJobs TeacherEarningSnapshotJob[] @relation("TeacherEarningSnapshotJobTeacher")
-  teacherPayouts TeacherPayout[] @relation("TeacherPayoutTeacher")
-  teacherEarningAdjustments TeacherEarningAdjustment[] @relation("TeacherEarningAdjustmentTeacher")
-  createdTeacherEarningAdjustments TeacherEarningAdjustment[] @relation("TeacherEarningAdjustmentCreator")
-  createdTeacherPayouts TeacherPayout[] @relation("TeacherPayoutCreator")
-  deletedAt      DateTime?
+  availabilities                   Availability[]
+  teacherEarnings                  TeacherEarning[]            @relation("TeacherEarningTeacher")
+  teacherRateHistory               TeacherRateHistory[]        @relation("TeacherRateHistoryTeacher")
+  createdTeacherRateHistory        TeacherRateHistory[]        @relation("TeacherRateHistoryCreator")
+  teacherEarningSnapshotJobs       TeacherEarningSnapshotJob[] @relation("TeacherEarningSnapshotJobTeacher")
+  teacherPayouts                   TeacherPayout[]             @relation("TeacherPayoutTeacher")
+  teacherEarningAdjustments        TeacherEarningAdjustment[]  @relation("TeacherEarningAdjustmentTeacher")
+  createdTeacherEarningAdjustments TeacherEarningAdjustment[]  @relation("TeacherEarningAdjustmentCreator")
+  createdTeacherPayouts            TeacherPayout[]             @relation("TeacherPayoutCreator")
+  deletedAt                        DateTime?
 
   @@index([role])
   @@index([deletedAt])
@@ -161,9 +162,10 @@ model Notification {
   // e.g. booking_confirmed, reminder_24h, payment_receipt
   type String
 
-  title String
-  body  String?
-  data  Json?
+  title      String
+  body       String?
+  data       Json?
+  deliveries NotificationDelivery[]
 
   readAt    DateTime?
   createdAt DateTime  @default(now())
@@ -171,6 +173,37 @@ model Notification {
   @@index([userId, createdAt])
   @@index([userId, readAt])
   @@index([userId, readAt, id], map: "Notification_userId_readAt_id_idx")
+}
+
+// Durable email delivery records. The notification remains the user-facing
+// in-app record; this table tracks provider delivery, retries, and admin
+// visibility for asynchronous email delivery.
+model NotificationDelivery {
+  id             Int       @id @default(autoincrement())
+  userId         Int?
+  notificationId Int?
+  channel        String    @default("EMAIL")
+  eventType      String
+  recipient      String
+  subject        String
+  bodyHtml       String
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastAttemptAt  DateTime?
+  sentAt         DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  notification Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+  @@index([userId, createdAt])
+  @@index([notificationId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,21 +254,21 @@ model SupportTicket {
   // Soft resolution timestamps
   resolvedAt DateTime?
 
-  firstResponseAt    DateTime?
+  firstResponseAt     DateTime?
   lastCustomerReplyAt DateTime?
-  lastStaffReplyAt   DateTime?
-  slaDueAt           DateTime?
-  closedAt           DateTime?
-  reopenedAt         DateTime?
-  reopenCount        Int       @default(0)
-  satisfactionRating Int?
+  lastStaffReplyAt    DateTime?
+  slaDueAt            DateTime?
+  closedAt            DateTime?
+  reopenedAt          DateTime?
+  reopenCount         Int       @default(0)
+  satisfactionRating  Int?
   satisfactionComment String?
-  tags               String[]  @default([])
-  source             String    @default("widget")
-  relatedSessionId   Int?
-  relatedPaymentId   Int?
-  assignedTeamId     Int?
-  aiStatus           String    @default("off")
+  tags                String[]  @default([])
+  source              String    @default("widget")
+  relatedSessionId    Int?
+  relatedPaymentId    Int?
+  assignedTeamId      Int?
+  aiStatus            String    @default("off")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -348,8 +381,8 @@ model Session {
   teacher   User? @relation("SessionTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
 
   // New: participant membership (many learners per session)
-  participants SessionParticipant[]
-  classroomMessages ClassroomMessage[]
+  participants         SessionParticipant[]
+  classroomMessages    ClassroomMessage[]
   classroomAnnotations ClassroomAnnotation[]
 
   createdAt                       DateTime      @default(now())
@@ -369,11 +402,11 @@ model Session {
   feedback SessionFeedback?
 
   // ─── Classroom Experience Fields ───
-  teacherNotes     String?
-  resourcesUsed    Json?                    @default("[]")
-  resourcesUsedAt  Json?                    @default("{}")
-  learnerFeedbacks LearnerSessionFeedback[]
-  teacherEarning TeacherEarning?
+  teacherNotes              String?
+  resourcesUsed             Json?                      @default("[]")
+  resourcesUsedAt           Json?                      @default("{}")
+  learnerFeedbacks          LearnerSessionFeedback[]
+  teacherEarning            TeacherEarning?
   teacherEarningSnapshotJob TeacherEarningSnapshotJob?
 
   @@index([userId, startAt])
@@ -388,26 +421,28 @@ model Session {
 // Entries are immutable snapshots of the rate and duration used for the
 // completed session. A payout only changes the settlement metadata.
 model TeacherEarning {
-  id              Int      @id @default(autoincrement())
-  teacherId       Int
-  sessionId       Int      @unique
-  amountMinor     Int
-  currencyCode    String   @default("EGP")
-  rateType        String   @default("none")
-  rateMinor       Int?
-  rateSnapshotAt  DateTime @default(now())
-  rateEffectiveFrom DateTime?
-  rateSnapshotSource String @default("completion_current_rate")
-  durationMinutes Int      @default(60)
-  status          String   @default("PENDING")
-  createdAt       DateTime @default(now())
-  paidAt          DateTime?
-  payoutId        Int?
+  id                 Int       @id @default(autoincrement())
+  teacherId          Int
+  sessionId          Int       @unique
+  amountMinor        Int
+  // The SQL migration constrains this ledger to the canonical EGP currency.
+  currencyCode       String    @default("EGP")
+  rateType           String    @default("none")
+  rateMinor          Int?
+  rateSnapshotAt     DateTime  @default(now())
+  rateEffectiveFrom  DateTime?
+  rateSnapshotSource String    @default("completion_current_rate")
+  durationMinutes    Int       @default(60)
+  // The SQL migration constrains this field to PENDING or PAID.
+  status             String    @default("PENDING")
+  createdAt          DateTime  @default(now())
+  paidAt             DateTime?
+  payoutId           Int?
 
   // Keep historical earnings from disappearing if an account/session is removed.
-  teacher User @relation("TeacherEarningTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
-  session Session @relation(fields: [sessionId], references: [id], onDelete: Restrict)
-  payout TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  teacher User           @relation("TeacherEarningTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  session Session        @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  payout  TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([teacherId, status, createdAt])
   @@index([payoutId])
@@ -417,14 +452,14 @@ model TeacherEarning {
 // session completion timestamp and copy the result into their own immutable
 // snapshot fields. A missing historical rate is intentionally not inferred.
 model TeacherRateHistory {
-  id                       Int      @id @default(autoincrement())
-  teacherId                Int
-  effectiveFrom            DateTime
-  effectiveTo              DateTime?
-  rateHourlyEgpPiastres    Int?
+  id                        Int       @id @default(autoincrement())
+  teacherId                 Int
+  effectiveFrom             DateTime
+  effectiveTo               DateTime?
+  rateHourlyEgpPiastres     Int?
   ratePerSessionEgpPiastres Int?
-  createdById              Int?
-  createdAt                DateTime @default(now())
+  createdById               Int?
+  createdAt                 DateTime  @default(now())
 
   teacher   User  @relation("TeacherRateHistoryTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
   createdBy User? @relation("TeacherRateHistoryCreator", fields: [createdById], references: [id], onDelete: SetNull)
@@ -437,22 +472,23 @@ model TeacherRateHistory {
 // PENDING row before the completion request can succeed; workers retry FAILED
 // rows until the TeacherEarning snapshot is durable.
 model TeacherEarningSnapshotJob {
-  id            Int      @id @default(autoincrement())
-  sessionId     Int      @unique
+  id            Int       @id @default(autoincrement())
+  sessionId     Int       @unique
   teacherId     Int
-  status        String   @default("PENDING")
-  attempts      Int      @default(0)
-  nextAttemptAt DateTime @default(now())
+  // The SQL migration constrains this field to the four worker states.
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
   lockedAt      DateTime?
   lockedBy      String?
   lastAttemptAt DateTime?
   succeededAt   DateTime?
   lastError     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Restrict)
-  teacher User @relation("TeacherEarningSnapshotJobTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  teacher User    @relation("TeacherEarningSnapshotJobTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
 
   @@index([status, nextAttemptAt])
   @@index([status, lockedAt])
@@ -465,15 +501,16 @@ model TeacherPayout {
   createdById      Int
   totalMinor       Int
   currencyCode     String   @default("EGP")
+  // The SQL migration constrains this to bank_transfer, cash, wallet, other.
   paymentMethod    String
   paymentReference String?
   note             String?
   paidAt           DateTime @default(now())
   createdAt        DateTime @default(now())
 
-  teacher  User @relation("TeacherPayoutTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
-  createdBy User @relation("TeacherPayoutCreator", fields: [createdById], references: [id], onDelete: Restrict)
-  earnings TeacherEarning[]
+  teacher     User                       @relation("TeacherPayoutTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  createdBy   User                       @relation("TeacherPayoutCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  earnings    TeacherEarning[]
   adjustments TeacherEarningAdjustment[]
 
   @@index([teacherId, paidAt])
@@ -483,19 +520,21 @@ model TeacherPayout {
 // add to a teacher's pending balance; negative values correct it downward.
 // They are never deleted so every balance change remains explainable.
 model TeacherEarningAdjustment {
-  id          Int      @id @default(autoincrement())
-  teacherId   Int
-  createdById Int
-  amountMinor Int
-  currencyCode String  @default("EGP")
-  reason      String
-  status      String   @default("PENDING")
-  paidAt      DateTime?
-  payoutId    Int?
-  createdAt   DateTime @default(now())
+  id           Int       @id @default(autoincrement())
+  teacherId    Int
+  createdById  Int
+  amountMinor  Int
+  // The SQL migration constrains this ledger to the canonical EGP currency.
+  currencyCode String    @default("EGP")
+  reason       String
+  // The SQL migration constrains this field to PENDING or PAID.
+  status       String    @default("PENDING")
+  paidAt       DateTime?
+  payoutId     Int?
+  createdAt    DateTime  @default(now())
 
-  teacher   User          @relation("TeacherEarningAdjustmentTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
-  createdBy User          @relation("TeacherEarningAdjustmentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  teacher   User           @relation("TeacherEarningAdjustmentTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  createdBy User           @relation("TeacherEarningAdjustmentCreator", fields: [createdById], references: [id], onDelete: Restrict)
   payout    TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([teacherId, status, createdAt])
@@ -628,23 +667,23 @@ model PasswordResetCode {
 
 model Order {
   pricingSnapshot Json?
-  id             String        @id
-  amountCents    Int
-  currency       String        @default("EGP")
-  status         String        @default("pending")
-  psp            String        @default("paymob")
-  pspOrderId     Int?
-  customerEmail  String?
-  customerPhone  String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  userId         Int?
-  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  packageId      Int?
-  package        Package?      @relation(fields: [packageId], references: [id], onDelete: SetNull)
-  paymobTxnId    Int?
-  discountCodeId Int?
-  discountCode   DiscountCode? @relation(fields: [discountCodeId], references: [id], onDelete: SetNull)
+  id              String        @id
+  amountCents     Int
+  currency        String        @default("EGP")
+  status          String        @default("pending")
+  psp             String        @default("paymob")
+  pspOrderId      Int?
+  customerEmail   String?
+  customerPhone   String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  userId          Int?
+  user            User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  packageId       Int?
+  package         Package?      @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  paymobTxnId     Int?
+  discountCodeId  Int?
+  discountCode    DiscountCode? @relation(fields: [discountCodeId], references: [id], onDelete: SetNull)
 
   userPackage UserPackage?
 
@@ -671,9 +710,9 @@ model DiscountCode {
 
 model UserPackage {
   lessonType SessionType?
-  id        Int @id @default(autoincrement())
-  userId    Int
-  packageId Int
+  id         Int          @id @default(autoincrement())
+  userId     Int
+  packageId  Int
 
   creditDebits CreditDebit[]
 
@@ -757,12 +796,15 @@ enum SessionStatus {
 // Each charge retains its source package and a single reversal timestamp.
 // Session/user IDs are historical identifiers retained when accounts are anonymized.
 model CreditDebit {
-  id Int @id @default(autoincrement())
-  sessionId Int
-  userId Int
+  id            Int         @id @default(autoincrement())
+  sessionId     Int
+  userId        Int
   userPackageId Int
-  userPackage UserPackage @relation(fields: [userPackageId], references: [id])
-  createdAt DateTime @default(now())
-  reversedAt DateTime?
+  userPackage   UserPackage @relation(fields: [userPackageId], references: [id])
+  createdAt     DateTime    @default(now())
+  reversedAt    DateTime?
+
+  // A partial unique index in SQL enforces one active debit per session/user
+  // while allowing a new debit after the prior one has been reversed.
   @@index([sessionId, userId])
 }

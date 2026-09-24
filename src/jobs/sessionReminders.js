@@ -195,7 +195,12 @@ async function sendReminderForSession({ session, kind }) {
       `;
 
       try {
-        await sendEmail(learner.email, `Speexify — ${title}`, html);
+        await sendEmail(learner.email, `Speexify — ${title}`, html, {
+          track: true,
+          userId: learner.id,
+          eventType: `reminder_${kind}`,
+          sessionId: session.id,
+        });
       } catch (e) {
         logger.error(
           { err: e, sessionId: session.id, learnerId: learner.id },
@@ -254,7 +259,12 @@ async function sendReminderForSession({ session, kind }) {
     `;
 
     try {
-      await sendEmail(teacher.email, `Speexify — ${title}`, html);
+      await sendEmail(teacher.email, `Speexify — ${title}`, html, {
+        track: true,
+        userId: teacher.id,
+        eventType: `reminder_${kind}`,
+        sessionId: session.id,
+      });
     } catch (e) {
       logger.error(
         { err: e, sessionId: session.id, teacherId: teacher.id },

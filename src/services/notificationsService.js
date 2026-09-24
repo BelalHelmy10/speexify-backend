@@ -240,7 +240,12 @@ export async function sendBookingNotifications({
       `;
 
       try {
-        await sendEmail(learner.email, `Speexify — Lesson Confirmed! 🎉`, html);
+        await sendEmail(learner.email, `Speexify — Lesson Confirmed! 🎉`, html, {
+          track: true,
+          userId: learner.id,
+          eventType: "booking_confirmed",
+          sessionId: session.id,
+        });
       } catch (e) {
         logger.error(
           { err: e, sessionId: session.id, learnerId: learner.id },
@@ -281,7 +286,12 @@ export async function sendBookingNotifications({
     `;
 
     try {
-      await sendEmail(teacher.email, `Speexify — New Lesson Booked`, html);
+      await sendEmail(teacher.email, `Speexify — New Lesson Booked`, html, {
+        track: true,
+        userId: teacher.id,
+        eventType: "new_booking",
+        sessionId: session.id,
+      });
     } catch (e) {
       logger.error(
         { err: e, sessionId: session.id, teacherId },
@@ -391,7 +401,12 @@ export async function sendCancellationNotifications({
       `;
 
       try {
-        await sendEmail(learner.email, `Speexify — Session Canceled`, html);
+        await sendEmail(learner.email, `Speexify — Session Canceled`, html, {
+          track: true,
+          userId: learner.id,
+          eventType: "session_canceled",
+          sessionId: session.id,
+        });
       } catch (e) {
         logger.error(
           { err: e, sessionId: session.id, learnerId: learner.id },
@@ -432,7 +447,12 @@ export async function sendCancellationNotifications({
     `;
 
     try {
-      await sendEmail(teacher.email, `Speexify — Session Canceled`, html);
+      await sendEmail(teacher.email, `Speexify — Session Canceled`, html, {
+        track: true,
+        userId: teacher.id,
+        eventType: "session_canceled",
+        sessionId: session.id,
+      });
     } catch (e) {
       logger.error(
         { err: e, sessionId: session.id, teacherId },
@@ -580,7 +600,13 @@ export async function sendFeedbackNotifications({
         await sendEmail(
           learner.email,
           `Speexify — ${teacherName} left you feedback! 💬`,
-          html
+          html,
+          {
+            track: true,
+            userId: learner.id,
+            eventType: "feedback_received",
+            sessionId: session.id,
+          }
         );
       } catch (e) {
         logger.error(
