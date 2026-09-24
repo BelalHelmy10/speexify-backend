@@ -5,18 +5,21 @@ import fs from "fs";
 import crypto from "crypto";
 import { logger } from "./logger.js";
 import { scanUploadFile } from "./uploadSecurity.js";
+import { UPLOADS_ENABLED } from "../config/env.js";
 
 const uploadDir = path.join(uploadRoot, "support");
 
 // Ensure directory exists
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true, mode: 0o700 });
-}
-try {
-  fs.chmodSync(uploadDir, 0o700);
-} catch {
-  // The upload root may be a managed mount whose mode is controlled by the
-  // platform; file-level permissions are still enforced below.
+if (UPLOADS_ENABLED) {
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true, mode: 0o700 });
+  }
+  try {
+    fs.chmodSync(uploadDir, 0o700);
+  } catch {
+    // The upload root may be a managed mount whose mode is controlled by the
+    // platform; file-level permissions are still enforced below.
+  }
 }
 
 const ALLOWED_FILE_TYPES = {

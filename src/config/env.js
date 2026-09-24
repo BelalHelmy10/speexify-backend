@@ -108,11 +108,17 @@ if (isProd && !GOOGLE_CLIENT_ID) {
   throw new Error("GOOGLE_CLIENT_ID must be set in production");
 }
 
-// Production uploads must be scanned before they are persisted or served.
+// Uploads are opt-in in production. Render's free runtime has ephemeral
+// storage, so keep uploads disabled until a durable external storage adapter
+// and malware scanner are configured.
+export const UPLOADS_ENABLED = parseBooleanEnv("UPLOADS_ENABLED", !isProd);
+
+// If uploads are enabled, they must be scanned before they are persisted or
+// served. Disabled uploads do not require scanner infrastructure at startup.
 export const UPLOAD_MALWARE_SCAN_COMMAND = readSecretEnv(
   "UPLOAD_MALWARE_SCAN_COMMAND"
 );
-if (isProd && !UPLOAD_MALWARE_SCAN_COMMAND) {
+if (isProd && UPLOADS_ENABLED && !UPLOAD_MALWARE_SCAN_COMMAND) {
   throw new Error(
     "UPLOAD_MALWARE_SCAN_COMMAND must point to the production malware scanner"
   );

@@ -44,6 +44,7 @@ const PRODUCTION_ENV_REQUIREMENTS = [
   "GOOGLE_CLIENT_ID",
   "PAYMOB_HMAC_SECRET",
   "OBS_METRICS_TOKEN",
+  "UPLOADS_ENABLED",
   "UPLOAD_STORAGE_ROOT",
   "UPLOAD_MALWARE_SCAN_COMMAND",
 ];
@@ -119,8 +120,15 @@ function scanSourceFiles() {
 }
 
 function collectEnvReadiness() {
+  const uploadsEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.UPLOADS_ENABLED || "").trim().toLowerCase()
+  );
+
   return PRODUCTION_ENV_REQUIREMENTS.map((name) => ({
     name,
+    required:
+      uploadsEnabled ||
+      !["UPLOAD_STORAGE_ROOT", "UPLOAD_MALWARE_SCAN_COMMAND"].includes(name),
     present: Boolean(String(process.env[name] || "").trim()),
   }));
 }
@@ -154,7 +162,9 @@ function main() {
   const scan = scanSourceFiles();
   const summary = summarize(scan.findings);
   const envChecks = collectEnvReadiness();
-  const missingEnv = envChecks.filter((item) => !item.present).map((item) => item.name);
+  const missingEnv = envChecks
+    .filter((item) => item.required && !item.present)
+    .map((item) => item.name);
 
   const report = {
     generatedAt: new Date().toISOString(),

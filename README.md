@@ -241,6 +241,7 @@ WS_ALLOWED_ORIGINS=http://localhost:3000
 
 # Security
 GOOGLE_CLIENT_ID=your-production-client-id.apps.googleusercontent.com
+UPLOADS_ENABLED=false
 UPLOAD_STORAGE_ROOT=/var/lib/speexify/uploads
 UPLOAD_MALWARE_SCAN_COMMAND=clamdscan
 CALENDAR_FEED_TTL_DAYS=30
@@ -275,9 +276,11 @@ COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
 
-UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars and support attachments. It is optional in local development and required in production; do not deploy production instances with the default process-local `uploads` directory.
+UPLOADS_ENABLED – Explicit production upload policy. Set to `false` until durable external storage and malware scanning are configured; disabled upload and attachment endpoints return `503` and never write to the local filesystem. Set to `true` only with both `UPLOAD_STORAGE_ROOT` and `UPLOAD_MALWARE_SCAN_COMMAND` configured.
 
-UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar and support attachment before it is persisted or served. Production startup fails closed when this is missing; `clamdscan` is the recommended ClamAV deployment command.
+UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars and support attachments. It is optional when uploads are disabled; when uploads are enabled in production, it is required and must not be the default process-local `uploads` directory.
+
+UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar and support attachment before it is persisted or served. It is required only when uploads are enabled in production; `clamdscan` is the recommended ClamAV deployment command.
 
 GOOGLE_CLIENT_ID – Server-only Google OAuth audience. It is required in production and must match the OAuth client whose authorized JavaScript origins include the deployed frontend.
 

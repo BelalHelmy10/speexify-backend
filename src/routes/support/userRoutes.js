@@ -11,6 +11,7 @@ import {
   validateUploadedFile,
   deleteFile,
 } from "../../lib/supportUpload.js";
+import { requireUploadsEnabled } from "../../lib/uploadAvailability.js";
 import { logger } from "../../lib/logger.js";
 import {
   broadcastNewMessage,
@@ -334,6 +335,7 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
 router.post(
   "/tickets/:id/attachments",
   requireAuth,
+  requireUploadsEnabled,
   requireTicketAccess,
   supportUpload.single("file"),
   validateUploadedFile,
@@ -462,56 +464,61 @@ router.post("/tickets/:id/satisfaction", requireAuth, async (req, res) => {
 });
 
 // GET /api/support/attachments/:attachmentId - Authorized attachment download
-router.get("/attachments/:attachmentId", requireAuth, async (req, res) => {
-  const attachmentId = Number(req.params.attachmentId);
-  if (!Number.isFinite(attachmentId)) {
-    return res.status(400).json({ error: "Invalid attachment id" });
-  }
-
-  const viewerId = req.viewUserId;
-  const isAdmin = req.user?.role === "admin";
-
-  try {
-    const access = await loadAttachmentAccessContext(
-      attachmentId,
-      viewerId,
-      isAdmin
-    );
-
-    if (!access.allowed) {
-      return res.status(access.status).json({ error: access.error });
+router.get(
+  "/attachments/:attachmentId",
+  requireAuth,
+  requireUploadsEnabled,
+  async (req, res) => {
+    const attachmentId = Number(req.params.attachmentId);
+    if (!Number.isFinite(attachmentId)) {
+      return res.status(400).json({ error: "Invalid attachment id" });
     }
 
-    const { attachment } = access;
-    const safeStoredName = path.basename(String(attachment.filePath || ""));
-    const absolutePath = path.join(SUPPORT_UPLOAD_DIR, safeStoredName);
+    const viewerId = req.viewUserId;
+    const isAdmin = req.user?.role === "admin";
 
-    if (!safeStoredName || !fs.existsSync(absolutePath)) {
-      logger.warn(
-        { attachmentId, filePath: attachment.filePath },
-        "Support attachment file missing on disk"
+    try {
+      const access = await loadAttachmentAccessContext(
+        attachmentId,
+        viewerId,
+        isAdmin
       );
-      return res.status(404).json({ error: "Attachment file not found" });
+
+      if (!access.allowed) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const { attachment } = access;
+      const safeStoredName = path.basename(String(attachment.filePath || ""));
+      const absolutePath = path.join(SUPPORT_UPLOAD_DIR, safeStoredName);
+
+      if (!safeStoredName || !fs.existsSync(absolutePath)) {
+        logger.warn(
+          { attachmentId, filePath: attachment.filePath },
+          "Support attachment file missing on disk"
+        );
+        return res.status(404).json({ error: "Attachment file not found" });
+      }
+
+      const stats = fs.statSync(absolutePath);
+      const mimeType = attachment.mimeType || "application/octet-stream";
+      const disposition = mimeType.startsWith("image/") ? "inline" : "attachment";
+
+      res.setHeader("Content-Type", mimeType);
+      res.setHeader("Content-Length", String(stats.size));
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader(
+        "Content-Disposition",
+        `${disposition}; filename="${sanitizeDownloadName(attachment.fileName)}"`
+      );
+      res.setHeader("Cache-Control", "private, max-age=300");
+
+      return res.sendFile(absolutePath);
+    } catch (err) {
+      logger.error({ err, attachmentId }, "Failed to serve support attachment");
+      return res.status(500).json({ error: "Failed to serve attachment" });
     }
-
-    const stats = fs.statSync(absolutePath);
-    const mimeType = attachment.mimeType || "application/octet-stream";
-    const disposition = mimeType.startsWith("image/") ? "inline" : "attachment";
-
-    res.setHeader("Content-Type", mimeType);
-    res.setHeader("Content-Length", String(stats.size));
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader(
-      "Content-Disposition",
-      `${disposition}; filename="${sanitizeDownloadName(attachment.fileName)}"`
-    );
-    res.setHeader("Cache-Control", "private, max-age=300");
-
-    return res.sendFile(absolutePath);
-  } catch (err) {
-    logger.error({ err, attachmentId }, "Failed to serve support attachment");
-    return res.status(500).json({ error: "Failed to serve attachment" });
   }
-});
+);
 
 export default router;

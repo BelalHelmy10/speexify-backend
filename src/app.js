@@ -69,6 +69,7 @@ import {
   resolveAvatarPath,
   saveAvatarFile,
 } from "./lib/profileAvatarUpload.js";
+import { requireUploadsEnabled } from "./lib/uploadAvailability.js";
 
 const app = express();
 
@@ -665,6 +666,7 @@ app.patch(
 app.post(
   "/api/me/avatar",
   requireAuth,
+  requireUploadsEnabled,
   handleProfileAvatarUpload,
   async (req, res) => {
     let nextAvatarUrl = "";
@@ -762,7 +764,7 @@ app.delete("/api/me/avatar", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/me/avatar/:filename", requireAuth, (req, res) => {
+app.get("/api/me/avatar/:filename", requireAuth, requireUploadsEnabled, (req, res) => {
   const filePath = resolveAvatarPath(req.params.filename);
   if (!filePath) return res.status(404).json({ error: "Not found" });
   res.sendFile(filePath, (error) => {

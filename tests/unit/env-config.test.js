@@ -87,6 +87,21 @@ test("production env falls back token/feed secrets to a strong session secret", 
   assert.equal(env.CALENDAR_FEED_SECRET, sessionSecret);
 });
 
+test("production uploads are disabled by default until durable storage is configured", async () => {
+  const env = await importFreshEnv({
+    NODE_ENV: "production",
+    SESSION_SECRET: "speexify-production-session-secret-0004",
+    OBS_METRICS_TOKEN: "speexify-production-metrics-token-0004",
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    REDIS_URL: "redis://localhost:6379",
+    UPLOADS_ENABLED: undefined,
+    UPLOAD_STORAGE_ROOT: undefined,
+    UPLOAD_MALWARE_SCAN_COMMAND: undefined,
+  });
+
+  assert.equal(env.UPLOADS_ENABLED, false);
+});
+
 test("production env rejects missing OBS_METRICS_TOKEN", async () => {
   await assert.rejects(
     () =>

@@ -137,8 +137,23 @@ function main() {
     checkEnv("PAYMOB_HMAC_SECRET", "fail", "webhook signature validation"),
 
     checkEnv("OBS_METRICS_TOKEN", "fail", "authorize /metrics scraping"),
-    checkEnv("UPLOAD_STORAGE_ROOT", "fail", "durable upload mount"),
-    checkEnv("UPLOAD_MALWARE_SCAN_COMMAND", "fail", "upload malware scanner"),
+    checkEnv("UPLOADS_ENABLED", "fail", "explicit upload policy"),
+    checkCustom(
+      "uploads:storage",
+      !truthy("UPLOADS_ENABLED", false) || hasValue("UPLOAD_STORAGE_ROOT"),
+      "fail",
+      truthy("UPLOADS_ENABLED", false)
+        ? "UPLOAD_STORAGE_ROOT is required when uploads are enabled"
+        : "uploads disabled; no persistent upload mount required"
+    ),
+    checkCustom(
+      "uploads:malware_scanner",
+      !truthy("UPLOADS_ENABLED", false) || hasValue("UPLOAD_MALWARE_SCAN_COMMAND"),
+      "fail",
+      truthy("UPLOADS_ENABLED", false)
+        ? "UPLOAD_MALWARE_SCAN_COMMAND is required when uploads are enabled"
+        : "uploads disabled; no malware scanner required"
+    ),
     checkCustom(
       "runtime:alerts_enabled",
       truthy("OBS_ALERTS_ENABLED", true),
