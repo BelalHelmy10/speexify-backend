@@ -80,6 +80,35 @@ async function sendWebhook(alertPayload) {
   }
 }
 
+export async function notifyOperationalAlert({
+  key,
+  severity = "critical",
+  title,
+  actual,
+  value,
+  context = {},
+} = {}) {
+  const alertKey = String(key || "operational-alert");
+  if (!shouldSendAlert(alertKey)) return false;
+
+  const payload = {
+    source: "speexify-backend",
+    ts: new Date().toISOString(),
+    alert: {
+      key: alertKey,
+      severity,
+      title: title || alertKey,
+      actual: actual || null,
+      value: value ?? null,
+      context,
+    },
+  };
+
+  logger.error(payload, "[observability] operational alert fired");
+  await sendWebhook(payload);
+  return true;
+}
+
 async function evaluateAndAlert() {
   try {
     const snapshot = getMetricsSnapshot({ windowMs: OBS_ALERT_WINDOW_MS });

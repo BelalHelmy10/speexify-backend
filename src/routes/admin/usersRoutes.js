@@ -7,6 +7,10 @@ import { validateRequest } from "../../middleware/validateRequest.js";
 import { logger } from "../../lib/logger.js";
 import { sendEmail } from "../../services/emailService.js";
 import { audit, genCode, hashCode } from "./shared.js";
+import {
+  getTeacherRateAt,
+  recordTeacherRateHistory,
+} from "../../services/teacherRateService.js";
 
 const router = Router();
 
@@ -39,6 +43,10 @@ const RateCentsSchema = z.union([
   z.literal(""),
   z.null(),
 ]);
+const RateEffectiveFromSchema = z.preprocess(
+  (value) => (value === "" || value === null ? undefined : value),
+  z.coerce.date().optional()
+);
 
 const PatchUserBodySchema = z
   .object({
@@ -50,11 +58,19 @@ const PatchUserBodySchema = z
     ratePerSessionCents: RateCentsSchema.optional(),
     rateHourlyEgpPiastres: RateCentsSchema.optional(),
     ratePerSessionEgpPiastres: RateCentsSchema.optional(),
+    rateEffectiveFrom: RateEffectiveFromSchema,
   })
   .strict()
   .refine((payload) => Object.keys(payload).length > 0, {
     message: "At least one field must be provided",
-  });
+  })
+  .refine(
+    (payload) =>
+      payload.rateEffectiveFrom === undefined ||
+      payload.rateHourlyEgpPiastres !== undefined ||
+      payload.ratePerSessionEgpPiastres !== undefined,
+    { message: "rateEffectiveFrom requires an EGP rate field" }
+  );
 
 router.get(
   "/admin/users",
@@ -159,6 +175,42 @@ router.post(
   }
 );
 
+router.get(
+  "/admin/users/:id/rate-history",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ params: UserIdParamsSchema }),
+  async (req, res, next) => {
+    try {
+      const teacher = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, role: true },
+      });
+      if (!teacher || teacher.role !== "teacher") {
+        return res.status(404).json({ error: "Teacher not found" });
+      }
+
+      const history = await prisma.teacherRateHistory.findMany({
+        where: { teacherId: req.params.id },
+        orderBy: { effectiveFrom: "desc" },
+        select: {
+          id: true,
+          teacherId: true,
+          effectiveFrom: true,
+          effectiveTo: true,
+          rateHourlyEgpPiastres: true,
+          ratePerSessionEgpPiastres: true,
+          createdById: true,
+          createdAt: true,
+        },
+      });
+      return res.json(history);
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 router.patch(
   "/admin/users/:id",
   requireAuth,
@@ -179,25 +231,35 @@ router.patch(
         ratePerSessionCents,
         rateHourlyEgpPiastres,
         ratePerSessionEgpPiastres,
+        rateEffectiveFrom,
       } = req.body;
 
-      const before = await prisma.user.findUnique({
-        where: { id },
-        select: {
-          id: true,
-          role: true,
-          isDisabled: true,
-          rateHourlyCents: true,
-          ratePerSessionCents: true,
-          rateHourlyEgpPiastres: true,
-          ratePerSessionEgpPiastres: true,
-        },
-      });
-      if (!before) return res.status(404).json({ error: "Not found" });
+      let before;
+      let rateHistory = null;
+      const hasEgpRateChange =
+        rateHourlyEgpPiastres !== undefined || ratePerSessionEgpPiastres !== undefined;
 
-      const user = await prisma.user.update({
-        where: { id },
-        data: {
+      const user = await prisma.$transaction(async (tx) => {
+        before = await tx.user.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            role: true,
+            isDisabled: true,
+            rateHourlyCents: true,
+            ratePerSessionCents: true,
+            rateHourlyEgpPiastres: true,
+            ratePerSessionEgpPiastres: true,
+          },
+        });
+        if (!before) return null;
+        if (hasEgpRateChange && before.role !== "teacher") {
+          const error = new Error("EGP rate history can only be assigned to teachers");
+          error.code = "RATE_TEACHER_ONLY";
+          throw error;
+        }
+
+        const updateData = {
           ...(role ? { role } : {}),
           ...(typeof isDisabled === "boolean" ? { isDisabled } : {}),
           ...(name !== undefined ? { name } : {}),
@@ -218,26 +280,64 @@ router.patch(
                     : Number(ratePerSessionCents),
               }
             : {}),
-          ...(rateHourlyEgpPiastres !== undefined
-            ? { rateHourlyEgpPiastres: rateHourlyEgpPiastres === null || rateHourlyEgpPiastres === "" ? null : Number(rateHourlyEgpPiastres) }
-            : {}),
-          ...(ratePerSessionEgpPiastres !== undefined
-            ? { ratePerSessionEgpPiastres: ratePerSessionEgpPiastres === null || ratePerSessionEgpPiastres === "" ? null : Number(ratePerSessionEgpPiastres) }
-            : {}),
-        },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          role: true,
-          timezone: true,
-          isDisabled: true,
-          rateHourlyCents: true,
-          ratePerSessionCents: true,
-          rateHourlyEgpPiastres: true,
-          ratePerSessionEgpPiastres: true,
-        },
+        };
+
+        if (hasEgpRateChange) {
+          rateHistory = await recordTeacherRateHistory({
+            db: tx,
+            teacherId: id,
+            createdById: req.user.id,
+            effectiveFrom: rateEffectiveFrom || new Date(),
+            rateHourlyEgpPiastres:
+              rateHourlyEgpPiastres === undefined
+                ? before.rateHourlyEgpPiastres
+                : rateHourlyEgpPiastres === null || rateHourlyEgpPiastres === ""
+                  ? null
+                  : Number(rateHourlyEgpPiastres),
+            ratePerSessionEgpPiastres:
+              ratePerSessionEgpPiastres === undefined
+                ? before.ratePerSessionEgpPiastres
+                : ratePerSessionEgpPiastres === null || ratePerSessionEgpPiastres === ""
+                  ? null
+                  : Number(ratePerSessionEgpPiastres),
+          });
+
+          // User fields remain the current-rate projection. A future-dated
+          // history row must not become today's rate prematurely.
+          const currentRate = await getTeacherRateAt(id, new Date(), tx, {
+            fallback: {
+              rateHourlyEgpPiastres: before.rateHourlyEgpPiastres,
+              ratePerSessionEgpPiastres: before.ratePerSessionEgpPiastres,
+            },
+            allowFallback: true,
+          });
+          const projectedRate = currentRate || {
+            rateHourlyEgpPiastres: before.rateHourlyEgpPiastres,
+            ratePerSessionEgpPiastres: before.ratePerSessionEgpPiastres,
+          };
+          updateData.rateHourlyEgpPiastres = projectedRate.rateHourlyEgpPiastres || null;
+          updateData.ratePerSessionEgpPiastres = projectedRate.ratePerSessionEgpPiastres || null;
+        }
+
+        return tx.user.update({
+          where: { id },
+          data: updateData,
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            timezone: true,
+            isDisabled: true,
+            rateHourlyCents: true,
+            ratePerSessionCents: true,
+            rateHourlyEgpPiastres: true,
+            ratePerSessionEgpPiastres: true,
+          },
+        });
       });
+
+      if (!before) return res.status(404).json({ error: "Not found" });
 
       if (role && role !== before.role) {
         await audit(req.user.id, "role_change", "User", id, {
@@ -257,6 +357,8 @@ router.patch(
 
       if (rateHourlyCents !== undefined || ratePerSessionCents !== undefined || rateHourlyEgpPiastres !== undefined || ratePerSessionEgpPiastres !== undefined) {
         await audit(req.user.id, "teacher_rate_update", "User", id, {
+          effectiveFrom: rateHistory?.effectiveFrom || null,
+          rateHistoryId: rateHistory?.id || null,
           from: {
             rateHourlyCents: before.rateHourlyCents,
             ratePerSessionCents: before.ratePerSessionCents,
@@ -274,6 +376,9 @@ router.patch(
 
       res.json(user);
     } catch (err) {
+      if (err?.code === "RATE_TEACHER_ONLY") {
+        return res.status(422).json({ error: err.message });
+      }
       logger.error({ err }, "admin.patchUser error");
       res.status(500).json({ error: "Failed to update user" });
     }

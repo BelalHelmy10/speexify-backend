@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   getMetricsSnapshot,
+  recordPayrollReconciliation,
   recordHttpRequestEnd,
   recordHttpRequestStart,
   resetMetricsForTests,
@@ -58,4 +59,27 @@ test("prometheus output includes key series", () => {
   assert.match(text, /speexify_http_inflight_requests/);
   assert.match(text, /speexify_http_requests_total\{method="GET",route="\/api\/message",status="200"\}/);
   assert.match(text, /speexify_http_request_duration_ms_count 1/);
+});
+
+test("payroll reconciliation is exposed in JSON and Prometheus metrics", () => {
+  resetMetricsForTests();
+  recordPayrollReconciliation({
+    available: true,
+    completedSessions: 10,
+    earningRows: 9,
+    missingEarnings: 1,
+    coveragePct: 90,
+    pendingSnapshotJobs: 1,
+    failedSnapshotJobs: 0,
+    processingSnapshotJobs: 0,
+  });
+
+  const snapshot = getMetricsSnapshot();
+  const text = toPrometheusMetrics();
+
+  assert.equal(snapshot.payroll.missingEarnings, 1);
+  assert.equal(snapshot.payroll.coveragePct, 90);
+  assert.match(text, /speexify_payroll_completed_sessions 10/);
+  assert.match(text, /speexify_payroll_missing_earnings 1/);
+  assert.match(text, /speexify_payroll_snapshot_jobs_pending 1/);
 });

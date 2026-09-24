@@ -37,6 +37,7 @@ import {
   finalizeExpiredSessionsForUser,
   finalizeExpiredSessionsForTeacher,
 } from "./services/sessionsService.js";
+import { getTeacherEarningsReconciliation } from "./services/teacherEarningsService.js";
 import { sendEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
@@ -57,6 +58,7 @@ import {
 } from "./observability/requestContext.js";
 import {
   getMetricsSnapshot,
+  recordPayrollReconciliation,
   recordHttpRequestEnd,
   recordHttpRequestStart,
   toPrometheusMetrics,
@@ -451,24 +453,41 @@ app.get("/.well-known/security.txt", (_req, res) => {
   return res.send(`${SECURITY_TXT}\n`);
 });
 
-app.get("/metrics", (req, res) => {
+app.get("/metrics", async (req, res) => {
   if (!isMetricsAuthorized(req)) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const payroll = await getTeacherEarningsReconciliation();
+    recordPayrollReconciliation(payroll);
+  } catch (error) {
+    logger.error({ err: error }, "metrics payroll reconciliation failed");
+    recordPayrollReconciliation({ available: false });
   }
 
   res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
   return res.send(toPrometheusMetrics());
 });
 
-app.get("/api/observability/summary", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/observability/summary", requireAuth, requireAdmin, async (req, res) => {
   const parsedWindowMs = Number(req.query.windowMs);
   const windowMs =
     Number.isFinite(parsedWindowMs) && parsedWindowMs > 0
       ? Math.floor(parsedWindowMs)
       : undefined;
 
-  const snapshot = getMetricsSnapshot({ windowMs });
-  return res.json(snapshot);
+  try {
+    const payroll = await getTeacherEarningsReconciliation();
+    recordPayrollReconciliation(payroll);
+    return res.json(getMetricsSnapshot({ windowMs }));
+  } catch (error) {
+    logger.error({ err: error }, "observability payroll reconciliation failed");
+    return res.status(503).json({
+      code: "OBSERVABILITY_UNAVAILABLE",
+      error: "Observability data is temporarily unavailable",
+    });
+  }
 });
 
 /* ========================================================================== */

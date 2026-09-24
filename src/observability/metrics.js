@@ -15,6 +15,17 @@ function createState() {
     byRouteStatus: new Map(),
     latencyBuckets: new Array(LATENCY_BUCKETS_MS.length + 1).fill(0),
     recentEvents: [],
+    payroll: {
+      available: false,
+      completedSessions: 0,
+      earningRows: 0,
+      missingEarnings: 0,
+      coveragePct: 0,
+      pendingSnapshotJobs: 0,
+      failedSnapshotJobs: 0,
+      processingSnapshotJobs: 0,
+      observedAt: null,
+    },
   };
 }
 
@@ -123,6 +134,20 @@ export function recordHttpRequestEnd({
   pruneRecent(observedAtMs);
 }
 
+export function recordPayrollReconciliation(snapshot = {}) {
+  state.payroll = {
+    available: snapshot.available === true,
+    completedSessions: Math.max(0, Number(snapshot.completedSessions) || 0),
+    earningRows: Math.max(0, Number(snapshot.earningRows) || 0),
+    missingEarnings: Math.max(0, Number(snapshot.missingEarnings) || 0),
+    coveragePct: Math.max(0, Number(snapshot.coveragePct) || 0),
+    pendingSnapshotJobs: Math.max(0, Number(snapshot.pendingSnapshotJobs) || 0),
+    failedSnapshotJobs: Math.max(0, Number(snapshot.failedSnapshotJobs) || 0),
+    processingSnapshotJobs: Math.max(0, Number(snapshot.processingSnapshotJobs) || 0),
+    observedAt: snapshot.observedAt || new Date().toISOString(),
+  };
+}
+
 export function getMetricsSnapshot({ windowMs = 5 * 60 * 1000 } = {}) {
   const nowMs = Date.now();
   pruneRecent(nowMs);
@@ -193,6 +218,7 @@ export function getMetricsSnapshot({ windowMs = 5 * 60 * 1000 } = {}) {
       p95Ms: Number(quantile(windowDurations, 0.95).toFixed(2)),
       p99Ms: Number(quantile(windowDurations, 0.99).toFixed(2)),
     },
+    payroll: { ...state.payroll },
     byStatus: Object.fromEntries(state.byStatus.entries()),
     topRoutes,
   };
@@ -246,6 +272,28 @@ export function toPrometheusMetrics() {
   lines.push("# TYPE speexify_process_heap_used_bytes gauge");
   lines.push(`speexify_process_heap_used_bytes ${mem.heapUsed}`);
 
+  lines.push("# HELP speexify_payroll_completed_sessions Completed sessions assigned to teachers");
+  lines.push("# TYPE speexify_payroll_completed_sessions gauge");
+  lines.push(`speexify_payroll_completed_sessions ${state.payroll.completedSessions}`);
+  lines.push("# HELP speexify_payroll_earning_rows Teacher earning rows for completed sessions");
+  lines.push("# TYPE speexify_payroll_earning_rows gauge");
+  lines.push(`speexify_payroll_earning_rows ${state.payroll.earningRows}`);
+  lines.push("# HELP speexify_payroll_missing_earnings Completed sessions without earning rows");
+  lines.push("# TYPE speexify_payroll_missing_earnings gauge");
+  lines.push(`speexify_payroll_missing_earnings ${state.payroll.missingEarnings}`);
+  lines.push("# HELP speexify_payroll_coverage_pct Completed sessions with earning rows");
+  lines.push("# TYPE speexify_payroll_coverage_pct gauge");
+  lines.push(`speexify_payroll_coverage_pct ${state.payroll.coveragePct}`);
+  lines.push("# HELP speexify_payroll_snapshot_jobs_pending Pending earning snapshot jobs");
+  lines.push("# TYPE speexify_payroll_snapshot_jobs_pending gauge");
+  lines.push(`speexify_payroll_snapshot_jobs_pending ${state.payroll.pendingSnapshotJobs}`);
+  lines.push("# HELP speexify_payroll_snapshot_jobs_failed Failed earning snapshot jobs");
+  lines.push("# TYPE speexify_payroll_snapshot_jobs_failed gauge");
+  lines.push(`speexify_payroll_snapshot_jobs_failed ${state.payroll.failedSnapshotJobs}`);
+  lines.push("# HELP speexify_payroll_snapshot_jobs_processing Processing earning snapshot jobs");
+  lines.push("# TYPE speexify_payroll_snapshot_jobs_processing gauge");
+  lines.push(`speexify_payroll_snapshot_jobs_processing ${state.payroll.processingSnapshotJobs}`);
+
   return `${lines.join("\n")}\n`;
 }
 
@@ -263,4 +311,5 @@ export function resetMetricsForTests() {
   state.byRouteStatus = fresh.byRouteStatus;
   state.latencyBuckets = fresh.latencyBuckets;
   state.recentEvents = fresh.recentEvents;
+  state.payroll = fresh.payroll;
 }

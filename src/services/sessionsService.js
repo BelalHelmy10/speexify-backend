@@ -1,7 +1,32 @@
 // src/services/sessionsService.js
 import { prisma } from "../lib/prisma.js";
-import { snapshotTeacherEarningSafely } from "./teacherEarningsService.js";
+import {
+  completeSessionWithTeacherEarningOutbox,
+  processTeacherEarningSnapshotJob,
+} from "./teacherEarningsService.js";
 import { logger } from "../lib/logger.js";
+
+async function completeSessionAndQueueTeacherPayroll(sessionId) {
+  const completion = await completeSessionWithTeacherEarningOutbox(sessionId);
+  if (!completion.job) return completion;
+
+  try {
+    const payroll = await processTeacherEarningSnapshotJob(completion.job.id);
+    if (!payroll.ok) {
+      logger.warn(
+        { jobId: completion.job.id, sessionId },
+        "teacher payroll snapshot queued for retry"
+      );
+    }
+  } catch (error) {
+    logger.error(
+      { err: error, jobId: completion.job.id, sessionId },
+      "teacher payroll snapshot processor unavailable"
+    );
+  }
+
+  return completion;
+}
 
 // Re-used in many places to check time overlaps
 export function overlapsFilter(startAt, endAt) {
@@ -225,11 +250,7 @@ export async function finalizeExpiredSessionsForUser(userId) {
 
   for (const s of toFinalize) {
     try {
-      await prisma.session.update({
-        where: { id: s.id },
-        data: { status: "completed" },
-      });
-      await snapshotTeacherEarningSafely(s.id);
+      await completeSessionAndQueueTeacherPayroll(s.id);
 
       // Credits are consumed on booking, not on completion
       // No credit operations needed here
@@ -278,11 +299,7 @@ export async function finalizeExpiredSessionsForTeacher(teacherId) {
 
   for (const s of toFinalize) {
     try {
-      await prisma.session.update({
-        where: { id: s.id },
-        data: { status: "completed" },
-      });
-      await snapshotTeacherEarningSafely(s.id);
+      await completeSessionAndQueueTeacherPayroll(s.id);
 
       // Credits are consumed on booking, not on completion
       // No credit operations needed here

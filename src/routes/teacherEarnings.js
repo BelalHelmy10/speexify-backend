@@ -64,6 +64,9 @@ function shapeEntry(entry) {
     currencyCode: entry.currencyCode,
     rateType: entry.rateType,
     rateMinor: entry.rateMinor,
+    rateSnapshotAt: entry.rateSnapshotAt,
+    rateEffectiveFrom: entry.rateEffectiveFrom,
+    rateSnapshotSource: entry.rateSnapshotSource,
     status: entry.status,
     createdAt: entry.createdAt,
     paidAt: entry.paidAt,
@@ -172,7 +175,7 @@ router.get(
         ...(teacherId ? { teacherId: Number(teacherId) } : {}),
         ...(status ? { status: String(status) } : {}),
       };
-      const [entries, total, adjustments, pending, pendingAdjustments] = await Promise.all([
+      const [entries, total, adjustments, pending, pendingAdjustments, snapshotJobs] = await Promise.all([
         prisma.teacherEarning.findMany({
           where,
           orderBy: [{ status: "asc" }, { createdAt: "desc" }],
@@ -203,6 +206,26 @@ router.get(
           _sum: { amountMinor: true },
           _count: { _all: true },
         }),
+        prisma.teacherEarningSnapshotJob.findMany({
+          where: {
+            ...(teacherId ? { teacherId: Number(teacherId) } : {}),
+            status: { in: ["PENDING", "PROCESSING", "FAILED"] },
+          },
+          orderBy: [{ status: "asc" }, { createdAt: "asc" }],
+          take: 100,
+          select: {
+            id: true,
+            sessionId: true,
+            teacherId: true,
+            status: true,
+            attempts: true,
+            nextAttemptAt: true,
+            lastAttemptAt: true,
+            lastError: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
       ]);
 
       const shapedEntries = [
@@ -216,6 +239,7 @@ router.get(
         total: total + adjustments.length,
         pendingMinor: (pending._sum.amountMinor || 0) + (pendingAdjustments._sum.amountMinor || 0),
         pendingCount: pending._count._all + pendingAdjustments._count._all,
+        snapshotJobs,
       });
     } catch (err) {
       if (isTeacherEarningsUnavailable(err)) {

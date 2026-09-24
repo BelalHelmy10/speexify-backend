@@ -19,7 +19,10 @@ import {
 } from "../../services/idempotencyService.js";
 import { z } from "zod";
 import { validateRequest } from "../../middleware/validateRequest.js";
-import { snapshotTeacherEarningSafely } from "../../services/teacherEarningsService.js";
+import {
+    completeSessionWithTeacherEarningOutbox,
+    processTeacherEarningSnapshotJob,
+} from "../../services/teacherEarningsService.js";
 
 const router = Router();
 
@@ -71,12 +74,27 @@ router.post(
             return res.json({ ok: true, alreadyCompleted: true });
         }
 
-        // Update status to completed
-        await prisma.session.update({
-            where: { id },
-            data: { status: "completed" },
-        });
-        await snapshotTeacherEarningSafely(id);
+        // Completion and the durable payroll outbox row commit atomically.
+        const completion = await completeSessionWithTeacherEarningOutbox(id);
+        if (completion.job) {
+            try {
+                const payroll = await processTeacherEarningSnapshotJob(completion.job.id);
+                if (!payroll.ok) {
+                    logger.warn(
+                        { jobId: completion.job.id, sessionId: id },
+                        "teacher payroll snapshot queued for retry"
+                    );
+                }
+            } catch (payrollError) {
+                // The committed outbox row is the source of truth. An inline
+                // delivery failure must not turn a successful completion into
+                // a client-visible failure.
+                logger.error(
+                    { err: payrollError, jobId: completion.job.id, sessionId: id },
+                    "teacher payroll snapshot processor unavailable"
+                );
+            }
+        }
 
         // Credits are consumed on booking, not on completion
         // No credit operations needed here

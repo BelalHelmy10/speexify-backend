@@ -3,9 +3,16 @@ import { prisma } from "../src/lib/prisma.js";
 
 async function main() {
   const tableCheck = await prisma.$queryRaw`
-    SELECT to_regclass('public."TeacherEarning"')::text AS table_name
+    SELECT
+      to_regclass('public."TeacherEarning"')::text AS earning_table,
+      to_regclass('public."TeacherRateHistory"')::text AS rate_history_table,
+      to_regclass('public."TeacherEarningSnapshotJob"')::text AS snapshot_job_table
   `;
-  const migrationReady = Boolean(tableCheck[0]?.table_name);
+  const migrationReady = Boolean(
+    tableCheck[0]?.earning_table &&
+      tableCheck[0]?.rate_history_table &&
+      tableCheck[0]?.snapshot_job_table
+  );
 
   const teachers = await prisma.user.findMany({
     where: { role: "teacher" },
@@ -29,7 +36,7 @@ async function main() {
   console.log(`- teachers: ${teachers.length}`);
 
   if (!migrationReady) {
-    console.log("- status: NOT READY — apply the additive Prisma migration first");
+    console.log("- status: NOT READY — apply the teacher earnings, rate history, and snapshot outbox migrations first");
     for (const teacher of teachers) {
       const legacyConfigured = Boolean(teacher.rateHourlyCents || teacher.ratePerSessionCents);
       console.log(`- teacher ${teacher.id}: EGP rate ${legacyConfigured ? "requires explicit confirmation" : "not configured"}`);

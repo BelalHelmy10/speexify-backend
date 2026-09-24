@@ -349,6 +349,20 @@ Optional worker tuning env vars:
 - `REMINDER_LOCK_NAME` (default `session-reminders-scheduler`)
 - `REMINDER_LOCK_LEASE_MS` (default `max(interval*4, 600000)`)
 
+Teacher payroll snapshots use a transactional outbox and should run in a
+dedicated worker service as well:
+
+```bash
+npm run worker:teacher-earnings
+```
+
+Optional payroll worker tuning env vars:
+
+- `TEACHER_EARNINGS_INTERVAL_MS` (default `60000`)
+- `TEACHER_EARNINGS_BATCH_SIZE` (default `50`)
+- `TEACHER_EARNINGS_LOCK_NAME` (default `teacher-earning-snapshot-worker`)
+- `TEACHER_EARNINGS_LOCK_LEASE_MS` (default `max(interval*4, 600000)`)
+
 “How to…” – product usage
 This section explains how each role uses the product in simple terms.
 
