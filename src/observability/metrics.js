@@ -1,6 +1,23 @@
 const LATENCY_BUCKETS_MS = [50, 100, 250, 500, 1000, 2000, 5000, 10000];
 const MAX_RECENT_WINDOW_MS = 15 * 60 * 1000;
 
+const BUSINESS_METRIC_FIELDS = Object.freeze({
+  pricingCatalog: ["requests", "successes", "failures", "latencySumMs"],
+  cms: ["queries", "successes", "failures", "slowQueries", "latencySumMs"],
+  email: ["queued", "queueFailures", "sent", "failed", "bounced", "complained", "suppressed"],
+  paymentWebhooks: ["received", "processed", "failed", "unreconciled"],
+  auth: ["transientFailures", "unauthorized", "authenticated"],
+});
+
+function createBusinessState() {
+  return Object.fromEntries(
+    Object.entries(BUSINESS_METRIC_FIELDS).map(([group, fields]) => [
+      group,
+      Object.fromEntries(fields.map((field) => [field, 0])),
+    ])
+  );
+}
+
 function createState() {
   return {
     startedAtMs: Date.now(),
@@ -15,6 +32,8 @@ function createState() {
     byRouteStatus: new Map(),
     latencyBuckets: new Array(LATENCY_BUCKETS_MS.length + 1).fill(0),
     recentEvents: [],
+    recentBusinessEvents: [],
+    business: createBusinessState(),
     payroll: {
       available: false,
       completedSessions: 0,
@@ -63,6 +82,12 @@ function pruneRecent(nowMs) {
   const cutoff = nowMs - MAX_RECENT_WINDOW_MS;
   while (state.recentEvents.length > 0 && state.recentEvents[0].ts < cutoff) {
     state.recentEvents.shift();
+  }
+  while (
+    state.recentBusinessEvents.length > 0 &&
+    state.recentBusinessEvents[0].ts < cutoff
+  ) {
+    state.recentBusinessEvents.shift();
   }
 }
 
@@ -131,6 +156,38 @@ export function recordHttpRequestEnd({
     statusCode: normalizedStatus,
     durationMs: normalizedDuration,
   });
+  if (
+    normalizedRoute === "/api/auth/me" &&
+    (normalizedStatus >= 500 || normalizedStatus === 499 || normalizedStatus === 0)
+  ) {
+    recordBusinessMetric("auth", "transientFailures");
+  }
+  pruneRecent(observedAtMs);
+}
+
+export function recordBusinessMetric(
+  group,
+  field,
+  { count = 1, durationMs = null, observedAtMs = Date.now() } = {}
+) {
+  const metricGroup = state.business[group];
+  if (!metricGroup || !Object.prototype.hasOwnProperty.call(metricGroup, field)) {
+    return;
+  }
+
+  const normalizedCount = Math.max(0, Number(count) || 0);
+  metricGroup[field] += normalizedCount;
+  if (durationMs != null && Object.prototype.hasOwnProperty.call(metricGroup, "latencySumMs")) {
+    metricGroup.latencySumMs += Math.max(0, Number(durationMs) || 0);
+  }
+
+  state.recentBusinessEvents.push({
+    ts: observedAtMs,
+    group,
+    field,
+    count: normalizedCount,
+    durationMs: durationMs == null ? null : Math.max(0, Number(durationMs) || 0),
+  });
   pruneRecent(observedAtMs);
 }
 
@@ -164,6 +221,20 @@ export function getMetricsSnapshot({ windowMs = 5 * 60 * 1000 } = {}) {
   const windowDurations = windowEvents
     .map((event) => event.durationMs)
     .sort((a, b) => a - b);
+
+  const windowBusiness = createBusinessState();
+  for (const event of state.recentBusinessEvents) {
+    if (event.ts < cutoff || !windowBusiness[event.group]) continue;
+    if (Object.prototype.hasOwnProperty.call(windowBusiness[event.group], event.field)) {
+      windowBusiness[event.group][event.field] += event.count;
+    }
+    if (
+      event.durationMs != null &&
+      Object.prototype.hasOwnProperty.call(windowBusiness[event.group], "latencySumMs")
+    ) {
+      windowBusiness[event.group].latencySumMs += event.durationMs;
+    }
+  }
 
   const windowErrorRatePct =
     windowRequests > 0 ? (windowFailures / windowRequests) * 100 : 0;
@@ -219,6 +290,12 @@ export function getMetricsSnapshot({ windowMs = 5 * 60 * 1000 } = {}) {
       p99Ms: Number(quantile(windowDurations, 0.99).toFixed(2)),
     },
     payroll: { ...state.payroll },
+    business: {
+      totals: Object.fromEntries(
+        Object.entries(state.business).map(([group, values]) => [group, { ...values }])
+      ),
+      window: windowBusiness,
+    },
     byStatus: Object.fromEntries(state.byStatus.entries()),
     topRoutes,
   };
@@ -294,6 +371,22 @@ export function toPrometheusMetrics() {
   lines.push("# TYPE speexify_payroll_snapshot_jobs_processing gauge");
   lines.push(`speexify_payroll_snapshot_jobs_processing ${state.payroll.processingSnapshotJobs}`);
 
+  lines.push("# HELP speexify_business_events_total Business events by domain and event");
+  lines.push("# TYPE speexify_business_events_total counter");
+  for (const [group, values] of Object.entries(state.business)) {
+    for (const [field, value] of Object.entries(values)) {
+      if (field === "latencySumMs") continue;
+      lines.push(
+        `speexify_business_events_total{domain="${escapePromLabel(group)}",event="${escapePromLabel(field)}"} ${value}`
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(values, "latencySumMs")) {
+      lines.push(
+        `speexify_business_latency_ms_sum{domain="${escapePromLabel(group)}"} ${values.latencySumMs.toFixed(2)}`
+      );
+    }
+  }
+
   return `${lines.join("\n")}\n`;
 }
 
@@ -311,5 +404,7 @@ export function resetMetricsForTests() {
   state.byRouteStatus = fresh.byRouteStatus;
   state.latencyBuckets = fresh.latencyBuckets;
   state.recentEvents = fresh.recentEvents;
+  state.recentBusinessEvents = fresh.recentBusinessEvents;
+  state.business = fresh.business;
   state.payroll = fresh.payroll;
 }

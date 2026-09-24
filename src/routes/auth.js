@@ -10,7 +10,8 @@ import {
   sessionCookieOptions,
 } from "../config/session.js";
 import { GOOGLE_CLIENT_ID } from "../config/env.js";
-import { sendEmail } from "../services/emailService.js";
+import { enqueueEmail } from "../services/emailService.js";
+import { passwordResetEmail, verificationEmail } from "../services/emailTemplates.js";
 import { loginLimiter, authLimiter, emailCodeLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
 import {
@@ -34,6 +35,7 @@ const GoogleLoginBodySchema = z.object({
 });
 const EmailOnlyBodySchema = z.object({
   email: z.string().trim().toLowerCase().email(),
+  locale: z.enum(["en", "ar"]).optional().default("en"),
 });
 const PasswordResetCompleteBodySchema = z.object({
   email: z.string().trim().toLowerCase().email(),
@@ -535,17 +537,19 @@ router.post("/password/reset/start", emailCodeLimiter, validateRequest({ body: E
       create: data,
     });
 
-    // If sendEmail throws, we log but still respond ok:true (no user enumeration)
+    // If queueing fails, keep the anti-enumeration response stable.
     try {
-      await sendEmail(
-        email,
-        "Your Speexify password reset code",
-        `<p>Use this code to reset your password:</p>
-         <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-         <p>This code expires in 10 minutes.</p>`
-      );
+      const emailContent = passwordResetEmail({
+        code,
+        locale: user.language || req.body.locale,
+      });
+      await enqueueEmail(email, emailContent.subject, emailContent.html, {
+        locale: user.language || req.body.locale,
+        userId: user.id,
+        eventType: "password_reset",
+      });
     } catch (err) {
-      logger.error({ err, email }, "password/reset/start sendEmail failed");
+      logger.error({ err, email }, "password/reset/start enqueue failed");
     }
 
     return res.json({ ok: true });
@@ -674,17 +678,16 @@ router.post("/register/start", emailCodeLimiter, validateRequest({ body: EmailOn
       create: { email, codeHash, expiresAt, attempts: 0 },
     });
 
-    // 🔹 IMPORTANT: if sendEmail fails, tell the frontend explicitly
+    // Registration can safely report a queue failure because the address is
+    // not yet an authenticated account.
     try {
-      await sendEmail(
-        email,
-        "Your Speexify verification code",
-        `<p>Your verification code is:</p>
-         <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-         <p>This code expires in 10 minutes.</p>`
-      );
+      const emailContent = verificationEmail({ code, locale: req.body.locale });
+      await enqueueEmail(email, emailContent.subject, emailContent.html, {
+        locale: req.body.locale,
+        eventType: "email_verification",
+      });
     } catch (err) {
-      logger.error({ err, email }, "register/start sendEmail failed");
+      logger.error({ err, email }, "register/start enqueue failed");
       return res.status(500).json({
         error:
           "Failed to send verification email. Please check your email and try again.",

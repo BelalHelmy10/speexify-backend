@@ -22,11 +22,7 @@ import {
     sendFeedbackNotifications,
 } from "../../services/notificationsService.js";
 import { logger } from "../../lib/logger.js";
-
-// Simple audit stub to avoid ReferenceError and keep logs
-async function audit(userId, action, entity, entityId, meta = {}) {
-    logger.info({ userId, action, entity, entityId, meta }, "audit event");
-}
+import { audit } from "../admin/shared.js";
 
 export {
     Router,

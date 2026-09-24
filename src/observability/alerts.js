@@ -30,11 +30,10 @@ function shouldSendAlert(key) {
 function buildAlertCandidates(snapshot) {
   const alerts = [];
 
-  if (snapshot.window.requests < OBS_ALERT_MIN_REQUESTS) {
-    return alerts;
-  }
-
-  if (snapshot.window.errorRatePct >= OBS_ALERT_ERROR_RATE_PCT) {
+  if (
+    snapshot.window.requests >= OBS_ALERT_MIN_REQUESTS &&
+    snapshot.window.errorRatePct >= OBS_ALERT_ERROR_RATE_PCT
+  ) {
     alerts.push({
       key: "error-rate",
       severity: "critical",
@@ -45,7 +44,10 @@ function buildAlertCandidates(snapshot) {
     });
   }
 
-  if (snapshot.window.p95Ms >= OBS_ALERT_P95_MS) {
+  if (
+    snapshot.window.requests >= OBS_ALERT_MIN_REQUESTS &&
+    snapshot.window.p95Ms >= OBS_ALERT_P95_MS
+  ) {
     alerts.push({
       key: "latency-p95",
       severity: "warning",
@@ -53,6 +55,114 @@ function buildAlertCandidates(snapshot) {
       threshold: `${OBS_ALERT_P95_MS}ms`,
       actual: `${snapshot.window.p95Ms}ms`,
       value: snapshot.window.p95Ms,
+    });
+  }
+
+  const business = snapshot.business?.window || {};
+  const pricing = business.pricingCatalog || {};
+  const cms = business.cms || {};
+  const email = business.email || {};
+  const payments = business.paymentWebhooks || {};
+  const auth = business.auth || {};
+
+  if ((snapshot.payroll?.missingEarnings || 0) > 0) {
+    alerts.push({
+      key: "payroll-missing-earnings",
+      severity: "critical",
+      title: "Completed sessions are missing teacher earnings",
+      threshold: "0 missing earnings",
+      actual: String(snapshot.payroll.missingEarnings),
+      value: snapshot.payroll.missingEarnings,
+      context: { payroll: snapshot.payroll },
+    });
+  }
+
+  if ((snapshot.payroll?.failedSnapshotJobs || 0) > 0) {
+    alerts.push({
+      key: "payroll-failed-snapshot-jobs",
+      severity: "critical",
+      title: "Teacher earning snapshot jobs are failing",
+      threshold: "0 failed jobs",
+      actual: String(snapshot.payroll.failedSnapshotJobs),
+      value: snapshot.payroll.failedSnapshotJobs,
+      context: { payroll: snapshot.payroll },
+    });
+  }
+
+  if (pricing.requests >= 5 && pricing.failures / pricing.requests >= 0.2) {
+    alerts.push({
+      key: "pricing-catalog-availability",
+      severity: "critical",
+      title: "Pricing catalog availability is degraded",
+      threshold: "<20% failed catalog requests",
+      actual: `${pricing.failures}/${pricing.requests} failed`,
+      value: pricing.failures / pricing.requests,
+    });
+  }
+
+  if (cms.queries >= 5 && cms.failures / cms.queries >= 0.2) {
+    alerts.push({
+      key: "cms-query-failures",
+      severity: "warning",
+      title: "CMS query failures are elevated",
+      threshold: "<20% failed CMS queries",
+      actual: `${cms.failures}/${cms.queries} failed`,
+      value: cms.failures / cms.queries,
+    });
+  }
+
+  if (cms.slowQueries >= 5) {
+    alerts.push({
+      key: "cms-query-latency",
+      severity: "warning",
+      title: "CMS query latency is elevated",
+      threshold: "<5 slow queries",
+      actual: String(cms.slowQueries),
+      value: cms.slowQueries,
+    });
+  }
+
+  if ((email.queueFailures || 0) > 0) {
+    alerts.push({
+      key: "email-queue-failures",
+      severity: "critical",
+      title: "Transactional email queue handoff failed",
+      threshold: "0 queue failures",
+      actual: String(email.queueFailures),
+      value: email.queueFailures,
+    });
+  }
+
+  if ((email.bounced || 0) > 0 || (email.complained || 0) > 0) {
+    alerts.push({
+      key: "email-provider-feedback",
+      severity: "warning",
+      title: "Email provider reported bounces or complaints",
+      threshold: "0 bounces or complaints",
+      actual: `${email.bounced || 0} bounced, ${email.complained || 0} complained`,
+      value: (email.bounced || 0) + (email.complained || 0),
+    });
+  }
+
+  if ((payments.unreconciled || 0) > 0 || (payments.failed || 0) > 0) {
+    alerts.push({
+      key: "payment-webhook-reconciliation",
+      severity: "critical",
+      title: "Payment webhook reconciliation needs attention",
+      threshold: "0 failed or unreconciled webhooks",
+      actual: `${payments.failed || 0} failed, ${payments.unreconciled || 0} unreconciled`,
+      value: (payments.failed || 0) + (payments.unreconciled || 0),
+    });
+  }
+
+  if ((auth.transientFailures || 0) >= 3) {
+    alerts.push({
+      key: "auth-transient-failures",
+      severity: "warning",
+      title: "Authentication service transient failures increased",
+      threshold: "<3 transient failures",
+      actual: String(auth.transientFailures),
+      value: auth.transientFailures,
     });
   }
 

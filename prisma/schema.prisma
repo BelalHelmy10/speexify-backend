@@ -104,6 +104,8 @@ model User {
   teacherEarningAdjustments        TeacherEarningAdjustment[]  @relation("TeacherEarningAdjustmentTeacher")
   createdTeacherEarningAdjustments TeacherEarningAdjustment[]  @relation("TeacherEarningAdjustmentCreator")
   createdTeacherPayouts            TeacherPayout[]             @relation("TeacherPayoutCreator")
+  teacherPayoutReversals            TeacherPayoutReversal[]     @relation("TeacherPayoutReversalTeacher")
+  createdTeacherPayoutReversals     TeacherPayoutReversal[]     @relation("TeacherPayoutReversalCreator")
   deletedAt                        DateTime?
 
   @@index([role])
@@ -196,6 +198,10 @@ model NotificationDelivery {
   lastAttemptAt  DateTime?
   sentAt         DateTime?
   lastError      String?
+  providerMessageId String?
+  providerEventId   String?
+  providerEventType String?
+  providerEventAt   DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -205,6 +211,24 @@ model NotificationDelivery {
   @@index([status, nextAttemptAt])
   @@index([userId, createdAt])
   @@index([notificationId])
+  @@index([providerMessageId])
+  @@index([providerEventId])
+}
+
+// Provider-managed suppression list. Bounce and complaint webhooks add an
+// address here before future transactional messages can be queued.
+model EmailSuppression {
+  id              Int      @id @default(autoincrement())
+  email           String   @unique
+  reason          String
+  source          String   @default("resend")
+  providerEventId String?
+  lastEventAt     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([reason, lastEventAt])
+  @@index([providerEventId])
 }
 
 // Opaque, database-backed calendar subscriptions. The raw token is only
@@ -463,6 +487,7 @@ model TeacherEarning {
   payout  TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([teacherId, status, createdAt])
+  @@index([teacherId, createdAt], map: "TeacherEarning_teacherId_createdAt_idx")
   @@index([payoutId])
 }
 
@@ -523,6 +548,9 @@ model TeacherPayout {
   paymentMethod    String
   paymentReference String?
   note             String?
+  // PAID is the immutable settlement event; VOIDED reopens its entries,
+  // while REVERSED keeps the settlement and adds a signed debit adjustment.
+  status           String   @default("PAID")
   paidAt           DateTime @default(now())
   createdAt        DateTime @default(now())
 
@@ -530,8 +558,31 @@ model TeacherPayout {
   createdBy   User                       @relation("TeacherPayoutCreator", fields: [createdById], references: [id], onDelete: Restrict)
   earnings    TeacherEarning[]
   adjustments TeacherEarningAdjustment[]
+  reversals   TeacherPayoutReversal[]
 
   @@index([teacherId, paidAt])
+  @@index([teacherId, status, paidAt])
+}
+
+// Explicit, append-only payout correction record. A payout can be corrected
+// once; the linked action is auditable and cannot be silently overwritten.
+model TeacherPayoutReversal {
+  id           Int      @id @default(autoincrement())
+  payoutId     Int      @unique
+  teacherId    Int
+  createdById  Int
+  action       String
+  amountMinor  Int
+  currencyCode String   @default("EGP")
+  reason       String
+  createdAt    DateTime @default(now())
+
+  payout    TeacherPayout @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  teacher   User          @relation("TeacherPayoutReversalTeacher", fields: [teacherId], references: [id], onDelete: Restrict)
+  createdBy User          @relation("TeacherPayoutReversalCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([teacherId, createdAt])
+  @@index([action, createdAt])
 }
 
 // Signed admin adjustments are append-only ledger entries. Positive values
@@ -556,6 +607,7 @@ model TeacherEarningAdjustment {
   payout    TeacherPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([teacherId, status, createdAt])
+  @@index([teacherId, createdAt], map: "TeacherEarningAdjustment_teacherId_createdAt_idx")
   @@index([payoutId])
 }
 

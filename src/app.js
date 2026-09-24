@@ -38,7 +38,8 @@ import {
   finalizeExpiredSessionsForTeacher,
 } from "./services/sessionsService.js";
 import { getTeacherEarningsReconciliation } from "./services/teacherEarningsService.js";
-import { sendEmail } from "./services/emailService.js";
+import { getPaymobWebhookReconciliationSummary } from "./services/paymentReconciliationService.js";
+import { enqueueEmail } from "./services/emailService.js";
 import { requireAuth, requireAdmin } from "./middleware/auth-helpers.js";
 import { csrfMiddleware, csrfErrorHandler } from "./middleware/csrf.js";
 import { validateRequest, formatZodError } from "./middleware/validateRequest.js";
@@ -52,6 +53,7 @@ import calendarRoutes from "./routes/calendar.js";
 import teacherEarningsRoutes from "./routes/teacherEarnings.js";
 import discountRoutes from "./routes/discounts.js";
 import privacyRoutes from "./routes/privacy.js";
+import resendWebhooksRoutes from "./routes/resendWebhooks.js";
 import {
   buildRequestContext,
   runWithRequestContext,
@@ -136,7 +138,14 @@ const SECURITY_TXT = [
 // Placement speaking samples are sent as short, size-limited data URLs.
 // Keep the parser large enough for a normal 60–90 second compressed recording;
 // individual routes still enforce their own payload limits.
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({
+  limit: "5mb",
+  verify: (req, _res, buffer) => {
+    if (req.path === "/api/webhooks/resend") {
+      req.rawBody = Buffer.from(buffer);
+    }
+  },
+}));
 app.use((req, res, next) => {
   if (!["POST", "PUT", "PATCH"].includes(req.method)) return next();
   if (req.body == null) return next();
@@ -224,6 +233,10 @@ app.use(
     credentials: true, // allow cookies / auth headers
   })
 );
+
+// Provider webhooks use their own signature verification and intentionally
+// bypass browser CSRF/session middleware.
+app.use("/api/webhooks", resendWebhooksRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.set({
@@ -481,7 +494,14 @@ app.get("/api/observability/summary", requireAuth, requireAdmin, async (req, res
   try {
     const payroll = await getTeacherEarningsReconciliation();
     recordPayrollReconciliation(payroll);
-    return res.json(getMetricsSnapshot({ windowMs }));
+    const snapshot = getMetricsSnapshot({ windowMs });
+    try {
+      snapshot.paymentReconciliation = await getPaymobWebhookReconciliationSummary();
+    } catch (paymentError) {
+      logger.warn({ err: paymentError }, "payment webhook reconciliation summary unavailable");
+      snapshot.paymentReconciliation = { unavailable: true, statuses: {}, recentFailures: [] };
+    }
+    return res.json(snapshot);
   } catch (error) {
     logger.error({ err: error }, "observability payroll reconciliation failed");
     return res.status(503).json({
@@ -517,7 +537,9 @@ app.post("/api/contact", contactIpLimiter, validateRequest({ body: ContactBodySc
   `;
 
   try {
-    await sendEmail("hello@speexify.com", subject || "[Contact] New message", html);
+    await enqueueEmail("hello@speexify.com", subject || "[Contact] New message", html, {
+      eventType: "contact_form",
+    });
     res.json({ ok: true });
   } catch (e) {
     console.error(e);

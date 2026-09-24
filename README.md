@@ -251,6 +251,10 @@ PAYMOB_API_KEY=
 PAYMOB_INTEGRATION_ID=
 PAYMOB_IFRAME_ID=
 
+# Resend transactional email
+RESEND_API_KEY=
+RESEND_WEBHOOK_SECRET=
+
 # Logging
 LOG_LEVEL=debug
 ```
@@ -292,7 +296,11 @@ SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling bac
 
 SESSION_FORCE_MEMORY – Local/unit-test-only switch for the in-memory session store. The default E2E suite deliberately uses Redis; use `npm run test:e2e:memory` only for an explicit fallback-mode test.
 
-Notification delivery – Email sends from booking, cancellation, feedback, and reminder flows are persisted in `NotificationDelivery`. Run `npm run worker:notification-delivery` in a durable worker process. Admins can inspect `/api/admin/notification-deliveries` and queue failed rows for retry.
+Notification delivery – Booking, cancellation, feedback, and reminder flows enqueue email bodies in `NotificationDelivery` without calling the email provider in the request path. Run `npm run worker:notification-delivery` in a durable worker process. Admins can inspect `/api/admin/notification-deliveries` and queue failed rows for retry.
+
+Resend delivery feedback – Configure the Resend webhook URL as `https://<api-host>/api/webhooks/resend` and store its signing secret in `RESEND_WEBHOOK_SECRET`. Signed delivery, bounce, complaint, and failure events update the delivery ledger; bounced and complained addresses are stored in `EmailSuppression` and are excluded from future queues.
+
+Operational monitoring – `/metrics` exposes Prometheus-compatible HTTP, payroll, business-event, email, pricing, CMS, authentication, and payment-webhook metrics when authorized with `OBS_METRICS_TOKEN`. Admins can inspect `/api/observability/summary` for the JSON snapshot and payment reconciliation failures. Configure `OBS_ALERT_WEBHOOK_URL` and keep `OBS_ALERTS_ENABLED=true` in production for alert delivery.
 
 RATE_LIMIT_ALLOW_MEMORY_FALLBACK – Optional development override. Keep unset in production so rate limiting fails closed when Redis is unavailable.
 

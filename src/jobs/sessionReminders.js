@@ -4,45 +4,18 @@ import { logger } from "../lib/logger.js";
 import os from "os";
 import crypto from "crypto";
 import { createNotification } from "../services/notificationsService.js";
-import { sendEmail } from "../services/emailService.js";
+import { enqueueEmail } from "../services/emailService.js";
+import {
+  formatEmailDate,
+  formatEmailTimeUntil,
+  normalizeEmailLocale,
+  reminderEmail,
+} from "../services/emailTemplates.js";
 import {
   acquireDistributedLock,
   renewDistributedLock,
   releaseDistributedLock,
 } from "../services/distributedLockService.js";
-
-function formatInTz(date, timeZone) {
-  try {
-    return new Intl.DateTimeFormat("en-US", {
-      timeZone: timeZone || "UTC",
-      weekday: "short",
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(date));
-  } catch {
-    return new Date(date).toISOString();
-  }
-}
-
-function getTimeUntilSession(startAt) {
-  const now = new Date();
-  const start = new Date(startAt);
-  const diffMs = start.getTime() - now.getTime();
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-
-  if (diffHours > 24) {
-    const days = Math.floor(diffHours / 24);
-    return `${days} day${days > 1 ? "s" : ""}`;
-  }
-  if (diffHours > 0) {
-    return `${diffHours} hour${diffHours > 1 ? "s" : ""}`;
-  }
-  return `${diffMins} minute${diffMins > 1 ? "s" : ""}`;
-}
 
 async function getLearnerIdsForSession(session) {
   // Prefer participants (works for GROUP and future-proof for 1:1)
@@ -64,13 +37,13 @@ async function sendReminderForSession({ session, kind }) {
   // Fetch learners for email + timezone formatting
   const learners = await prisma.user.findMany({
     where: { id: { in: learnerIds } },
-    select: { id: true, email: true, name: true, timezone: true },
+    select: { id: true, email: true, name: true, timezone: true, language: true },
   });
 
   const teacher = teacherId
     ? await prisma.user.findUnique({
         where: { id: teacherId },
-        select: { id: true, name: true, email: true, timezone: true },
+        select: { id: true, name: true, email: true, timezone: true, language: true },
       })
     : null;
 
@@ -87,15 +60,8 @@ async function sendReminderForSession({ session, kind }) {
     "1h": "reminder_1h",
   };
 
-  const emojiMap = {
-    "24h": "📅",
-    "6h": "⏰",
-    "1h": "🚨",
-  };
-
   const title = titleMap[kind] || "Session reminder";
   const notifType = notifTypeMap[kind] || "reminder";
-  const emoji = emojiMap[kind] || "🔔";
   const sessionTitle = session.title || "Upcoming session";
 
   // ─────────────────────────────────────────────────────────────────
@@ -144,62 +110,28 @@ async function sendReminderForSession({ session, kind }) {
 
   await Promise.all(
     learners.map(async (learner) => {
-      const when = formatInTz(session.startAt, learner.timezone);
+      const locale = normalizeEmailLocale(learner.language);
+      const when = formatEmailDate(session.startAt, learner.timezone, locale);
       const teacherName = teacher?.name ? teacher.name : "your teacher";
-      const timeUntil = getTimeUntilSession(session.startAt);
-
-      const joinButton = session.joinUrl
-        ? `
-          <p style="margin: 24px 0;">
-            <a href="${session.joinUrl}" 
-               style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-              Join Classroom Now
-            </a>
-          </p>
-        `
-        : "";
-
-      const urgencyStyle =
-        kind === "1h"
-          ? "background:#fef3c7;border-left:4px solid #f59e0b;"
-          : "background:#f8f9fa;border-left:4px solid #0066ff;";
-
-      const html = `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;color:#1a1a1a;">
-          <h2 style="margin-bottom:8px;">${emoji} ${title}</h2>
-          
-          <p>Hi${learner.name ? ` ${learner.name}` : ""},</p>
-          
-          <p>Your session is coming up in <strong>${timeUntil}</strong>!</p>
-          
-          <div style="${urgencyStyle}border-radius:12px;padding:20px;margin:20px 0;">
-            <p style="margin:0 0 10px;font-size:16px;"><strong>📚 ${sessionTitle}</strong></p>
-            <p style="margin:0 0 8px;color:#4a5568;"><strong>👨‍🏫 Teacher:</strong> ${teacherName}</p>
-            <p style="margin:0;color:#4a5568;"><strong>📅 When:</strong> ${when}</p>
-          </div>
-          
-          ${joinButton}
-          
-          <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e2e8f0;">
-            <p style="color:#64748b;font-size:13px;margin:0;">
-              ${
-                kind === "1h"
-                  ? "⚡ Your session starts very soon. Please be ready!"
-                  : "💡 Make sure to prepare any questions or materials before the session."
-              }
-            </p>
-          </div>
-          
-          <p style="margin-top:30px;color:#64748b;">— The Speexify Team</p>
-        </div>
-      `;
+      const timeUntil = formatEmailTimeUntil(session.startAt, locale);
+      const content = reminderEmail({
+        role: "learner",
+        kind,
+        name: learner.name,
+        sessionTitle,
+        teacherName,
+        when,
+        timeUntil,
+        joinUrl: session.joinUrl,
+        locale,
+      });
 
       try {
-        await sendEmail(learner.email, `Speexify — ${title}`, html, {
-          track: true,
+        await enqueueEmail(learner.email, content.subject, content.html, {
           userId: learner.id,
           eventType: `reminder_${kind}`,
           sessionId: session.id,
+          locale,
         });
       } catch (e) {
         logger.error(
@@ -215,55 +147,31 @@ async function sendReminderForSession({ session, kind }) {
   // ─────────────────────────────────────────────────────────────────
 
   if (teacher) {
-    const when = formatInTz(session.startAt, teacher.timezone);
-    const timeUntil = getTimeUntilSession(session.startAt);
+    const locale = normalizeEmailLocale(teacher.language);
+    const when = formatEmailDate(session.startAt, teacher.timezone, locale);
+    const timeUntil = formatEmailTimeUntil(session.startAt, locale);
     const learnerNames = learners.map((l) => l.name || l.email).join(", ");
     const learnerCount = learners.length;
 
-    const joinButton = session.joinUrl
-      ? `
-        <p style="margin: 24px 0;">
-          <a href="${session.joinUrl}" 
-             style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-            Start Session
-          </a>
-        </p>
-      `
-      : "";
-
-    const urgencyStyle =
-      kind === "1h"
-        ? "background:#fef3c7;border-left:4px solid #f59e0b;"
-        : "background:#f8f9fa;border-left:4px solid #0066ff;";
-
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;color:#1a1a1a;">
-        <h2 style="margin-bottom:8px;">${emoji} ${title}</h2>
-        
-        <p>Hi${teacher.name ? ` ${teacher.name}` : ""},</p>
-        
-        <p>Your session is coming up in <strong>${timeUntil}</strong>!</p>
-        
-        <div style="${urgencyStyle}border-radius:12px;padding:20px;margin:20px 0;">
-          <p style="margin:0 0 10px;font-size:16px;"><strong>📚 ${sessionTitle}</strong></p>
-          <p style="margin:0 0 8px;color:#4a5568;"><strong>👨‍🎓 Learner${
-            learnerCount > 1 ? "s" : ""
-          }:</strong> ${learnerNames}</p>
-          <p style="margin:0;color:#4a5568;"><strong>📅 When:</strong> ${when}</p>
-        </div>
-        
-        ${joinButton}
-        
-        <p style="margin-top:30px;color:#64748b;">— The Speexify Team</p>
-      </div>
-    `;
+    const content = reminderEmail({
+      role: "teacher",
+      kind,
+      name: teacher.name,
+      sessionTitle,
+      learnerNames,
+      learnerCount,
+      when,
+      timeUntil,
+      joinUrl: session.joinUrl,
+      locale,
+    });
 
     try {
-      await sendEmail(teacher.email, `Speexify — ${title}`, html, {
-        track: true,
+      await enqueueEmail(teacher.email, content.subject, content.html, {
         userId: teacher.id,
         eventType: `reminder_${kind}`,
         sessionId: session.id,
+        locale,
       });
     } catch (e) {
       logger.error(

@@ -302,3 +302,31 @@ export async function markWebhookEventFailed(
     );
   }
 }
+
+export async function getPaymobWebhookReconciliationSummary() {
+  await ensureWebhookEventsTable();
+
+  const [statusRows, recentFailures] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT event_status, COUNT(*)::int AS count
+      FROM payment_webhook_events
+      GROUP BY event_status
+      ORDER BY event_status
+    `,
+    prisma.$queryRaw`
+      SELECT id, provider, event_key, order_id, transaction_id, last_error,
+             attempt_count, received_at, updated_at
+      FROM payment_webhook_events
+      WHERE event_status = 'failed'
+      ORDER BY updated_at DESC
+      LIMIT 25
+    `,
+  ]);
+
+  return {
+    statuses: Object.fromEntries(
+      statusRows.map((row) => [String(row.event_status), Number(row.count || 0)])
+    ),
+    recentFailures,
+  };
+}

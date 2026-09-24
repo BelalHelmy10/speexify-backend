@@ -11,12 +11,20 @@ import {
   TEACHER_EARNINGS_CURRENCY,
   TEACHER_EARNING_SNAPSHOT_JOB_STATUS,
   validatePayoutEntries,
+  getTeacherEarningsSummary,
+  getLocalMonthKey,
 } from "../../src/services/teacherEarningsService.js";
 
 test("teacher earnings use EGP piastres and hourly duration", () => {
   const result = calculateTeacherEarning({ rateHourlyEgpPiastres: 12000, minutes: 45 });
   assert.equal(TEACHER_EARNINGS_CURRENCY, "EGP");
   assert.deepEqual(result, { amountMinor: 9000, rateType: "hourly", rateMinor: 12000 });
+});
+
+test("earnings trend buckets use the teacher timezone at UTC month boundaries", () => {
+  const instant = new Date("2026-08-31T22:30:00.000Z");
+  assert.equal(getLocalMonthKey(instant, "UTC"), "2026-08");
+  assert.equal(getLocalMonthKey(instant, "Africa/Cairo"), "2026-09");
 });
 
 test("per-session rates stay fixed regardless of duration", () => {
@@ -160,6 +168,31 @@ test("normal synchronization does not create missing historical earnings", async
   await syncTeacherEarnings(4, db, { allowHistoricalBackfill: true });
   assert.equal(createCalled, true);
   assert.equal(createdData.rateMinor, 12000);
+});
+
+test("earnings summary is read-only by default and bounds trend history to six months", async () => {
+  let completedSessionScan = false;
+  const trendQueries = [];
+  const db = {
+    session: { findMany: async () => { completedSessionScan = true; return []; } },
+    teacherEarning: {
+      aggregate: async () => ({ _sum: { amountMinor: 0 }, _count: { _all: 0 } }),
+      findMany: async ({ where }) => { trendQueries.push(where); return []; },
+    },
+    teacherEarningAdjustment: {
+      aggregate: async () => ({ _sum: { amountMinor: 0 }, _count: { _all: 0 } }),
+      findMany: async ({ where }) => { trendQueries.push(where); return []; },
+    },
+    teacherPayout: { findMany: async () => [] },
+  };
+
+  const summary = await getTeacherEarningsSummary(4, db);
+
+  assert.equal(completedSessionScan, false);
+  assert.equal(summary.monthlyTrend.length, 6);
+  assert.equal(trendQueries.length, 2);
+  assert.ok(trendQueries[0].OR, "session earnings should use a bounded trend window");
+  assert.ok(trendQueries[1].createdAt.gte, "adjustments should use a bounded trend window");
 });
 
 test("session completion and payroll outbox insertion are atomic", async () => {

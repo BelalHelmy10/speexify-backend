@@ -28,6 +28,7 @@ import {
 import { normalizeDiscountCode, validateDiscount } from "../services/paymentPricingService.js";
 import { paymentResponse, orderPricing, pricingError, verifyQuoteForPurchase } from "../services/pricingQuoteService.js";
 import { prisma } from "../lib/prisma.js";
+import { recordBusinessMetric } from "../observability/metrics.js";
 
 const paymentDependencies = {prisma, requireAuth, createPaymentIntention, createPendingOrder,
   getOrderById, orderExists, markOrderPendingForRetry};
@@ -290,6 +291,7 @@ router.post("/webhook", async (req, res) => {
 
     // 1. Verify HMAC signature
     if (!verifyWebhookHMAC(body, hmac)) {
+      recordBusinessMetric("paymentWebhooks", "failed");
       logger.warn(
         {
           hasHmac: !!hmac,
@@ -320,6 +322,7 @@ router.post("/webhook", async (req, res) => {
       payload: body,
       signature: typeof hmac === "string" ? hmac : null,
     });
+    recordBusinessMetric("paymentWebhooks", "received");
 
     if (reconciliation.state === "replay") {
       logger.info(
@@ -367,6 +370,7 @@ router.post("/webhook", async (req, res) => {
     // 4. Find order by special_reference (our orderId)
     if (!orderId) {
       logger.error({ txn }, "No order reference in webhook");
+      recordBusinessMetric("paymentWebhooks", "unreconciled");
       await markWebhookEventIgnored(reconciliation?.recordId, {
         transactionId,
         reason: "missing_order_reference",
@@ -377,6 +381,7 @@ router.post("/webhook", async (req, res) => {
     const order = await getOrderById(orderId);
     if (!order) {
       logger.error({ orderId, transactionId }, "Order not found for webhook");
+      recordBusinessMetric("paymentWebhooks", "unreconciled");
       await markWebhookEventFailed(reconciliation?.recordId, {
         orderId,
         transactionId,
@@ -396,6 +401,7 @@ router.post("/webhook", async (req, res) => {
     if (!amountMatches || !currencyMatches) {
       const reconciliationError = `amount_or_currency_mismatch order=${order.id} txnAmount=${txn.amountCents} orderAmount=${order.amountCents} txnCurrency=${txn.currency} orderCurrency=${order.currency}`;
       logger.error({ orderId, txn }, "Webhook reconciliation mismatch");
+      recordBusinessMetric("paymentWebhooks", "unreconciled");
       await markWebhookEventFailed(reconciliation?.recordId, {
         orderId,
         transactionId,
@@ -448,11 +454,13 @@ router.post("/webhook", async (req, res) => {
       transactionId,
       resolution,
     });
+    recordBusinessMetric("paymentWebhooks", "processed");
 
     // Return 200 for handled states
     return res.json({ received: true });
   } catch (err) {
     logger.error({ err, orderId, txn }, "Webhook processing error");
+    recordBusinessMetric("paymentWebhooks", "failed");
 
     await markWebhookEventFailed(reconciliation?.recordId, {
       orderId,

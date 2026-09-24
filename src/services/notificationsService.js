@@ -1,7 +1,17 @@
 // src/services/notificationsService.js
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
-import { sendEmail } from "./emailService.js";
+import { enqueueEmail } from "./emailService.js";
+import {
+  bookingLearnerEmail,
+  bookingTeacherEmail,
+  cancellationLearnerEmail,
+  cancellationTeacherEmail,
+  emailCopy,
+  feedbackEmail,
+  formatEmailDate,
+  normalizeEmailLocale,
+} from "./emailTemplates.js";
 import { shouldDeliverInAppNotification } from "../lib/notificationPreferences.js";
 import { publishNotificationEvent } from "./notificationStreamHub.js";
 
@@ -33,22 +43,6 @@ async function findRecentDuplicate(userId, type, data) {
 /**
  * Format date in user's timezone for email display
  */
-function formatInTz(date, timeZone) {
-  try {
-    return new Intl.DateTimeFormat("en-US", {
-      timeZone: timeZone || "UTC",
-      weekday: "short",
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(date));
-  } catch {
-    return new Date(date).toISOString();
-  }
-}
-
 /**
  * Create an in-app notification for a user.
  * Reusable across booking, payment, reminder, and cancellation flows.
@@ -150,12 +144,12 @@ export async function sendBookingNotifications({
   const [learners, teacher] = await Promise.all([
     prisma.user.findMany({
       where: { id: { in: learnerIds } },
-      select: { id: true, email: true, name: true, timezone: true },
+      select: { id: true, email: true, name: true, timezone: true, language: true },
     }),
     teacherId
       ? prisma.user.findUnique({
           where: { id: teacherId },
-          select: { id: true, email: true, name: true, timezone: true },
+          select: { id: true, email: true, name: true, timezone: true, language: true },
         })
       : null,
   ]);
@@ -212,39 +206,23 @@ export async function sendBookingNotifications({
   // Email to learners
   await Promise.all(
     learners.map(async (learner) => {
-      const when = formatInTz(session.startAt, learner.timezone);
-      const join = session.joinUrl
-        ? `<p><a href="${session.joinUrl}" style="display:inline-block;padding:12px 24px;background:#0066ff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Join your classroom</a></p>`
-        : "";
-
-      const html = `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;">
-          <h2 style="color:#1a1a1a;">🎉 Lesson Confirmed!</h2>
-          <p>Hi${learner.name ? ` ${learner.name}` : ""},</p>
-          <p>Great news! Your lesson has been successfully booked.</p>
-          
-          <div style="background:#f8f9fa;border-radius:12px;padding:20px;margin:20px 0;">
-            <p style="margin:0 0 8px;"><strong>📚 Session:</strong> ${sessionTitle}</p>
-            <p style="margin:0 0 8px;"><strong>👨‍🏫 Teacher:</strong> ${teacherName}</p>
-            <p style="margin:0;"><strong>📅 When:</strong> ${when}</p>
-          </div>
-          
-          ${join}
-          
-          <p style="color:#666;font-size:14px;margin-top:30px;">
-            You'll receive reminder emails before your session starts.
-          </p>
-          
-          <p style="margin-top:30px;">— The Speexify Team</p>
-        </div>
-      `;
+      const locale = normalizeEmailLocale(learner.language);
+      const when = formatEmailDate(session.startAt, learner.timezone, locale);
+      const content = bookingLearnerEmail({
+        name: learner.name,
+        sessionTitle,
+        teacherName,
+        when,
+        joinUrl: session.joinUrl,
+        locale,
+      });
 
       try {
-        await sendEmail(learner.email, `Speexify — Lesson Confirmed! 🎉`, html, {
-          track: true,
+        await enqueueEmail(learner.email, content.subject, content.html, {
           userId: learner.id,
           eventType: "booking_confirmed",
           sessionId: session.id,
+          locale,
         });
       } catch (e) {
         logger.error(
@@ -257,40 +235,26 @@ export async function sendBookingNotifications({
 
   // Email to teacher
   if (teacher) {
-    const when = formatInTz(session.startAt, teacher.timezone);
+    const locale = normalizeEmailLocale(teacher.language);
+    const when = formatEmailDate(session.startAt, teacher.timezone, locale);
     const learnerNames = learners.map((l) => l.name || l.email).join(", ");
     const learnerCount = learners.length;
-
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;">
-        <h2 style="color:#1a1a1a;">📅 New Lesson Booked</h2>
-        <p>Hi${teacher.name ? ` ${teacher.name}` : ""},</p>
-        <p>A new lesson has been scheduled with you.</p>
-        
-        <div style="background:#f8f9fa;border-radius:12px;padding:20px;margin:20px 0;">
-          <p style="margin:0 0 8px;"><strong>📚 Session:</strong> ${sessionTitle}</p>
-          <p style="margin:0 0 8px;"><strong>👨‍🎓 Learner${
-            learnerCount > 1 ? "s" : ""
-          }:</strong> ${learnerNames}</p>
-          <p style="margin:0;"><strong>📅 When:</strong> ${when}</p>
-        </div>
-        
-        ${
-          session.joinUrl
-            ? `<p><a href="${session.joinUrl}" style="display:inline-block;padding:12px 24px;background:#0066ff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">View Session Details</a></p>`
-            : ""
-        }
-        
-        <p style="margin-top:30px;">— The Speexify Team</p>
-      </div>
-    `;
+    const content = bookingTeacherEmail({
+      name: teacher.name,
+      sessionTitle,
+      learnerNames,
+      learnerCount,
+      when,
+      joinUrl: session.joinUrl,
+      locale,
+    });
 
     try {
-      await sendEmail(teacher.email, `Speexify — New Lesson Booked`, html, {
-        track: true,
+      await enqueueEmail(teacher.email, content.subject, content.html, {
         userId: teacher.id,
         eventType: "new_booking",
         sessionId: session.id,
+        locale,
       });
     } catch (e) {
       logger.error(
@@ -323,12 +287,12 @@ export async function sendCancellationNotifications({
   const [learners, teacher, canceler] = await Promise.all([
     prisma.user.findMany({
       where: { id: { in: learnerIds } },
-      select: { id: true, email: true, name: true, timezone: true },
+      select: { id: true, email: true, name: true, timezone: true, language: true },
     }),
     teacherId
       ? prisma.user.findUnique({
           where: { id: teacherId },
-          select: { id: true, email: true, name: true, timezone: true },
+          select: { id: true, email: true, name: true, timezone: true, language: true },
         })
       : null,
     canceledBy
@@ -339,7 +303,6 @@ export async function sendCancellationNotifications({
       : null,
   ]);
 
-  const cancelerName = canceler?.name || "Someone";
   const cancelerRole = canceler?.role || "user";
 
   // Determine notification title based on scope
@@ -376,36 +339,22 @@ export async function sendCancellationNotifications({
   // Email to learners
   await Promise.all(
     learners.map(async (learner) => {
-      const when = formatInTz(session.startAt, learner.timezone);
-      const refundNote = refunded
-        ? `<p style="color:#22c55e;font-weight:600;">✅ Your credit has been refunded.</p>`
-        : "";
-
-      const html = `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;">
-          <h2 style="color:#dc2626;">❌ Session Canceled</h2>
-          <p>Hi${learner.name ? ` ${learner.name}` : ""},</p>
-          <p>Unfortunately, your session has been canceled.</p>
-          
-          <div style="background:#fef2f2;border-radius:12px;padding:20px;margin:20px 0;border-left:4px solid #dc2626;">
-            <p style="margin:0 0 8px;"><strong>📚 Session:</strong> ${sessionTitle}</p>
-            <p style="margin:0;"><strong>📅 Was scheduled for:</strong> ${when}</p>
-          </div>
-          
-          ${refundNote}
-          
-          <p>We apologize for any inconvenience. You can book a new session anytime from your dashboard.</p>
-          
-          <p style="margin-top:30px;">— The Speexify Team</p>
-        </div>
-      `;
+      const locale = normalizeEmailLocale(learner.language);
+      const when = formatEmailDate(session.startAt, learner.timezone, locale);
+      const content = cancellationLearnerEmail({
+        name: learner.name,
+        sessionTitle,
+        when,
+        refunded,
+        locale,
+      });
 
       try {
-        await sendEmail(learner.email, `Speexify — Session Canceled`, html, {
-          track: true,
+        await enqueueEmail(learner.email, content.subject, content.html, {
           userId: learner.id,
           eventType: "session_canceled",
           sessionId: session.id,
+          locale,
         });
       } catch (e) {
         logger.error(
@@ -418,7 +367,8 @@ export async function sendCancellationNotifications({
 
   // Email to teacher (if teacher didn't cancel)
   if (teacher && canceledBy !== teacherId) {
-    const when = formatInTz(session.startAt, teacher.timezone);
+    const locale = normalizeEmailLocale(teacher.language);
+    const when = formatEmailDate(session.startAt, teacher.timezone, locale);
     const learnerNames = learners.map((l) => l.name || l.email).join(", ");
 
     const cancelInfo =
@@ -427,31 +377,27 @@ export async function sendCancellationNotifications({
         : cancelerRole === "learner"
         ? `by the learner`
         : "";
-
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;">
-        <h2 style="color:#dc2626;">📅 Session Canceled</h2>
-        <p>Hi${teacher.name ? ` ${teacher.name}` : ""},</p>
-        <p>A session has been canceled${cancelInfo ? ` ${cancelInfo}` : ""}.</p>
-        
-        <div style="background:#fef2f2;border-radius:12px;padding:20px;margin:20px 0;border-left:4px solid #dc2626;">
-          <p style="margin:0 0 8px;"><strong>📚 Session:</strong> ${sessionTitle}</p>
-          <p style="margin:0 0 8px;"><strong>👨‍🎓 Learner(s):</strong> ${learnerNames}</p>
-          <p style="margin:0;"><strong>📅 Was scheduled for:</strong> ${when}</p>
-        </div>
-        
-        <p>Your schedule has been updated automatically.</p>
-        
-        <p style="margin-top:30px;">— The Speexify Team</p>
-      </div>
-    `;
+    const localizedCancelInfo =
+      cancelerRole === "admin"
+        ? emailCopy(locale, "byAdmin")
+        : cancelerRole === "learner"
+        ? emailCopy(locale, "byLearner")
+        : "";
+    const content = cancellationTeacherEmail({
+      name: teacher.name,
+      sessionTitle,
+      learnerNames,
+      when,
+      cancelInfo: localizedCancelInfo,
+      locale,
+    });
 
     try {
-      await sendEmail(teacher.email, `Speexify — Session Canceled`, html, {
-        track: true,
+      await enqueueEmail(teacher.email, content.subject, content.html, {
         userId: teacher.id,
         eventType: "session_canceled",
         sessionId: session.id,
+        locale,
       });
     } catch (e) {
       logger.error(
@@ -514,11 +460,11 @@ export async function sendFeedbackNotifications({
   const [teacher, learners] = await Promise.all([
     prisma.user.findUnique({
       where: { id: teacherId },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, language: true },
     }),
     prisma.user.findMany({
       where: { id: { in: learnerIds } },
-      select: { id: true, name: true, email: true, timezone: true },
+      select: { id: true, name: true, email: true, timezone: true, language: true },
     }),
   ]);
 
@@ -549,6 +495,7 @@ export async function sendFeedbackNotifications({
 
   await Promise.all(
     learners.map(async (learner) => {
+      const locale = normalizeEmailLocale(learner.language);
       // Build feedback preview (truncate if too long)
       const messagePreview = feedback?.messageToLearner
         ? feedback.messageToLearner.length > 200
@@ -556,56 +503,24 @@ export async function sendFeedbackNotifications({
           : feedback.messageToLearner
         : null;
 
-      const feedbackSection = messagePreview
-        ? `
-          <div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:8px;padding:16px;margin:20px 0;">
-            <p style="margin:0 0 8px;font-weight:600;color:#166534;">Message from ${teacherName}:</p>
-            <p style="margin:0;color:#1a1a1a;font-style:italic;">"${messagePreview}"</p>
-          </div>
-        `
-        : "";
-
-      const html = `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;color:#1a1a1a;">
-          <h2 style="margin-bottom:8px;">💬 New Feedback Received!</h2>
-          
-          <p>Hi${learner.name ? ` ${learner.name}` : ""},</p>
-          
-          <p>${teacherName} has left feedback for your session <strong>"${sessionTitle}"</strong>.</p>
-          
-          ${feedbackSection}
-          
-          <p>
-            <a href="https://app.speexify.com/dashboard" 
-               style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-              View in Dashboard
-            </a>
-          </p>
-          
-          <p style="margin-top:16px;color:#64748b;font-size:13px;">
-            Log in and go to your past sessions to view the full feedback.
-          </p>
-          
-          <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e2e8f0;">
-            <p style="color:#64748b;font-size:13px;margin:0;">
-              💡 Reviewing feedback helps you track your progress and prepare for future sessions.
-            </p>
-          </div>
-          
-          <p style="margin-top:30px;color:#64748b;">— The Speexify Team</p>
-        </div>
-      `;
+      const content = feedbackEmail({
+        name: learner.name,
+        teacherName,
+        sessionTitle,
+        messagePreview,
+        locale,
+      });
 
       try {
-        await sendEmail(
+        await enqueueEmail(
           learner.email,
-          `Speexify — ${teacherName} left you feedback! 💬`,
-          html,
+          content.subject,
+          content.html,
           {
-            track: true,
             userId: learner.id,
             eventType: "feedback_received",
             sessionId: session.id,
+            locale,
           }
         );
       } catch (e) {

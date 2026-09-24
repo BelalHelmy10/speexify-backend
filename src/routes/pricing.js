@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { validateRequest } from "../middleware/validateRequest.js";
 import { buildDisplayPrice, buildPaymentQuote, normalizeDiscountCode, resolvePaymentCountry, validateDiscount } from "../services/paymentPricingService.js";
 import { packagePriceVersion, pricingError, publicQuote, readPricingToken, signPricingToken } from "../services/pricingQuoteService.js";
+import { recordBusinessMetric } from "../observability/metrics.js";
 
 const QuoteBody = z.object({
   packageId: z.coerce.number().int().positive(),
@@ -17,6 +18,8 @@ export function createPricingRouter({db = prisma, resolveCountry = resolvePaymen
   router.use(rateLimit({windowMs: 60_000, limit: 120, standardHeaders: "draft-7", legacyHeaders: false}));
   router.use((_req, res, next) => {res.set("Cache-Control", "private, no-store"); next();});
   router.get("/catalog", async (req, res) => {
+    const startedAt = Date.now();
+    recordBusinessMetric("pricingCatalog", "requests");
     try {
       const region = await resolveCountry(req);
       const packages = await db.package.findMany({where: {active: true, deletedAt: null, priceType: {not: "CUSTOM"}}, orderBy: {sortOrder: "asc"}});
@@ -28,7 +31,9 @@ export function createPricingRouter({db = prisma, resolveCountry = resolvePaymen
       }));
       res.json({countryCode: region.countryCode, countrySource: region.source,
         regionToken: signPricingToken("region", region, 60 * 60 * 1000), packages: items});
+      recordBusinessMetric("pricingCatalog", "successes", {durationMs: Date.now() - startedAt});
     } catch (error) {
+      recordBusinessMetric("pricingCatalog", "failures", {durationMs: Date.now() - startedAt});
       res.status(error.status || 503).json({code: error.code || "PRICING_UNAVAILABLE", message: "Prices are temporarily unavailable. Please try again."});
     }
   });

@@ -19,7 +19,15 @@ router.get(
   requireAdmin,
   async (req, res) => {
     try {
-      const allowedStatuses = new Set(["PENDING", "PROCESSING", "SENT", "FAILED"]);
+      const allowedStatuses = new Set([
+        "PENDING",
+        "PROCESSING",
+        "SENT",
+        "FAILED",
+        "BOUNCED",
+        "COMPLAINED",
+        "SUPPRESSED",
+      ]);
       const requestedStatus = String(req.query.status || "").toUpperCase();
       const status = allowedStatuses.has(requestedStatus) ? requestedStatus : null;
       const limitRaw = Number(req.query.limit ?? 50);
@@ -28,7 +36,7 @@ router.get(
         : 50;
 
       const where = status ? { status } : {};
-      const [items, counts] = await prisma.$transaction([
+      const [items, counts, suppressionCount] = await prisma.$transaction([
         prisma.notificationDelivery.findMany({
           where,
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -47,6 +55,9 @@ router.get(
             lastAttemptAt: true,
             sentAt: true,
             lastError: true,
+            providerMessageId: true,
+            providerEventType: true,
+            providerEventAt: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -55,6 +66,7 @@ router.get(
           by: ["status"],
           _count: { _all: true },
         }),
+        prisma.emailSuppression.count(),
       ]);
 
       return res.json({
@@ -62,6 +74,7 @@ router.get(
         counts: Object.fromEntries(
           counts.map((row) => [row.status, row._count._all])
         ),
+        suppressionCount,
         limit,
       });
     } catch (err) {

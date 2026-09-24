@@ -37,6 +37,39 @@ function durationMinutes(startAt, endAt) {
   return Math.max(1, Math.round((end - start) / 60000));
 }
 
+function safeTimeZone(timeZone) {
+  if (!timeZone) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+export function getLocalMonthKey(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: safeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date(date));
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  return year && month ? `${year}-${month}` : null;
+}
+
+function localMonthParts(date, timeZone) {
+  const key = getLocalMonthKey(date, timeZone);
+  if (!key) return { year: new Date(date).getUTCFullYear(), month: new Date(date).getUTCMonth() + 1 };
+  const [year, month] = key.split("-").map(Number);
+  return { year, month };
+}
+
+function shiftMonthKey(year, month, offset) {
+  const date = new Date(Date.UTC(year, month - 1 + offset, 1));
+  return date.toISOString().slice(0, 7);
+}
+
 export function calculateTeacherEarning({ rateHourlyEgpPiastres, ratePerSessionEgpPiastres, minutes }) {
   const safeMinutes = Number.isFinite(Number(minutes)) ? Number(minutes) : 60;
   if (Number.isInteger(rateHourlyEgpPiastres) && rateHourlyEgpPiastres > 0) {
@@ -473,8 +506,22 @@ export async function syncTeacherEarnings(
   return sessions.length;
 }
 
-export async function getTeacherEarningsSummary(teacherId, db = prisma, { sync = true } = {}) {
+export async function getTeacherEarningsSummary(
+  teacherId,
+  db = prisma,
+  { sync = false, timezone = null } = {}
+) {
   if (sync) await syncTeacherEarnings(teacherId, db);
+  const trendNow = new Date();
+  const trendTimeZone = safeTimeZone(timezone);
+  const currentLocalMonth = localMonthParts(trendNow, trendTimeZone);
+  // Query from slightly before the local month boundary. The extra window is
+  // intentional: a UTC timestamp can fall on the previous/next UTC date
+  // while still belonging to the teacher's local month.
+  const trendStart = new Date(
+    Date.UTC(currentLocalMonth.year, currentLocalMonth.month - 1 - 5, 1) -
+      36 * 60 * 60 * 1000
+  );
   const [pending, paid, pendingAdjustments, paidAdjustments, recentPayouts, trendEntries, adjustmentEntries] = await Promise.all([
     db.teacherEarning.aggregate({
       where: { teacherId: Number(teacherId), status: "PENDING" },
@@ -500,10 +547,29 @@ export async function getTeacherEarningsSummary(teacherId, db = prisma, { sync =
       where: { teacherId: Number(teacherId) },
       orderBy: { paidAt: "desc" },
       take: 5,
-      select: { id: true, totalMinor: true, currencyCode: true, paymentMethod: true, paidAt: true, paymentReference: true },
+      select: {
+        id: true,
+        totalMinor: true,
+        currencyCode: true,
+        paymentMethod: true,
+        paidAt: true,
+        paymentReference: true,
+        status: true,
+        reversals: {
+          select: { action: true, amountMinor: true, reason: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
     }),
     db.teacherEarning.findMany({
-      where: { teacherId: Number(teacherId) },
+      where: {
+        teacherId: Number(teacherId),
+        OR: [
+          { createdAt: { gte: trendStart } },
+          { session: { startAt: { gte: trendStart } } },
+        ],
+      },
       select: {
         amountMinor: true,
         status: true,
@@ -513,7 +579,7 @@ export async function getTeacherEarningsSummary(teacherId, db = prisma, { sync =
       orderBy: { createdAt: "asc" },
     }),
     db.teacherEarningAdjustment.findMany({
-      where: { teacherId: Number(teacherId) },
+      where: { teacherId: Number(teacherId), createdAt: { gte: trendStart } },
       select: { amountMinor: true, status: true, createdAt: true },
       orderBy: { createdAt: "asc" },
     }),
@@ -521,21 +587,24 @@ export async function getTeacherEarningsSummary(teacherId, db = prisma, { sync =
 
   const now = new Date();
   const monthlyTrend = Array.from({ length: 6 }, (_, index) => {
-    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - index), 1));
-    const month = date.toISOString().slice(0, 7);
+    const month = shiftMonthKey(
+      currentLocalMonth.year,
+      currentLocalMonth.month,
+      -(5 - index)
+    );
     return { month, totalMinor: 0, pendingMinor: 0, paidMinor: 0 };
   });
   const trendByMonth = new Map(monthlyTrend.map((item) => [item.month, item]));
   for (const entry of trendEntries) {
     const trendDate = entry.session?.startAt || entry.createdAt;
-    const bucket = trendByMonth.get(new Date(trendDate).toISOString().slice(0, 7));
+    const bucket = trendByMonth.get(getLocalMonthKey(trendDate, trendTimeZone));
     if (!bucket) continue;
     bucket.totalMinor += entry.amountMinor;
     if (entry.status === "PAID") bucket.paidMinor += entry.amountMinor;
     else bucket.pendingMinor += entry.amountMinor;
   }
   for (const entry of adjustmentEntries) {
-    const bucket = trendByMonth.get(new Date(entry.createdAt).toISOString().slice(0, 7));
+    const bucket = trendByMonth.get(getLocalMonthKey(entry.createdAt, trendTimeZone));
     if (!bucket) continue;
     bucket.totalMinor += entry.amountMinor;
     if (entry.status === "PAID") bucket.paidMinor += entry.amountMinor;
@@ -550,5 +619,6 @@ export async function getTeacherEarningsSummary(teacherId, db = prisma, { sync =
     paidCount: paid._count._all + paidAdjustments._count._all,
     recentPayouts,
     monthlyTrend,
+    timeZone: trendTimeZone,
   };
 }

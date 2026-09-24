@@ -5,7 +5,8 @@ import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../../middleware/auth-helpers.js";
 import { validateRequest } from "../../middleware/validateRequest.js";
 import { logger } from "../../lib/logger.js";
-import { sendEmail } from "../../services/emailService.js";
+import { enqueueEmail } from "../../services/emailService.js";
+import { passwordResetEmail } from "../../services/emailTemplates.js";
 import { audit, genCode, hashCode } from "./shared.js";
 import {
   getTeacherRateAt,
@@ -98,6 +99,7 @@ router.get(
           name: true,
           role: true,
           timezone: true,
+          language: true,
           isDisabled: true,
           createdAt: true,
           rateHourlyCents: true,
@@ -143,6 +145,7 @@ router.post(
           name: true,
           role: true,
           timezone: true,
+          language: true,
           isDisabled: true,
         },
       });
@@ -157,14 +160,12 @@ router.post(
         create: { email, codeHash, expiresAt, attempts: 0 },
       });
 
-      await sendEmail(
-        email,
-        "Welcome to Speexify — set your password",
-        `<p>Hi${name ? " " + name : ""},</p>
-       <p>Your setup code is:</p>
-       <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-       <p>Use it on the "Forgot password" page within 10 minutes.</p>`
-      );
+      const emailContent = passwordResetEmail({ code, locale: user.language });
+      await enqueueEmail(email, emailContent.subject, emailContent.html, {
+        locale: user.language,
+        userId: user.id,
+        eventType: "admin_password_reset",
+      });
 
       await audit(req.user.id, "user_create", "User", user.id, { email, role });
       res.status(201).json({ user });
@@ -406,14 +407,12 @@ router.post(
         create: { email: user.email, codeHash, expiresAt, attempts: 0 },
       });
 
-      await sendEmail(
-        user.email,
-        "Reset your Speexify password",
-        `<p>Hi ${user.name || ""}</p>
-       <p>Your reset code is:</p>
-       <p style="font-size:20px;font-weight:700;letter-spacing:2px">${code}</p>
-       <p>Use it on the "Forgot password" page within 10 minutes.</p>`
-      );
+      const emailContent = passwordResetEmail({ code, locale: user.language });
+      await enqueueEmail(user.email, emailContent.subject, emailContent.html, {
+        locale: user.language,
+        userId: user.id,
+        eventType: "admin_password_reset",
+      });
 
       await audit(req.user.id, "password_reset_send", "User", id);
       res.json({ ok: true });

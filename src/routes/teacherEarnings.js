@@ -7,7 +7,6 @@ import { audit } from "./admin/shared.js";
 import {
   getTeacherEarningsSummary,
   isTeacherEarningsUnavailable,
-  syncTeacherEarnings,
   validatePayoutEntries,
   TEACHER_EARNINGS_CURRENCY,
 } from "../services/teacherEarningsService.js";
@@ -22,6 +21,20 @@ const EarningsQuerySchema = z.object({
 
 const AdminEarningsQuerySchema = EarningsQuerySchema.extend({
   teacherId: z.union([z.literal(""), z.coerce.number().int().positive()]).optional().default(""),
+});
+
+const PayoutHistoryQuerySchema = z.object({
+  teacherId: z.union([z.literal(""), z.coerce.number().int().positive()]).optional().default(""),
+  status: z.union([z.literal(""), z.enum(["PAID", "VOIDED", "REVERSED"]) ]).optional().default(""),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+  offset: z.coerce.number().int().min(0).max(100000).optional().default(0),
+  format: z.enum(["json", "csv"]).optional().default("json"),
+}).superRefine((query, ctx) => {
+  if (query.from && query.to && query.from > query.to) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "to must be on or after from" });
+  }
 });
 
 const AdjustmentBodySchema = z.object({
@@ -47,10 +60,16 @@ const PayoutBodySchema = z.object({
   message: "Select at least one earning or adjustment",
 });
 
+const PayoutCorrectionBodySchema = z.object({
+  payoutId: z.coerce.number().int().positive(),
+  action: z.enum(["VOID", "REVERSE"]),
+  reason: z.string().trim().min(3).max(500),
+}).strict();
+
 async function getTeacherViewUser(req) {
   const user = await prisma.user.findUnique({
     where: { id: Number(req.viewUserId) },
-    select: { id: true, role: true },
+    select: { id: true, role: true, timezone: true },
   });
   return user?.role === "teacher" ? user : null;
 }
@@ -101,6 +120,48 @@ function shapeAdjustment(adjustment) {
   };
 }
 
+function shapePayout(payout) {
+  return {
+    id: payout.id,
+    teacherId: payout.teacherId,
+    teacher: payout.teacher || null,
+    createdBy: payout.createdBy || null,
+    totalMinor: payout.totalMinor,
+    currencyCode: payout.currencyCode,
+    paymentMethod: payout.paymentMethod,
+    paymentReference: payout.paymentReference,
+    note: payout.note,
+    status: payout.status,
+    paidAt: payout.paidAt,
+    createdAt: payout.createdAt,
+    reversal: payout.reversals?.[0] || null,
+  };
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function payoutsCsv(items) {
+  const headers = ["id", "teacher", "teacherEmail", "recordedBy", "totalMinor", "currency", "paymentMethod", "status", "paidAt", "reference", "reversalAction", "reversalReason"];
+  const rows = items.map((item) => [
+    item.id,
+    item.teacher?.name || "",
+    item.teacher?.email || "",
+    item.createdBy?.name || item.createdBy?.email || "",
+    item.totalMinor,
+    item.currencyCode,
+    item.paymentMethod,
+    item.status,
+    item.paidAt,
+    item.paymentReference || "",
+    item.reversal?.action || "",
+    item.reversal?.reason || "",
+  ]);
+  return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n") + "\n";
+}
+
 router.get(
   "/teacher/earnings",
   requireAuth,
@@ -110,7 +171,6 @@ router.get(
       const teacher = await getTeacherViewUser(req);
       if (!teacher) return res.status(403).json({ error: "Teacher earnings only" });
 
-      await syncTeacherEarnings(teacher.id);
       const { status, limit, offset } = req.query;
       const pageLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : 50;
       const pageOffset = Number.isInteger(Number(offset)) && Number(offset) >= 0 ? Number(offset) : 0;
@@ -118,7 +178,7 @@ router.get(
         teacherId: teacher.id,
         ...(status ? { status: String(status) } : {}),
       };
-      const [entries, total, adjustments, summary] = await Promise.all([
+      const [entries, total, adjustments, adjustmentTotal, summary] = await Promise.all([
         prisma.teacherEarning.findMany({
           where,
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -135,7 +195,11 @@ router.get(
           take: pageLimit,
           skip: pageOffset,
         }),
-        getTeacherEarningsSummary(teacher.id, prisma, { sync: false }),
+        prisma.teacherEarningAdjustment.count({ where }),
+        getTeacherEarningsSummary(teacher.id, prisma, {
+          sync: false,
+          timezone: teacher.timezone,
+        }),
       ]);
 
       const shapedEntries = [
@@ -147,7 +211,7 @@ router.get(
         currencyCode: TEACHER_EARNINGS_CURRENCY,
         summary,
         entries: shapedEntries,
-        total: total + adjustments.length,
+        total: total + adjustmentTotal,
         limit: pageLimit,
         offset: pageOffset,
       });
@@ -174,13 +238,11 @@ router.get(
       const { teacherId, status, limit, offset } = req.query;
       const pageLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : 50;
       const pageOffset = Number.isInteger(Number(offset)) && Number(offset) >= 0 ? Number(offset) : 0;
-      if (teacherId) await syncTeacherEarnings(Number(teacherId));
-
       const where = {
         ...(teacherId ? { teacherId: Number(teacherId) } : {}),
         ...(status ? { status: String(status) } : {}),
       };
-      const [entries, total, adjustments, pending, pendingAdjustments, snapshotJobs] = await Promise.all([
+      const [entries, total, adjustments, adjustmentTotal, pending, pendingAdjustments, snapshotJobs] = await Promise.all([
         prisma.teacherEarning.findMany({
           where,
           orderBy: [{ status: "asc" }, { createdAt: "desc" }],
@@ -201,6 +263,7 @@ router.get(
             teacher: { select: { id: true, name: true, email: true } },
           },
         }),
+        prisma.teacherEarningAdjustment.count({ where }),
         prisma.teacherEarning.aggregate({
           where: { ...where, status: "PENDING" },
           _sum: { amountMinor: true },
@@ -241,7 +304,9 @@ router.get(
       return res.json({
         currencyCode: TEACHER_EARNINGS_CURRENCY,
         entries: shapedEntries,
-        total: total + adjustments.length,
+        total: total + adjustmentTotal,
+        limit: pageLimit,
+        offset: pageOffset,
         pendingMinor: (pending._sum.amountMinor || 0) + (pendingAdjustments._sum.amountMinor || 0),
         pendingCount: pending._count._all + pendingAdjustments._count._all,
         snapshotJobs,
@@ -303,6 +368,183 @@ router.post(
       }
       console.error("POST /api/admin/teacher-earnings/adjustments failed:", err);
       return res.status(500).json({ error: "Failed to create teacher earnings adjustment" });
+    }
+  }
+);
+
+router.post(
+  "/admin/teacher-payouts/reversal",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ body: PayoutCorrectionBodySchema }),
+  async (req, res) => {
+    const payoutId = Number(req.body?.payoutId);
+    try {
+      if (!Number.isInteger(payoutId) || payoutId <= 0) {
+        return res.status(400).json({ error: "Invalid payout id" });
+      }
+      const { action, reason } = req.body;
+      const result = await prisma.$transaction(async (tx) => {
+        const payout = await tx.teacherPayout.findUnique({
+          where: { id: payoutId },
+          select: {
+            id: true,
+            teacherId: true,
+            totalMinor: true,
+            currencyCode: true,
+            status: true,
+            earnings: { select: { id: true, status: true } },
+            adjustments: { select: { id: true, status: true } },
+          },
+        });
+        if (!payout) {
+          const error = new Error("Payout not found");
+          error.code = "PAYOUT_NOT_FOUND";
+          throw error;
+        }
+        if (payout.status !== "PAID") {
+          const error = new Error("This payout has already been corrected");
+          error.code = "PAYOUT_ALREADY_CORRECTED";
+          throw error;
+        }
+
+        const reversal = await tx.teacherPayoutReversal.create({
+          data: {
+            payoutId: payout.id,
+            teacherId: payout.teacherId,
+            createdById: req.user.id,
+            action,
+            amountMinor: payout.totalMinor,
+            currencyCode: TEACHER_EARNINGS_CURRENCY,
+            reason,
+          },
+        });
+
+        if (action === "VOID") {
+          const settledEarnings = await tx.teacherEarning.updateMany({
+            where: { payoutId: payout.id, status: "PAID" },
+            data: { status: "PENDING", paidAt: null, payoutId: null },
+          });
+          const settledAdjustments = await tx.teacherEarningAdjustment.updateMany({
+            where: { payoutId: payout.id, status: "PAID" },
+            data: { status: "PENDING", paidAt: null, payoutId: null },
+          });
+          if (
+            settledEarnings.count !== payout.earnings.length ||
+            settledAdjustments.count !== payout.adjustments.length
+          ) {
+            const error = new Error("Payout entries changed while the correction was being recorded");
+            error.code = "PAYOUT_CONFLICT";
+            throw error;
+          }
+        } else {
+          await tx.teacherEarningAdjustment.create({
+            data: {
+              teacherId: payout.teacherId,
+              createdById: req.user.id,
+              amountMinor: -payout.totalMinor,
+              currencyCode: TEACHER_EARNINGS_CURRENCY,
+              reason: `Reversal of payout #${payout.id}: ${reason}`,
+              status: "PENDING",
+            },
+          });
+        }
+
+        const updatedPayout = await tx.teacherPayout.update({
+          where: { id: payout.id, status: "PAID" },
+          data: { status: action === "VOID" ? "VOIDED" : "REVERSED" },
+        });
+        return { payout: updatedPayout, reversal };
+      });
+
+      await audit(req.user.id, `teacher_payout_${action.toLowerCase()}`, "TeacherPayout", payoutId, {
+        action,
+        amountMinor: result.reversal.amountMinor,
+        currencyCode: TEACHER_EARNINGS_CURRENCY,
+        reason,
+      });
+      return res.status(201).json(result);
+    } catch (err) {
+      if (err?.code === "PAYOUT_NOT_FOUND") return res.status(404).json({ error: err.message });
+      if (["PAYOUT_ALREADY_CORRECTED", "PAYOUT_CONFLICT", "P2002"].includes(err?.code)) {
+        return res.status(409).json({ error: err.message || "Payout correction conflict" });
+      }
+      if (isTeacherEarningsUnavailable(err)) {
+        return res.status(503).json({ code: "EARNINGS_NOT_READY", error: "Payout corrections are not ready until the earnings migration is deployed." });
+      }
+      console.error("POST /api/admin/teacher-payouts/reversal failed:", err);
+      return res.status(500).json({ error: "Failed to correct teacher payout" });
+    }
+  }
+);
+
+router.get(
+  "/admin/teacher-payouts",
+  requireAuth,
+  requireAdmin,
+  validateRequest({ query: PayoutHistoryQuerySchema }),
+  async (req, res) => {
+    try {
+      const { teacherId, status, from, to, limit, offset, format } = req.query;
+      const pageLimit = format === "csv" ? 5000 : Number(limit);
+      const pageOffset = format === "csv" ? 0 : Number(offset);
+      const paidAt = {};
+      if (from) paidAt.gte = from;
+      if (to) paidAt.lt = new Date(new Date(to).getTime() + 24 * 60 * 60 * 1000);
+      const where = {
+        ...(teacherId ? { teacherId: Number(teacherId) } : {}),
+        ...(status ? { status } : {}),
+        ...(Object.keys(paidAt).length ? { paidAt } : {}),
+      };
+      const reconciliationWhere = {
+        ...(teacherId ? { teacherId: Number(teacherId) } : {}),
+        ...(Object.keys(paidAt).length ? { paidAt } : {}),
+      };
+
+      const [payouts, total, statusTotals] = await Promise.all([
+        prisma.teacherPayout.findMany({
+          where,
+          orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+          take: pageLimit,
+          skip: pageOffset,
+          include: {
+            teacher: { select: { id: true, name: true, email: true } },
+            createdBy: { select: { id: true, name: true, email: true } },
+            reversals: { orderBy: { createdAt: "desc" }, take: 1 },
+          },
+        }),
+        prisma.teacherPayout.count({ where }),
+        prisma.teacherPayout.groupBy({
+          by: ["status"],
+          where: reconciliationWhere,
+          _sum: { totalMinor: true },
+          _count: { _all: true },
+        }),
+      ]);
+
+      const items = payouts.map(shapePayout);
+      if (format === "csv") {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename="speexify-payout-history-${new Date().toISOString().slice(0, 10)}.csv"`);
+        return res.send(payoutsCsv(items));
+      }
+
+      return res.json({
+        items,
+        total,
+        limit: Number(limit),
+        offset: Number(offset),
+        reconciliation: Object.fromEntries(statusTotals.map((row) => [
+          row.status,
+          { count: row._count._all, totalMinor: row._sum.totalMinor || 0 },
+        ])),
+      });
+    } catch (err) {
+      if (isTeacherEarningsUnavailable(err)) {
+        return res.status(503).json({ code: "EARNINGS_NOT_READY", error: "Payout history is not ready until the earnings migration is deployed." });
+      }
+      console.error("GET /api/admin/teacher-payouts failed:", err);
+      return res.status(500).json({ error: "Failed to load payout history" });
     }
   }
 );

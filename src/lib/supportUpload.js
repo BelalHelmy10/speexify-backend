@@ -169,31 +169,6 @@ export async function validateUploadedFile(req, res, next) {
 }
 
 /**
- * Cloud storage adapter (implement when moving to S3/CloudFlare R2)
- */
-export class CloudStorageAdapter {
-  constructor(config) {
-    this.config = config;
-    // Initialize cloud storage client (S3, R2, GCS, etc.)
-  }
-
-  async upload(file, bucket, key) {
-    // Implement cloud upload
-    throw new Error("Cloud storage not implemented yet");
-  }
-
-  async delete(bucket, key) {
-    // Implement cloud delete
-    throw new Error("Cloud storage not implemented yet");
-  }
-
-  getPublicUrl(bucket, key) {
-    // Return public URL
-    throw new Error("Cloud storage not implemented yet");
-  }
-}
-
-/**
  * Delete file helper
  */
 export function deleteFile(filename) {
