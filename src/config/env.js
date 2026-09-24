@@ -4,6 +4,7 @@
 // NODE_ENV flag
 export const isProd = process.env.NODE_ENV === "production";
 export const isTest = process.env.NODE_ENV === "test";
+export const isE2E = process.env.RUN_E2E === "1";
 
 const DEV_SESSION_SECRET = "dev-secret-change-me";
 const INSECURE_SECRET_VALUES = new Set([
@@ -112,7 +113,7 @@ if (isProd && !REDIS_URL) {
 
 // Session runtime behavior
 export const SESSION_FORCE_MEMORY =
-  isTest || parseBooleanEnv("SESSION_FORCE_MEMORY", false);
+  (!isE2E && isTest) || parseBooleanEnv("SESSION_FORCE_MEMORY", false);
 
 if (isProd && SESSION_FORCE_MEMORY) {
   throw new Error(
@@ -123,7 +124,7 @@ if (isProd && SESSION_FORCE_MEMORY) {
 export const SESSION_REDIS_STRICT = parseBooleanEnv(
   "SESSION_REDIS_STRICT",
   false,
-) || isProd;
+) || isProd || isE2E;
 export const SESSION_REDIS_CONNECT_TIMEOUT_MS = parsePositiveIntEnv(
   "SESSION_REDIS_CONNECT_TIMEOUT_MS",
   3000,

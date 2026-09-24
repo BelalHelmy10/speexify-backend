@@ -144,6 +144,12 @@ async function initializeSessionStore() {
 }
 await initializeSessionStore();
 
+export async function closeSessionStore() {
+  redisReconnectEnabled = false;
+  await destroyRedisClient(redisClient);
+  redisClient = null;
+}
+
 export const sessionMiddleware = session({
   name: SESSION_COOKIE_NAME,
   store,

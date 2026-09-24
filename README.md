@@ -273,11 +273,11 @@ COOKIE_DOMAIN – Domain for cookies (e.g. localhost in dev, your real domain in
 
 ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e.g. http://localhost:3000).
 
-REDIS_URL – Redis connection string. Required in production for sessions, shared WebSocket rooms, connection limits, and rate limits.
+REDIS_URL – Redis connection string. Required in production and in the default E2E suite for sessions, shared WebSocket rooms, connection limits, and rate limits.
 
 SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling back to memory. It defaults to enabled in production; keep it enabled outside local development too.
 
-SESSION_FORCE_MEMORY – Test/local-only switch for the in-memory session store. It is rejected in production.
+SESSION_FORCE_MEMORY – Local/unit-test-only switch for the in-memory session store. The default E2E suite deliberately uses Redis; use `npm run test:e2e:memory` only for an explicit fallback-mode test.
 
 RATE_LIMIT_ALLOW_MEMORY_FALLBACK – Optional development override. Keep unset in production so rate limiting fails closed when Redis is unavailable.
 
