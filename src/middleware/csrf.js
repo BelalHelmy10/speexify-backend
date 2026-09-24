@@ -1,13 +1,39 @@
 // src/middleware/csrf.js
-import csurf from "csurf";
+import crypto from "node:crypto";
 
-// ------------------------------------------------------------
-// Create base csurf instance
-// ------------------------------------------------------------
-const rawCsrf = csurf({
-  cookie: false,
-  ignoreMethods: ["GET", "HEAD", "OPTIONS"],
-});
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const CSRF_HEADER_NAMES = ["csrf-token", "x-csrf-token"];
+
+function createToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function getSessionToken(req) {
+  if (!req.session) return null;
+  if (!req.session.csrfToken) req.session.csrfToken = createToken();
+  return req.session.csrfToken;
+}
+
+function tokensMatch(given, expected) {
+  const givenBuffer = Buffer.from(String(given || ""));
+  const expectedBuffer = Buffer.from(String(expected || ""));
+  return (
+    givenBuffer.length > 0 &&
+    givenBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(givenBuffer, expectedBuffer)
+  );
+}
+
+function csrfError() {
+  const error = new Error("Invalid CSRF token");
+  error.code = "EBADCSRFTOKEN";
+  return error;
+}
+
+function applyCsrfTokenApi(req) {
+  req.csrfToken = () => getSessionToken(req);
+  return req.csrfToken();
+}
 
 /**
  * Check if URL should be excluded from CSRF protection
@@ -52,9 +78,11 @@ function shouldExcludeCsrf(url) {
 export function csrfMiddleware(req, res, next) {
   const url = req.originalUrl || req.path || "";
 
+  applyCsrfTokenApi(req);
+
   // CSRF TOKEN ENDPOINT: must generate token, including in automated tests.
   if (url.startsWith("/api/csrf-token")) {
-    return rawCsrf(req, res, next);
+    return next();
   }
 
   // Skip validation in automated test mode after token generation remains available.
@@ -78,8 +106,14 @@ export function csrfMiddleware(req, res, next) {
     return next();
   }
 
-  // All other write operations require CSRF
-  return rawCsrf(req, res, next);
+  if (SAFE_METHODS.has(req.method)) return next();
+
+  const expected = getSessionToken(req);
+  const given = CSRF_HEADER_NAMES.map((name) => req.get(name)).find(Boolean);
+
+  // All other write operations require a token bound to the current session.
+  if (!tokensMatch(given, expected)) return next(csrfError());
+  return next();
 }
 
 // ------------------------------------------------------------

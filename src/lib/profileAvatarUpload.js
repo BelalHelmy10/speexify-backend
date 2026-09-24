@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
+import { scanUploadBuffer } from "./uploadSecurity.js";
 
 const AVATAR_UPLOAD_DIR = path.join(uploadRoot, "avatars");
 const MAX_AVATAR_SIZE = 3 * 1024 * 1024;
@@ -23,7 +24,12 @@ const MAGIC_SIGNATURES = {
   "image/webp": [[0x52, 0x49, 0x46, 0x46]],
 };
 
-fs.mkdirSync(AVATAR_UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(AVATAR_UPLOAD_DIR, { recursive: true, mode: 0o700 });
+try {
+  fs.chmodSync(AVATAR_UPLOAD_DIR, 0o700);
+} catch {
+  // Managed storage mounts may control directory permissions externally.
+}
 
 function hasValidSignature(buffer, mimetype) {
   const signatures = MAGIC_SIGNATURES[mimetype];
@@ -63,7 +69,7 @@ export function deleteAvatarFile(avatarUrl) {
   fs.unlinkSync(filePath);
 }
 
-export function saveAvatarFile(userId, file) {
+export async function saveAvatarFile(userId, file) {
   if (!file) {
     const error = new Error("No file uploaded");
     error.statusCode = 400;
@@ -83,11 +89,12 @@ export function saveAvatarFile(userId, file) {
   }
 
   const extension = MIME_TO_EXTENSION[file.mimetype];
+  await scanUploadBuffer(file.buffer, `.${extension}`);
   const token = crypto.randomBytes(10).toString("hex");
   const filename = `user-${userId}-${Date.now()}-${token}.${extension}`;
   const filePath = path.join(AVATAR_UPLOAD_DIR, filename);
 
-  fs.writeFileSync(filePath, file.buffer);
+  fs.writeFileSync(filePath, file.buffer, { mode: 0o600 });
   return avatarUrlForFilename(filename);
 }
 

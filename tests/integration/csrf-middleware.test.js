@@ -34,6 +34,54 @@ test("csrfMiddleware skips checks in test mode", () => {
   assert.equal(res.statusCode, 200);
 });
 
+test("production CSRF requires the session-bound header token", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+
+  try {
+    const session = {};
+    const tokenRequest = {
+      method: "GET",
+      originalUrl: "/api/csrf-token",
+      path: "/api/csrf-token",
+      session,
+      get: () => undefined,
+    };
+
+    csrfMiddleware(tokenRequest, createRes(), () => {});
+    const token = tokenRequest.csrfToken();
+
+    const validRequest = {
+      method: "POST",
+      originalUrl: "/api/me",
+      path: "/api/me",
+      session,
+      get: (name) => (name === "csrf-token" ? token : undefined),
+    };
+    let validError = null;
+    let validNextCalled = false;
+    csrfMiddleware(validRequest, createRes(), (error) => {
+      validError = error || null;
+      validNextCalled = true;
+    });
+    assert.equal(validError, null);
+    assert.equal(validNextCalled, true);
+
+    const invalidRequest = {
+      ...validRequest,
+      get: () => "wrong-token",
+    };
+    let invalidError = null;
+    csrfMiddleware(invalidRequest, createRes(), (error) => {
+      invalidError = error;
+    });
+    assert.equal(invalidError?.code, "EBADCSRFTOKEN");
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
 test("csrfErrorHandler returns 403 for invalid CSRF tokens", () => {
   const req = { method: "POST", originalUrl: "/api/me" };
   const res = createRes();

@@ -82,6 +82,8 @@ test("production sessions fail startup when Redis is unavailable even if strict 
     NODE_ENV: "production",
     SESSION_SECRET: "speexify-production-session-secret-0001",
     OBS_METRICS_TOKEN: "speexify-production-metrics-token-0001",
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    UPLOAD_MALWARE_SCAN_COMMAND: "clamdscan",
     REDIS_URL: "redis://127.0.0.1:6399",
     SESSION_REDIS_CONNECT_TIMEOUT_MS: "200",
     SESSION_REDIS_STRICT: "false",

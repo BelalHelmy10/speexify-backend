@@ -4,12 +4,19 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { logger } from "./logger.js";
+import { scanUploadFile } from "./uploadSecurity.js";
 
 const uploadDir = path.join(uploadRoot, "support");
 
 // Ensure directory exists
 if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true, mode: 0o700 });
+}
+try {
+  fs.chmodSync(uploadDir, 0o700);
+} catch {
+  // The upload root may be a managed mount whose mode is controlled by the
+  // platform; file-level permissions are still enforced below.
 }
 
 const ALLOWED_FILE_TYPES = {
@@ -124,7 +131,7 @@ export const supportUpload = multer({
  * Middleware to validate file content after upload
  * Use this AFTER multer middleware
  */
-export function validateUploadedFile(req, res, next) {
+export async function validateUploadedFile(req, res, next) {
   if (!req.file) {
     return next();
   }
@@ -141,6 +148,9 @@ export function validateUploadedFile(req, res, next) {
         error: "Invalid file content. File does not match its declared type.",
       });
     }
+
+    await scanUploadFile(filePath);
+    fs.chmodSync(filePath, 0o600);
 
     next();
   } catch (err) {
@@ -184,7 +194,10 @@ export class CloudStorageAdapter {
  * Delete file helper
  */
 export function deleteFile(filename) {
-  const filePath = path.join(uploadDir, filename);
+  const safeFilename = path.basename(String(filename || ""));
+  if (!safeFilename || safeFilename !== filename) return false;
+  const filePath = path.resolve(uploadDir, safeFilename);
+  if (!filePath.startsWith(`${path.resolve(uploadDir)}${path.sep}`)) return false;
 
   try {
     if (fs.existsSync(filePath)) {

@@ -121,6 +121,7 @@ function main() {
     checkEnv("DIRECT_URL", "warn", "recommended for Prisma migrations"),
     checkProductionSecret("SESSION_SECRET", "fail"),
     checkEnv("ALLOWED_ORIGINS", "fail", "CORS boundary"),
+    checkEnv("GOOGLE_CLIENT_ID", "fail", "Google OAuth audience"),
 
     checkEnv("REDIS_URL", "fail", "required for production sessions"),
     checkCustom(
@@ -136,6 +137,8 @@ function main() {
     checkEnv("PAYMOB_HMAC_SECRET", "fail", "webhook signature validation"),
 
     checkEnv("OBS_METRICS_TOKEN", "fail", "authorize /metrics scraping"),
+    checkEnv("UPLOAD_STORAGE_ROOT", "fail", "durable upload mount"),
+    checkEnv("UPLOAD_MALWARE_SCAN_COMMAND", "fail", "upload malware scanner"),
     checkCustom(
       "runtime:alerts_enabled",
       truthy("OBS_ALERTS_ENABLED", true),

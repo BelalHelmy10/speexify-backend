@@ -239,9 +239,11 @@ REDIS_URL=redis://localhost:6379
 WS_AUTH_ENABLED=true
 WS_ALLOWED_ORIGINS=http://localhost:3000
 
-# CSRF
-CSRF_COOKIE_NAME=csrf-token
-CSRF_HEADER_NAME=x-csrf-token
+# Security
+GOOGLE_CLIENT_ID=your-production-client-id.apps.googleusercontent.com
+UPLOAD_STORAGE_ROOT=/var/lib/speexify/uploads
+UPLOAD_MALWARE_SCAN_COMMAND=clamdscan
+CALENDAR_FEED_TTL_DAYS=30
 
 # Paymob (optional)
 PAYMOB_API_KEY=
@@ -275,6 +277,12 @@ ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e
 
 UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars and support attachments. It is optional in local development and required in production; do not deploy production instances with the default process-local `uploads` directory.
 
+UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar and support attachment before it is persisted or served. Production startup fails closed when this is missing; `clamdscan` is the recommended ClamAV deployment command.
+
+GOOGLE_CLIENT_ID – Server-only Google OAuth audience. It is required in production and must match the OAuth client whose authorized JavaScript origins include the deployed frontend.
+
+CALENDAR_FEED_TTL_DAYS – Lifetime of newly generated opaque calendar links, clamped to 1–90 days. Calendar tokens are hashed in the database and can be revoked from Settings.
+
 REDIS_URL – Redis connection string. Required in production and in the default E2E suite for sessions, shared WebSocket rooms, connection limits, and rate limits.
 
 SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling back to memory. It defaults to enabled in production; keep it enabled outside local development too.
@@ -289,9 +297,7 @@ WS_AUTH_ENABLED – Enables WebSocket auth for /ws/prep and /ws/classroom (set f
 
 WS_ALLOWED_ORIGINS – Comma-separated allowlist for WebSocket upgrade origins (falls back to ALLOWED_ORIGINS when omitted).
 
-CSRF_COOKIE_NAME – Cookie name where the CSRF token is stored.
-
-CSRF_HEADER_NAME – Header name where frontend sends the CSRF token in requests.
+CSRF – The API issues a session-bound token from `/api/csrf-token`; mutating requests must send it in the `csrf-token` or `x-csrf-token` header. It is not accepted in URLs or request bodies.
 
 PAYMOB_API_KEY / PAYMOB_INTEGRATION_ID / PAYMOB_IFRAME_ID – Config for Paymob payments (leave empty if not used yet).
 
@@ -330,6 +336,11 @@ Build command:
 ```bash
 npm ci && npm run prisma:migrate
 ```
+
+Before release, run `npm run security:audit:production` in the deployment
+environment. It verifies the production environment variables, OAuth audience,
+durable upload mount, malware scanner, and dependency audit; a local shell with
+development `.env` values is intentionally not considered a production check.
 
 Do not enter the build command as `npm ci node ... generate node ... migrate deploy`; without `&&`, Render runs it as one command and the Prisma migration step will not run correctly.
 

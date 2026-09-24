@@ -2,7 +2,9 @@ import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "n
 import { join, resolve, relative } from "node:path";
 
 const ROOT = process.cwd();
-const STRICT_MODE = String(process.env.SECURITY_AUDIT_STRICT || "").trim() === "1";
+const STRICT_MODE =
+  String(process.env.SECURITY_AUDIT_STRICT || "").trim() === "1" ||
+  process.argv.includes("--strict");
 
 const TARGETS = ["index.js", "src", "worker"];
 const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "coverage", "reports"]);
@@ -39,7 +41,11 @@ const PRODUCTION_ENV_REQUIREMENTS = [
   "REDIS_URL",
   "ALLOWED_ORIGINS",
   "WS_ALLOWED_ORIGINS",
+  "GOOGLE_CLIENT_ID",
   "PAYMOB_HMAC_SECRET",
+  "OBS_METRICS_TOKEN",
+  "UPLOAD_STORAGE_ROOT",
+  "UPLOAD_MALWARE_SCAN_COMMAND",
 ];
 
 function collectJsFiles(pathFragment) {
@@ -153,6 +159,7 @@ function main() {
   const report = {
     generatedAt: new Date().toISOString(),
     strictMode: STRICT_MODE,
+    executionContext: process.env.NODE_ENV === "production" ? "production" : "non-production",
     filesScanned: scan.filesScanned,
     summary,
     findings: scan.findings,

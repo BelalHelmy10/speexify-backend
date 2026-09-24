@@ -674,7 +674,7 @@ app.post(
         select: { avatarUrl: true },
       });
 
-      nextAvatarUrl = saveAvatarFile(req.viewUserId, req.file);
+      nextAvatarUrl = await saveAvatarFile(req.viewUserId, req.file);
       const updated = await prisma.user.update({
         where: { id: req.viewUserId },
         data: { avatarUrl: nextAvatarUrl },

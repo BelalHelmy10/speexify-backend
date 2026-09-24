@@ -2,61 +2,20 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
-import { CALENDAR_FEED_SECRET } from "../config/env.js";
 
 const router = Router();
+const CALENDAR_FEED_TTL_DAYS = Math.min(
+  Math.max(Number(process.env.CALENDAR_FEED_TTL_DAYS) || 30, 1),
+  90
+);
+const CALENDAR_FEED_TTL_MS = CALENDAR_FEED_TTL_DAYS * 24 * 60 * 60 * 1000;
 
-function base64url(buf) {
-  return Buffer.from(buf)
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
+function hashFeedToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
 }
 
-function base64urlDecodeToString(s) {
-  const b64 = String(s)
-    .replace(/-/g, "+")
-    .replace(/_/g, "/")
-    .padEnd(Math.ceil(String(s).length / 4) * 4, "=");
-  return Buffer.from(b64, "base64").toString("utf8");
-}
-
-function signToken(payloadObj) {
-  const payload = base64url(JSON.stringify(payloadObj));
-  const sig = base64url(
-    crypto.createHmac("sha256", CALENDAR_FEED_SECRET)
-      .update(payload)
-      .digest()
-  );
-  return `${payload}.${sig}`;
-}
-
-function verifyToken(token) {
-  if (!token || typeof token !== "string") return null;
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-
-  const [payload, sig] = parts;
-  const expected = base64url(
-    crypto.createHmac("sha256", CALENDAR_FEED_SECRET)
-      .update(payload)
-      .digest()
-  );
-
-  if (sig.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-    return null;
-  }
-
-  try {
-    const json = JSON.parse(base64urlDecodeToString(payload));
-    if (!json || typeof json.userId !== "number") return null;
-    if (json.exp && Date.now() > Number(json.exp)) return null;
-    return json;
-  } catch {
-    return null;
-  }
+function createFeedToken() {
+  return crypto.randomBytes(32).toString("base64url");
 }
 
 function icsEscape(s) {
@@ -104,11 +63,15 @@ router.get("/calendar/export-link", requireAuth, async (req, res) => {
   });
   if (!user) return res.status(404).json({ error: "User not found" });
 
-  const exp = Date.now() + 180 * 24 * 60 * 60 * 1000;
-  const rev = user.calendarFeedRevokedAt
-    ? new Date(user.calendarFeedRevokedAt).getTime()
-    : 0;
-  const token = signToken({ userId, exp, rev });
+  const token = createFeedToken();
+  const expiresAt = new Date(Date.now() + CALENDAR_FEED_TTL_MS);
+  await prisma.calendarFeedToken.create({
+    data: {
+      userId,
+      tokenHash: hashFeedToken(token),
+      expiresAt,
+    },
+  });
 
   const proto = String(req.headers["x-forwarded-proto"] || req.protocol)
     .split(",")[0]
@@ -124,7 +87,7 @@ router.get("/calendar/export-link", requireAuth, async (req, res) => {
   res.json({
     httpsUrl,
     webcalUrl,
-    expiresAt: exp,
+    expiresAt,
     revokedAt: user.calendarFeedRevokedAt || null,
   });
 });
@@ -134,10 +97,17 @@ router.get("/calendar/export-link", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 router.post("/calendar/export-link/revoke", requireAuth, async (req, res) => {
   const revokedAt = new Date();
-  await prisma.user.update({
-    where: { id: req.viewUserId },
-    data: { calendarFeedRevokedAt: revokedAt },
-  });
+  await prisma.$transaction([
+    prisma.calendarFeedToken.updateMany({
+      where: { userId: req.viewUserId, revokedAt: null },
+      data: { revokedAt },
+    }),
+    // Keep the legacy timestamp populated for older clients and audit views.
+    prisma.user.update({
+      where: { id: req.viewUserId },
+      data: { calendarFeedRevokedAt: revokedAt },
+    }),
+  ]);
 
   res.json({ ok: true, revokedAt });
 });
@@ -147,28 +117,28 @@ router.post("/calendar/export-link/revoke", requireAuth, async (req, res) => {
 // --------------------------------------------------------------------------
 router.get("/calendar.ics", async (req, res) => {
   const token = String(req.query.token || "");
-  const payload = verifyToken(token);
-  if (!payload) {
+  if (!token || token.length < 40 || token.length > 120) {
     return res.status(401).send("Invalid calendar token");
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: payload.userId },
-    select: { id: true, calendarFeedRevokedAt: true },
+  const tokenRecord = await prisma.calendarFeedToken.findUnique({
+    where: { tokenHash: hashFeedToken(token) },
+    select: { id: true, userId: true, expiresAt: true, revokedAt: true },
   });
-  if (!user) {
+  if (
+    !tokenRecord ||
+    tokenRecord.revokedAt ||
+    tokenRecord.expiresAt.getTime() <= Date.now()
+  ) {
     return res.status(401).send("Invalid calendar token");
   }
 
-  const currentRev = user.calendarFeedRevokedAt
-    ? new Date(user.calendarFeedRevokedAt).getTime()
-    : 0;
-  const tokenRev = payload.rev == null ? 0 : Number(payload.rev);
-  if (tokenRev !== currentRev) {
-    return res.status(401).send("Calendar token has been revoked");
-  }
+  await prisma.calendarFeedToken.update({
+    where: { id: tokenRecord.id },
+    data: { lastUsedAt: new Date() },
+  });
 
-  const sessions = await loadUserSessions(payload.userId);
+  const sessions = await loadUserSessions(tokenRecord.userId);
 
   const lines = [];
   lines.push("BEGIN:VCALENDAR");
@@ -221,7 +191,8 @@ router.get("/calendar.ics", async (req, res) => {
   lines.push("END:VCALENDAR");
 
   res.setHeader("Content-Type", "text/calendar; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Pragma", "no-cache");
   return res.status(200).send(lines.join("\r\n") + "\r\n");
 });
 

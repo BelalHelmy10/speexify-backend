@@ -96,11 +96,27 @@ export const WS_AUTH_TOKEN_SECRET = readSecretEnv(
 );
 requireProductionSecret("WS_AUTH_TOKEN_SECRET", WS_AUTH_TOKEN_SECRET);
 
+// OAuth audience is intentionally server-only. Never fall back to a public
+// frontend variable in the backend, because a release must verify against the
+// exact client registered in the Google Cloud project.
 export const CALENDAR_FEED_SECRET = readSecretEnv(
   "CALENDAR_FEED_SECRET",
   SESSION_SECRET
 );
-requireProductionSecret("CALENDAR_FEED_SECRET", CALENDAR_FEED_SECRET);
+export const GOOGLE_CLIENT_ID = readSecretEnv("GOOGLE_CLIENT_ID");
+if (isProd && !GOOGLE_CLIENT_ID) {
+  throw new Error("GOOGLE_CLIENT_ID must be set in production");
+}
+
+// Production uploads must be scanned before they are persisted or served.
+export const UPLOAD_MALWARE_SCAN_COMMAND = readSecretEnv(
+  "UPLOAD_MALWARE_SCAN_COMMAND"
+);
+if (isProd && !UPLOAD_MALWARE_SCAN_COMMAND) {
+  throw new Error(
+    "UPLOAD_MALWARE_SCAN_COMMAND must point to the production malware scanner"
+  );
+}
 
 // Redis
 export const REDIS_URL = process.env.REDIS_URL || "";

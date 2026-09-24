@@ -75,6 +75,8 @@ test("production env falls back token/feed secrets to a strong session secret", 
     NODE_ENV: "production",
     SESSION_SECRET: sessionSecret,
     OBS_METRICS_TOKEN: "speexify-production-metrics-token-0001",
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    UPLOAD_MALWARE_SCAN_COMMAND: "clamdscan",
     WS_AUTH_TOKEN_SECRET: undefined,
     CALENDAR_FEED_SECRET: undefined,
     REDIS_URL: "redis://localhost:6379",
@@ -90,8 +92,10 @@ test("production env rejects missing OBS_METRICS_TOKEN", async () => {
     () =>
       importFreshEnv({
         NODE_ENV: "production",
-        SESSION_SECRET: "speexify-production-session-secret-0003",
-        OBS_METRICS_TOKEN: undefined,
+    SESSION_SECRET: "speexify-production-session-secret-0003",
+    OBS_METRICS_TOKEN: undefined,
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    UPLOAD_MALWARE_SCAN_COMMAND: "clamdscan",
         REDIS_URL: "redis://localhost:6379",
       }),
     /OBS_METRICS_TOKEN must be set in production/

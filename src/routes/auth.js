@@ -9,6 +9,7 @@ import {
   SESSION_COOKIE_NAME,
   sessionCookieOptions,
 } from "../config/session.js";
+import { GOOGLE_CLIENT_ID } from "../config/env.js";
 import { sendEmail } from "../services/emailService.js";
 import { loginLimiter, authLimiter, emailCodeLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
@@ -70,11 +71,6 @@ function validatePasswordStrength(password, label = "Password") {
 /* ========================================================================== */
 
 // ---- Google OAuth config ----
-const GOOGLE_CLIENT_ID =
-  process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
-  process.env.GOOGLE_CLIENT_ID ||
-  "";
-
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // ---- Public user fields (for /me) ----
