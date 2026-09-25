@@ -23,6 +23,11 @@ import {
     completeSessionWithTeacherEarningOutbox,
     processTeacherEarningSnapshotJob,
 } from "../../services/teacherEarningsService.js";
+import {
+    assertSessionCanBeRescheduled,
+    SESSION_TERMINAL_ERROR_CODE,
+    rescheduleScheduledSession,
+} from "../../services/sessionLifecycleService.js";
 
 const router = Router();
 
@@ -64,8 +69,7 @@ router.post(
 
         const canComplete =
             req.user.role === "admin" ||
-            req.user.id === session.teacherId ||
-            req.user.id === session.userId;
+            req.user.id === session.teacherId;
 
         if (!canComplete) return res.status(403).json({ error: "Forbidden" });
 
@@ -162,6 +166,12 @@ router.post(
                 alreadyCanceled: true,
                 refunded: false,
                 refundResults: [],
+            });
+        }
+        if (sessionRow.status === "completed") {
+            return res.status(409).json({
+                code: SESSION_TERMINAL_ERROR_CODE,
+                error: "Completed sessions cannot be canceled",
             });
         }
 
@@ -296,6 +306,9 @@ router.post(
             await abandonIdempotentRequest(idempotency.recordId);
         }
         logger.error({ err: e }, "Cancel failed");
+        if (e?.code === SESSION_TERMINAL_ERROR_CODE) {
+            return res.status(409).json({ code: e.code, error: e.message });
+        }
         res.status(400).json({ error: "Failed to cancel session" });
     }
 });
@@ -328,6 +341,12 @@ router.post(
         });
 
         if (!session) return res.status(404).json({ error: "Not found" });
+
+        try {
+            assertSessionCanBeRescheduled(session);
+        } catch (e) {
+            return res.status(409).json({ code: e.code, error: e.message });
+        }
 
         const isOwner = session.userId === req.user.id;
         const isTeacher = session.teacherId === req.user.id;
@@ -377,18 +396,17 @@ router.post(
             }
         }
 
-        const updated = await prisma.session.update({
-            where: { id },
-            data: {
-                startAt: newStart,
-                endAt: newEnd,
-                status: "scheduled",
-            },
+        const updated = await rescheduleScheduledSession(id, {
+            startAt: newStart,
+            endAt: newEnd,
         });
 
         res.json({ ok: true, session: updated });
     } catch (e) {
         logger.error({ err: e }, "reschedule error");
+        if (e?.code === SESSION_TERMINAL_ERROR_CODE) {
+            return res.status(409).json({ code: e.code, error: e.message });
+        }
         res.status(400).json({ error: "Failed to reschedule session" });
     }
 });

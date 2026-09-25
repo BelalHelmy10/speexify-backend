@@ -30,11 +30,20 @@ export function isTeacherEarningsUnavailable(err) {
   );
 }
 
-function durationMinutes(startAt, endAt) {
-  const start = startAt ? new Date(startAt).getTime() : NaN;
-  const end = endAt ? new Date(endAt).getTime() : NaN;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 60;
+export function durationMinutes(startAt, endAt) {
+  const start = startAt == null ? NaN : new Date(startAt).getTime();
+  const end = endAt == null ? NaN : new Date(endAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
   return Math.max(1, Math.round((end - start) / 60000));
+}
+
+function invalidSessionDurationError(sessionId) {
+  const suffix = sessionId ? ` for session ${sessionId}` : "";
+  const error = new Error(
+    `Missing or invalid session timestamps${suffix}; payroll requires review`
+  );
+  error.code = "INVALID_SESSION_DURATION";
+  return error;
 }
 
 function safeTimeZone(timeZone) {
@@ -71,7 +80,10 @@ function shiftMonthKey(year, month, offset) {
 }
 
 export function calculateTeacherEarning({ rateHourlyEgpPiastres, ratePerSessionEgpPiastres, minutes }) {
-  const safeMinutes = Number.isFinite(Number(minutes)) ? Number(minutes) : 60;
+  const safeMinutes = Number(minutes);
+  if (!Number.isFinite(safeMinutes) || safeMinutes <= 0) {
+    throw invalidSessionDurationError();
+  }
   if (Number.isInteger(rateHourlyEgpPiastres) && rateHourlyEgpPiastres > 0) {
     return {
       amountMinor: Math.round((safeMinutes * rateHourlyEgpPiastres) / 60),
@@ -87,6 +99,16 @@ export function calculateTeacherEarning({ rateHourlyEgpPiastres, ratePerSessionE
     };
   }
   return { amountMinor: 0, rateType: "none", rateMinor: null };
+}
+
+export function assertPayableSessionDurations(entries) {
+  const invalidEntry = entries.find(
+    (entry) => durationMinutes(entry.session?.startAt, entry.session?.endAt) === null
+  );
+  if (invalidEntry) {
+    throw invalidSessionDurationError(invalidEntry.sessionId);
+  }
+  return entries;
 }
 
 export function validatePayoutEntries(earningIds, entries) {
@@ -411,6 +433,11 @@ export async function ensureTeacherEarningForSession(
   const teacherId = session.teacherId || Number(teacherIdOverride) || null;
   if (!teacherId) return null;
 
+  const minutes = durationMinutes(session.startAt, session.endAt);
+  if (minutes === null) {
+    throw invalidSessionDurationError(session.id);
+  }
+
   const existing = await db.teacherEarning.findUnique({
     where: { sessionId: session.id },
   });
@@ -419,7 +446,6 @@ export async function ensureTeacherEarningForSession(
   // neither normal synchronization nor rate changes may rewrite it.
   if (existing || !allowCreate) return existing || null;
 
-  const minutes = durationMinutes(session.startAt, session.endAt);
   const snapshotAt = new Date(
     session.completedAt || session.updatedAt || session.endAt || session.startAt
   );

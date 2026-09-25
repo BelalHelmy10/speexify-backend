@@ -251,8 +251,9 @@ PAYMOB_API_KEY=
 PAYMOB_INTEGRATION_ID=
 PAYMOB_IFRAME_ID=
 
-# Resend transactional email
+# Resend transactional email (required for registration verification codes)
 RESEND_API_KEY=
+EMAIL_FROM=Speexify <no-reply@speexify.com>
 RESEND_WEBHOOK_SECRET=
 
 # Logging
@@ -296,7 +297,7 @@ SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling bac
 
 SESSION_FORCE_MEMORY – Local/unit-test-only switch for the in-memory session store. The default E2E suite deliberately uses Redis; use `npm run test:e2e:memory` only for an explicit fallback-mode test.
 
-Notification delivery – Booking, cancellation, feedback, and reminder flows enqueue email bodies in `NotificationDelivery` without calling the email provider in the request path. Run `npm run worker:notification-delivery` in a durable worker process. Admins can inspect `/api/admin/notification-deliveries` and queue failed rows for retry.
+Notification delivery – Registration verification codes are sent synchronously and the API only confirms success after Resend accepts them. Booking, cancellation, feedback, and reminder flows enqueue email bodies in `NotificationDelivery` without calling the email provider in the request path; run `npm run worker:notification-delivery` in a durable worker process for those flows. Admins can inspect `/api/admin/notification-deliveries` and queue failed rows for retry.
 
 Resend delivery feedback – Configure the Resend webhook URL as `https://<api-host>/api/webhooks/resend` and store its signing secret in `RESEND_WEBHOOK_SECRET`. Signed delivery, bounce, complaint, and failure events update the delivery ledger; bounced and complained addresses are stored in `EmailSuppression` and are excluded from future queues.
 

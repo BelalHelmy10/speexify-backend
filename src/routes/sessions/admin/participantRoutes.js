@@ -320,6 +320,12 @@ router.delete(
           refunded: false,
         });
       }
+      if (session.status === "completed") {
+        return res.status(409).json({
+          code: "SESSION_TERMINAL",
+          error: "Completed sessions cannot be canceled",
+        });
+      }
 
       const refundable = !!refund && new Date(session.startAt).getTime() - Date.now() >= 12 * 60 * 60 * 1000;
       const cancellation = await cancelBooking(sessionId, {userId: targetUserId, refund: refundable});
@@ -333,6 +339,9 @@ router.delete(
       return res.json({ ok: true, removed: true, refunded });
     } catch (e) {
       logger.error({ err: e }, "admin.sessions.removeParticipant error");
+      if (e?.code === "SESSION_TERMINAL") {
+        return res.status(409).json({ code: e.code, error: e.message });
+      }
       return res.status(500).json({ error: "Failed to remove participant" });
     }
   }

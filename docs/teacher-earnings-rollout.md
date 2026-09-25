@@ -34,6 +34,9 @@ require an explicit admin adjustment or rate-history decision.
 Only sessions with `status = completed` are eligible. Canceled or scheduled
 sessions never create payable amounts. A missing EGP rate creates a visible
 zero-value configuration entry and cannot be included in a payout.
+Missing, invalid, or reversed session timestamps do not create an earning. The
+snapshot outbox job is marked `FAILED` with a review error, and any legacy
+earning with invalid source timestamps is blocked from payout.
 
 Completed sessions with an earnings record are retained for auditability and
 cannot be hard-deleted. Use cancellation or another supported administrative

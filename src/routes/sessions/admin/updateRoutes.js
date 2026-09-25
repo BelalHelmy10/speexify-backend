@@ -11,6 +11,7 @@ import {
   logger,
   audit,
 } from "./shared.js";
+import { isTerminalSessionStatus } from "../../../services/sessionLifecycleService.js";
 
 const router = Router();
 
@@ -59,6 +60,18 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
     }
     if (patch.notes !== undefined) {
       patch.notes = String(patch.notes || "").trim() || null;
+    }
+
+    const changesSchedule = ["startAt", "endAt"].some(
+      (field) => patch[field] !== undefined
+    );
+    const changesStatus =
+      patch.status !== undefined && patch.status !== existing.status;
+    if (isTerminalSessionStatus(existing.status) && (changesSchedule || changesStatus)) {
+      return res.status(409).json({
+        code: "SESSION_TERMINAL",
+        error: "Terminal sessions cannot be rescheduled or change status",
+      });
     }
 
     const start = patch.startAt ? new Date(patch.startAt) : existing.startAt;

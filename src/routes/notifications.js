@@ -27,6 +27,7 @@ router.get(
         "BOUNCED",
         "COMPLAINED",
         "SUPPRESSED",
+        "CANCELED",
       ]);
       const requestedStatus = String(req.query.status || "").toUpperCase();
       const status = allowedStatuses.has(requestedStatus) ? requestedStatus : null;

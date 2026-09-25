@@ -11,7 +11,8 @@ import {
 } from "../config/session.js";
 import { GOOGLE_CLIENT_ID } from "../config/env.js";
 import { enqueueEmail } from "../services/emailService.js";
-import { passwordResetEmail, verificationEmail } from "../services/emailTemplates.js";
+import { passwordResetEmail } from "../services/emailTemplates.js";
+import { deliverVerificationCode } from "../services/registrationEmail.js";
 import { loginLimiter, authLimiter, emailCodeLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../lib/logger.js";
 import {
@@ -672,25 +673,48 @@ router.post("/register/start", emailCodeLimiter, validateRequest({ body: EmailOn
     const codeHash = hashCode(code);
     const expiresAt = new Date(Date.now() + 10 * 60_000);
 
+    // A previous asynchronous registration email may still be waiting for a
+    // worker. It belongs to an older code and must not be delivered after this
+    // request creates a newer one. Best effort is intentional: delivery below
+    // remains the source of truth for whether this request succeeds.
+    try {
+      await prisma.notificationDelivery.updateMany({
+        where: {
+          eventType: "email_verification",
+          recipient: email,
+          status: { in: ["PENDING", "FAILED"] },
+        },
+        data: {
+          status: "CANCELED",
+          lastError: "Superseded by a newer verification request",
+          lockedAt: null,
+          lockedBy: null,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, email },
+        "register/start could not supersede older verification deliveries"
+      );
+    }
+
     await prisma.verificationCode.upsert({
       where: { email },
       update: { codeHash, expiresAt, attempts: 0 },
       create: { email, codeHash, expiresAt, attempts: 0 },
     });
 
-    // Registration can safely report a queue failure because the address is
-    // not yet an authenticated account.
     try {
-      const emailContent = verificationEmail({ code, locale: req.body.locale });
-      await enqueueEmail(email, emailContent.subject, emailContent.html, {
+      await deliverVerificationCode({
+        email,
+        code,
         locale: req.body.locale,
-        eventType: "email_verification",
       });
     } catch (err) {
-      logger.error({ err, email }, "register/start enqueue failed");
-      return res.status(500).json({
+      logger.error({ err, email }, "register/start verification email failed");
+      return res.status(503).json({
         error:
-          "Failed to send verification email. Please check your email and try again.",
+          "Verification email is temporarily unavailable. Please try again in a moment.",
       });
     }
 

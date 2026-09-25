@@ -7,6 +7,7 @@ import { audit } from "./admin/shared.js";
 import {
   getTeacherEarningsSummary,
   isTeacherEarningsUnavailable,
+  assertPayableSessionDurations,
   validatePayoutEntries,
   TEACHER_EARNINGS_CURRENCY,
 } from "../services/teacherEarningsService.js";
@@ -563,8 +564,14 @@ router.post(
       const payout = await prisma.$transaction(async (tx) => {
         const entries = await tx.teacherEarning.findMany({
           where: { id: { in: earningIds }, teacherId, status: "PENDING", currencyCode: TEACHER_EARNINGS_CURRENCY },
-          select: { id: true, amountMinor: true },
+          select: {
+            id: true,
+            sessionId: true,
+            amountMinor: true,
+            session: { select: { startAt: true, endAt: true } },
+          },
         });
+        assertPayableSessionDurations(entries);
         const totalEarningMinor = validatePayoutEntries(earningIds, entries);
         const adjustments = await tx.teacherEarningAdjustment.findMany({
           where: {
@@ -630,7 +637,9 @@ router.post(
       return res.status(201).json({ payout });
     } catch (err) {
       if (err?.code === "INVALID_EARNINGS") return res.status(409).json({ error: err.message });
-      if (err?.code === "RATE_NOT_CONFIGURED") return res.status(422).json({ error: err.message });
+      if (["RATE_NOT_CONFIGURED", "INVALID_SESSION_DURATION"].includes(err?.code)) {
+        return res.status(422).json({ error: err.message });
+      }
       console.error("POST /api/admin/teacher-payouts failed:", err);
       return res.status(500).json({ error: "Failed to record teacher payout" });
     }

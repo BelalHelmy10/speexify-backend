@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   calculateTeacherEarning,
+  durationMinutes,
+  assertPayableSessionDurations,
   completeSessionWithTeacherEarningOutbox,
   ensureTeacherEarningForSession,
   getTeacherEarningsReconciliation,
@@ -19,6 +21,58 @@ test("teacher earnings use EGP piastres and hourly duration", () => {
   const result = calculateTeacherEarning({ rateHourlyEgpPiastres: 12000, minutes: 45 });
   assert.equal(TEACHER_EARNINGS_CURRENCY, "EGP");
   assert.deepEqual(result, { amountMinor: 9000, rateType: "hourly", rateMinor: 12000 });
+});
+
+test("invalid or missing timestamps never default to a 60-minute duration", () => {
+  assert.equal(durationMinutes(undefined, new Date("2026-09-20T12:00:00.000Z")), null);
+  assert.equal(durationMinutes(new Date("2026-09-20T11:00:00.000Z"), null), null);
+  assert.equal(durationMinutes("not-a-date", "2026-09-20T12:00:00.000Z"), null);
+  assert.equal(
+    durationMinutes("2026-09-20T12:00:00.000Z", "2026-09-20T11:00:00.000Z"),
+    null
+  );
+  assert.equal(
+    durationMinutes("2026-09-20T11:00:00.000Z", "2026-09-20T12:00:00.000Z"),
+    60
+  );
+});
+
+test("invalid earning minutes cannot be converted into a payable amount", () => {
+  assert.throws(
+    () => calculateTeacherEarning({ rateHourlyEgpPiastres: 12000 }),
+    (error) => error.code === "INVALID_SESSION_DURATION"
+  );
+  assert.throws(
+    () => calculateTeacherEarning({ rateHourlyEgpPiastres: 12000, minutes: 0 }),
+    (error) => error.code === "INVALID_SESSION_DURATION"
+  );
+});
+
+test("payout validation rejects earnings whose source session has invalid timestamps", () => {
+  assert.doesNotThrow(() =>
+    assertPayableSessionDurations([
+      {
+        sessionId: 1,
+        session: {
+          startAt: new Date("2026-09-20T11:00:00.000Z"),
+          endAt: new Date("2026-09-20T12:00:00.000Z"),
+        },
+      },
+    ])
+  );
+  assert.throws(
+    () =>
+      assertPayableSessionDurations([
+        {
+          sessionId: 2,
+          session: {
+            startAt: new Date("2026-09-20T11:00:00.000Z"),
+            endAt: null,
+          },
+        },
+      ]),
+    (error) => error.code === "INVALID_SESSION_DURATION"
+  );
 });
 
 test("earnings trend buckets use the teacher timezone at UTC month boundaries", () => {
@@ -168,6 +222,72 @@ test("normal synchronization does not create missing historical earnings", async
   await syncTeacherEarnings(4, db, { allowHistoricalBackfill: true });
   assert.equal(createCalled, true);
   assert.equal(createdData.rateMinor, 12000);
+});
+
+test("invalid session duration does not create an earning", async () => {
+  let createCalled = false;
+  const db = {
+    session: {
+      findUnique: async () => ({
+        id: 14,
+        teacherId: 4,
+        status: "completed",
+        startAt: new Date("2026-09-20T11:00:00.000Z"),
+        endAt: null,
+      }),
+    },
+    teacherEarning: {
+      findUnique: async () => {
+        throw new Error("existing earning lookup should follow duration validation");
+      },
+      create: async () => {
+        createCalled = true;
+        return null;
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => ensureTeacherEarningForSession(14, db),
+    (error) => error.code === "INVALID_SESSION_DURATION"
+  );
+  assert.equal(createCalled, false);
+});
+
+test("invalid session duration leaves the snapshot job failed for review", async () => {
+  const updates = [];
+  const db = {
+    teacherEarningSnapshotJob: {
+      updateMany: async (args) => {
+        updates.push(args);
+        return { count: 1 };
+      },
+      findUnique: async () => ({
+        id: 79,
+        sessionId: 15,
+        teacherId: 8,
+        attempts: 0,
+      }),
+    },
+    session: {
+      findUnique: async () => ({
+        id: 15,
+        teacherId: 8,
+        status: "completed",
+        startAt: new Date("not-a-date"),
+        endAt: new Date("2026-09-20T12:00:00.000Z"),
+      }),
+    },
+  };
+
+  const result = await processTeacherEarningSnapshotJob(79, db, {
+    workerId: "test-worker-invalid-duration",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "INVALID_SESSION_DURATION");
+  assert.equal(updates[1].data.status, TEACHER_EARNING_SNAPSHOT_JOB_STATUS.FAILED);
+  assert.match(updates[1].data.lastError, /payroll requires review/);
 });
 
 test("earnings summary is read-only by default and bounds trend history to six months", async () => {

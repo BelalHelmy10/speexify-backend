@@ -474,7 +474,8 @@ model TeacherEarning {
   rateSnapshotAt     DateTime  @default(now())
   rateEffectiveFrom  DateTime?
   rateSnapshotSource String    @default("completion_current_rate")
-  durationMinutes    Int       @default(60)
+  // No default: invalid session timestamps must never become a payable 60-minute entry.
+  durationMinutes    Int
   // The SQL migration constrains this field to PENDING or PAID.
   status             String    @default("PENDING")
   createdAt          DateTime  @default(now())

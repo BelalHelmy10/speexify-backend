@@ -1,5 +1,6 @@
 import { bookingTransaction, lockSession } from './bookingTransaction.js';
 import { refundOneCreditWithClient } from './sessionsService.js';
+import { assertSessionCanBeCanceled } from './sessionLifecycleService.js';
 
 /** Cancel a seat or session and reverse its recorded debits atomically. */
 export function cancelBooking(sessionId, { userId = null, refund = true } = {}) {
@@ -8,6 +9,7 @@ export function cancelBooking(sessionId, { userId = null, refund = true } = {}) 
     const session = await tx.session.findUnique({where: {id: sessionId}, include: {participants: true}});
     if (!session) throw new Error('Session not found');
     if (session.status === 'canceled') return {session, refundResults: [], alreadyCanceled: true};
+    assertSessionCanBeCanceled(session);
     const ids = userId ? [userId] : [...new Set([
       ...(session.userId ? [session.userId] : []),
       ...session.participants.filter(p => p.status !== 'canceled').map(p => p.userId),
