@@ -13,8 +13,27 @@ const QuoteBody = z.object({
   discountCode: z.string().trim().max(64).optional().nullable(),
 }).strict();
 
+let clearDefaultPricingCatalogCacheImpl = () => {};
+
+export function clearDefaultPricingCatalogCache() {
+  clearDefaultPricingCatalogCacheImpl();
+}
+
 export function createPricingRouter({db = prisma, resolveCountry = resolvePaymentCountry, buildQuote = buildPaymentQuote} = {}) {
   const router = Router();
+  // The catalog is public and changes infrequently, but the request still
+  // needs the current region token. Cache the database-backed package list
+  // per router/country for a short period so a slow database round-trip does
+  // not block every visitor. The cache is local to the router instance, which
+  // keeps injected test databases isolated.
+  const catalogCache = new Map();
+  const catalogCacheTtlMs = Math.max(
+    5_000,
+    Number(process.env.PRICING_CATALOG_CACHE_TTL_MS) || 30_000,
+  );
+  if (db === prisma) {
+    clearDefaultPricingCatalogCacheImpl = () => catalogCache.clear();
+  }
   router.use(rateLimit({windowMs: 60_000, limit: 120, standardHeaders: "draft-7", legacyHeaders: false}));
   router.use((_req, res, next) => {res.set("Cache-Control", "private, no-store"); next();});
   router.get("/catalog", async (req, res) => {
@@ -22,15 +41,34 @@ export function createPricingRouter({db = prisma, resolveCountry = resolvePaymen
     recordBusinessMetric("pricingCatalog", "requests");
     try {
       const region = await resolveCountry(req);
-      const packages = await db.package.findMany({where: {active: true, deletedAt: null, priceType: {not: "CUSTOM"}}, orderBy: {sortOrder: "asc"}});
+      const cacheKey = region.countryCode || "EG";
+      const cached = catalogCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        res.json(cached.payload);
+        recordBusinessMetric("pricingCatalog", "successes", {durationMs: Date.now() - startedAt});
+        return;
+      }
+
+      const packages = await db.package.findMany({
+        where: {active: true, deletedAt: null, priceType: {not: "CUSTOM"}},
+        orderBy: {sortOrder: "asc"},
+        select: {
+          id: true, catalogKey: true, title: true, description: true,
+          durationMin: true, sessionsPerPack: true, priceType: true,
+          priceUSD: true, image: true, pricingOverrides: true,
+          active: true, deletedAt: true,
+        },
+      });
       const items = packages.map(pkg => ({
         id: pkg.id, catalogKey: pkg.catalogKey, title: pkg.title, description: pkg.description,
         durationMin: pkg.durationMin, sessionsPerPack: pkg.sessionsPerPack,
         priceType: pkg.priceType, priceEGP: pkg.priceUSD, image: pkg.image,
         pricing: buildDisplayPrice(pkg, region.countryCode),
       }));
-      res.json({countryCode: region.countryCode, countrySource: region.source,
-        regionToken: signPricingToken("region", region, 60 * 60 * 1000), packages: items});
+      const payload = {countryCode: region.countryCode, countrySource: region.source,
+        regionToken: signPricingToken("region", region, 60 * 60 * 1000), packages: items};
+      catalogCache.set(cacheKey, {expiresAt: Date.now() + catalogCacheTtlMs, payload});
+      res.json(payload);
       recordBusinessMetric("pricingCatalog", "successes", {durationMs: Date.now() - startedAt});
     } catch (error) {
       recordBusinessMetric("pricingCatalog", "failures", {durationMs: Date.now() - startedAt});

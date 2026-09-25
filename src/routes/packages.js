@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { requireAuth, requireAdmin } from "../middleware/auth-helpers.js";
 import { validateRequest } from "../middleware/validateRequest.js";
+import { clearDefaultPricingCatalogCache } from "./pricing.js";
 
 const router = Router();
 
@@ -190,6 +191,8 @@ router.post(
       },
     });
 
+    clearDefaultPricingCatalogCache();
+
     res.status(201).json(created);
   } catch (err) {
     logger.error({ err: err }, "[packages] admin create error");
@@ -228,6 +231,7 @@ router.patch(
       }
 
       const updated = await prisma.package.update({ where: { id }, data });
+      clearDefaultPricingCatalogCache();
       res.json(updated);
     } catch (err) {
       logger.error({ err: err }, "[packages] admin update error");
@@ -246,6 +250,7 @@ router.delete(
     try {
       const id = req.params.id;
       await prisma.package.delete({ where: { id } });
+      clearDefaultPricingCatalogCache();
       res.json({ ok: true });
     } catch (err) {
       logger.error({ err: err }, "[packages] admin delete error");
