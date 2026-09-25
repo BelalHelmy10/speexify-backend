@@ -51,7 +51,12 @@ export function avatarFilenameFromUrl(avatarUrl) {
   if (!avatarUrl || typeof avatarUrl !== "string") return "";
   const marker = "/api/me/avatar/";
   if (!avatarUrl.startsWith(marker)) return "";
-  return path.basename(avatarUrl.slice(marker.length));
+
+  const filename = avatarUrl.slice(marker.length);
+  if (!filename || filename !== path.basename(filename)) return "";
+  if (filename.includes("\\") || filename === "." || filename === "..") return "";
+
+  return filename;
 }
 
 export function resolveAvatarPath(filename) {

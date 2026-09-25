@@ -786,7 +786,10 @@ app.delete("/api/me/avatar", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/me/avatar/:filename", requireAuth, requireUploadsEnabled, (req, res) => {
+// Reading an existing avatar is safe even when new uploads are disabled. This
+// keeps previously stored files visible while production storage is being
+// configured; the POST route remains protected by requireUploadsEnabled.
+app.get("/api/me/avatar/:filename", requireAuth, (req, res) => {
   const filePath = resolveAvatarPath(req.params.filename);
   if (!filePath) return res.status(404).json({ error: "Not found" });
   res.sendFile(filePath, (error) => {
