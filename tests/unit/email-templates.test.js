@@ -14,6 +14,14 @@ test("email locale normalization only enables supported Arabic explicitly", () =
   assert.equal(normalizeEmailLocale(undefined), "en");
 });
 
+test("email dates use the Cairo fallback when a user timezone is missing or invalid", () => {
+  const expected = formatEmailDate("2026-09-27T12:00:00.000Z", "Africa/Cairo", "en");
+
+  assert.match(expected, /03:00 PM/);
+  assert.equal(formatEmailDate("2026-09-27T12:00:00.000Z", null, "en"), expected);
+  assert.equal(formatEmailDate("2026-09-27T12:00:00.000Z", "Not/A_Timezone", "en"), expected);
+});
+
 test("Arabic transactional email is RTL and uses localized copy", () => {
   const email = bookingLearnerEmail({
     name: "سارة",

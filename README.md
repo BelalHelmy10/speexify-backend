@@ -390,6 +390,20 @@ Optional payroll worker tuning env vars:
 - `TEACHER_EARNINGS_LOCK_NAME` (default `teacher-earning-snapshot-worker`)
 - `TEACHER_EARNINGS_LOCK_LEASE_MS` (default `max(interval*4, 600000)`)
 
+Notification delivery uses the same durable-worker pattern. In local
+development, `npm run dev` starts the API and notification worker together.
+In production, run the notification worker as a separate continuously running
+service alongside the API:
+
+```bash
+npm run worker:notification-delivery
+```
+
+Optional notification worker tuning env vars:
+
+- `NOTIFICATION_DELIVERY_INTERVAL_MS` (default `30000`)
+- `NOTIFICATION_DELIVERY_BATCH_SIZE` (default `25`)
+
 “How to…” – product usage
 This section explains how each role uses the product in simple terms.
 

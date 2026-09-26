@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon index.js",
-    "build": "node scripts/checkSyntax.js",
+    "dev": "node scripts/devWithNotificationWorker.js",
+    "dev:api": "nodemon index.js",
+    "build": "npm run prisma:generate && node scripts/checkSyntax.js",
     "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
     "prisma:migrate": "node scripts/deployMigrations.js",
     "prisma:studio": "node ./node_modules/prisma/build/index.js studio",

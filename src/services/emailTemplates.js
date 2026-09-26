@@ -93,6 +93,19 @@ const COPY = {
   },
 };
 
+const FALLBACK_EMAIL_TIMEZONE = "Africa/Cairo";
+
+function resolveEmailTimeZone(timeZone) {
+  const candidate = String(timeZone || "").trim() || FALLBACK_EMAIL_TIMEZONE;
+
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return FALLBACK_EMAIL_TIMEZONE;
+  }
+}
+
 export function normalizeEmailLocale(value) {
   return String(value || "").toLowerCase().startsWith("ar") ? "ar" : "en";
 }
@@ -119,7 +132,7 @@ function safeHref(value) {
 export function formatEmailDate(date, timeZone, locale) {
   try {
     return new Intl.DateTimeFormat(normalizeEmailLocale(locale) === "ar" ? "ar-EG" : "en-US", {
-      timeZone: timeZone || "UTC",
+      timeZone: resolveEmailTimeZone(timeZone),
       weekday: "short",
       year: "numeric",
       month: "short",
