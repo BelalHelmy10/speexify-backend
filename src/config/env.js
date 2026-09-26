@@ -37,6 +37,13 @@ function parsePositiveIntEnv(name, fallback) {
   return Math.floor(parsed);
 }
 
+function parsePositiveIntListEnv(name) {
+  return String(process.env[name] || "")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+}
+
 function parseNonNegativeNumberEnv(name, fallback) {
   const rawValue = process.env[name];
   if (rawValue == null || rawValue === "") return fallback;
@@ -170,6 +177,12 @@ export const PAYMOB_API_KEY = (process.env.PAYMOB_API_KEY || "").trim();
 export const PAYMOB_INTEGRATION_ID = (
   process.env.PAYMOB_INTEGRATION_ID || ""
 ).trim();
+// Unified Checkout accepts multiple integration IDs. Keep the legacy single
+// ID above for compatibility, while allowing cards + wallets (or other
+// enabled methods) to be configured without changing application code.
+export const PAYMOB_PAYMENT_METHOD_IDS = parsePositiveIntListEnv(
+  "PAYMOB_PAYMENT_METHOD_IDS"
+);
 export const PAYMOB_IFRAME_ID = (process.env.PAYMOB_IFRAME_ID || "").trim();
 export const PAYMOB_HMAC_SECRET = (process.env.PAYMOB_HMAC_SECRET || "").trim();
 export const PAYMOB_SECRET_KEY = (process.env.PAYMOB_SECRET_KEY || "").trim();

@@ -311,7 +311,9 @@ WS_ALLOWED_ORIGINS – Comma-separated allowlist for WebSocket upgrade origins (
 
 CSRF – The API issues a session-bound token from `/api/csrf-token`; mutating requests must send it in the `csrf-token` or `x-csrf-token` header. It is not accepted in URLs or request bodies.
 
-PAYMOB_API_KEY / PAYMOB_INTEGRATION_ID / PAYMOB_IFRAME_ID – Config for Paymob payments (leave empty if not used yet).
+PAYMOB_API_KEY / PAYMOB_INTEGRATION_ID / PAYMOB_IFRAME_ID – Core Paymob payment configuration. `PAYMOB_INTEGRATION_ID` remains the legacy/default method ID.
+
+PAYMOB_PAYMENT_METHOD_IDS – Optional comma-separated list of Paymob integration IDs sent to Unified Checkout. Configure the IDs for every enabled method in the same Paymob mode (for example, the test card ID and test Mobile Wallet ID in staging). Never mix Test and Live IDs or credentials.
 
 LOG_LEVEL – Logging level for pino (debug, info, warn, error).
 

@@ -6,11 +6,48 @@ import {
   PAYMOB_PUBLIC_KEY,
   PAYMOB_API_KEY,
   PAYMOB_INTEGRATION_ID,
+  PAYMOB_PAYMENT_METHOD_IDS,
   PAYMOB_HMAC_SECRET,
 } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
 const PAYMOB_API_URL = "https://accept.paymob.com/v1";
+
+function toPositiveInteger(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Resolve the integration IDs sent to Paymob Unified Checkout.
+ *
+ * Explicit method IDs are supported for callers that need a narrowly scoped
+ * checkout. Otherwise, use the configured list so the hosted checkout can
+ * offer cards and wallets together. The legacy single integration ID remains
+ * the final fallback for existing deployments.
+ */
+export function resolvePaymobPaymentMethods({
+  paymentMethods = [],
+  configuredPaymentMethodIds = PAYMOB_PAYMENT_METHOD_IDS,
+  fallbackIntegrationId = PAYMOB_INTEGRATION_ID,
+} = {}) {
+  const requested = Array.isArray(paymentMethods)
+    ? paymentMethods.map(toPositiveInteger).filter(Boolean)
+    : [];
+  if (requested.length > 0) return [...new Set(requested)];
+
+  const configured = Array.isArray(configuredPaymentMethodIds)
+    ? configuredPaymentMethodIds.map(toPositiveInteger).filter(Boolean)
+    : [];
+  if (configured.length > 0) return [...new Set(configured)];
+
+  const fallback = toPositiveInteger(fallbackIntegrationId);
+  if (fallback) return [fallback];
+
+  throw new Error(
+    "No Paymob payment method integration IDs are configured"
+  );
+}
 
 /**
  * Create a Payment Intention (Unified Checkout)
@@ -31,10 +68,7 @@ export async function createPaymentIntention({
     const payload = {
       amount: amountCents,
       currency,
-      payment_methods:
-        paymentMethods.length > 0
-          ? paymentMethods
-          : [parseInt(PAYMOB_INTEGRATION_ID, 10)],
+      payment_methods: resolvePaymobPaymentMethods({ paymentMethods }),
       billing_data: {
         first_name: billingData?.firstName || "NA",
         last_name: billingData?.lastName || "NA",
