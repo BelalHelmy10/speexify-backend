@@ -819,6 +819,30 @@ model OnboardingForm {
   @@index([userId, createdAt])
 }
 
+// Public first-session requests from the marketing site. These are intentionally
+// separate from authenticated onboarding so a visitor can book without creating
+// an account first.
+model FreeSessionRequest {
+  id                Int      @id @default(autoincrement())
+  name              String
+  phone             String
+  email             String?
+  locale            String   @default("en")
+  goal              String
+  preferredSlots    Json?
+  preferredDays     Json?
+  preferredTimes    Json?
+  availabilitySlots Json?
+  notes             String?
+  status            String   @default("NEW")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([phone])
+  @@index([email])
+}
+
 model AssessmentSubmission {
   id           Int       @id @default(autoincrement())
   userId       Int

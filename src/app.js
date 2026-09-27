@@ -54,6 +54,7 @@ import teacherEarningsRoutes from "./routes/teacherEarnings.js";
 import discountRoutes from "./routes/discounts.js";
 import privacyRoutes from "./routes/privacy.js";
 import resendWebhooksRoutes from "./routes/resendWebhooks.js";
+import freeSessionRoutes from "./routes/free-session.js";
 import {
   buildRequestContext,
   runWithRequestContext,
@@ -272,6 +273,7 @@ app.use("/api", devEmailTestRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api", availabilityRoutes);
 app.use("/api", calendarRoutes);
+app.use("/api", freeSessionRoutes);
 app.use("/api", teacherEarningsRoutes);
 app.use("/api/privacy", privacyRoutes);
 
