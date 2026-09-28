@@ -18,6 +18,7 @@ import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
 import { consumeRateLimit } from "../services/rateLimitService.js";
+import { prisma } from "../lib/prisma.js";
 import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
 import {
   acquireConnection,
@@ -110,6 +111,150 @@ function setupWebRtcSignaling(httpServer) {
         ws.ping();
       });
     }, CONFIG.HEARTBEAT_INTERVAL_MS);
+  }
+
+  function parsePositiveInteger(value) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  async function getPrivatePairInfo(sessionId, senderId, recipientId) {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      select: {
+        teacherId: true,
+        userId: true,
+        participants: {
+          where: { status: { not: "canceled" } },
+          select: { userId: true },
+        },
+      },
+    });
+
+    if (!session) return { allowed: false, senderRole: null };
+
+    const learnerIds = new Set(
+      [session.userId, ...(session.participants || []).map((participant) => participant.userId)]
+        .filter((id) => Number.isSafeInteger(Number(id)))
+        .map((id) => Number(id))
+    );
+    const teacherId = Number(session.teacherId);
+    const normalizedSenderId = Number(senderId);
+    const normalizedRecipientId = Number(recipientId);
+
+    if (!Number.isSafeInteger(normalizedSenderId) || !Number.isSafeInteger(normalizedRecipientId)) {
+      return { allowed: false, senderRole: null };
+    }
+
+    const senderIsTeacher = normalizedSenderId === teacherId;
+    const senderIsLearner = learnerIds.has(normalizedSenderId);
+
+    if (senderIsTeacher && learnerIds.has(normalizedRecipientId)) {
+      return { allowed: true, senderRole: "teacher" };
+    }
+
+    if (senderIsLearner && normalizedRecipientId === teacherId) {
+      return { allowed: true, senderRole: "learner" };
+    }
+
+    return { allowed: false, senderRole: null };
+  }
+
+  async function routePrivateChatMessage(ws, roomManager, data) {
+    const meta = getMeta(ws);
+    const roomId = roomManager.getRoomId(ws);
+    const sessionId = parsePositiveInteger(roomId);
+    const messageId = typeof data?.messageId === "string" ? data.messageId.trim() : "";
+    const recipientId = parsePositiveInteger(data?.recipientId);
+    const senderId = parsePositiveInteger(meta.userId);
+
+    if (!sessionId || !messageId || !recipientId || !senderId) {
+      safeSend(ws, { type: MSG_TYPES.ERROR, code: "invalid_private_message" });
+      return;
+    }
+
+    const row = await prisma.classroomMessage.findUnique({
+      where: { id: messageId },
+      select: {
+        id: true,
+        sessionId: true,
+        senderId: true,
+        recipientId: true,
+        senderRole: true,
+        senderName: true,
+        body: true,
+        visibility: true,
+        createdAt: true,
+      },
+    });
+
+    if (
+      !row ||
+      row.sessionId !== sessionId ||
+      row.visibility !== "direct" ||
+      Number(row.senderId) !== senderId ||
+      Number(row.recipientId) !== recipientId
+    ) {
+      safeSend(ws, { type: MSG_TYPES.ERROR, code: "private_message_not_allowed" });
+      return;
+    }
+
+    const pairInfo = await getPrivatePairInfo(sessionId, senderId, recipientId);
+    if (!pairInfo.allowed) {
+      safeSend(ws, { type: MSG_TYPES.ERROR, code: "private_message_not_allowed" });
+      return;
+    }
+
+    roomManager.sendToUser(ws, recipientId, {
+      type: MSG_TYPES.SIGNAL,
+      signalType: "classroom-event",
+      data: {
+        type: "CHAT_MESSAGE",
+        sessionId: String(sessionId),
+        message: {
+          id: row.id,
+          type: "message",
+          role: row.senderRole || "learner",
+          name: row.senderName || "Participant",
+          text: row.body,
+          at: row.createdAt.toISOString(),
+          senderId: row.senderId,
+          recipientId: row.recipientId,
+          visibility: "direct",
+          isMine: false,
+          deliveryStatus: "sent",
+        },
+      },
+    });
+  }
+
+  async function routePrivateChatTyping(ws, roomManager, data) {
+    const meta = getMeta(ws);
+    const roomId = roomManager.getRoomId(ws);
+    const sessionId = parsePositiveInteger(roomId);
+    const recipientId = parsePositiveInteger(data?.recipientId);
+    const senderId = parsePositiveInteger(meta.userId);
+
+    if (!sessionId || !recipientId || !senderId) {
+      return;
+    }
+
+    const pairInfo = await getPrivatePairInfo(sessionId, senderId, recipientId);
+    if (!pairInfo.allowed) return;
+
+    roomManager.sendToUser(ws, recipientId, {
+      type: MSG_TYPES.SIGNAL,
+      signalType: "classroom-event",
+      data: {
+        type: "CHAT_PRIVATE_TYPING",
+        sessionId: String(sessionId),
+        senderId,
+        recipientId,
+        role: pairInfo.senderRole,
+        name: typeof data?.name === "string" ? data.name.slice(0, 160) : "Participant",
+        isTyping: Boolean(data?.isTyping),
+      },
+    });
   }
 
   wssPrep.on("close", () => {
@@ -228,6 +373,38 @@ function setupWebRtcSignaling(httpServer) {
               message: signalValidation.reason,
             });
             return;
+          }
+
+          if (channelName === "Classroom") {
+            const classroomEvents =
+              msg.data?.type === "BATCH" && Array.isArray(msg.data.events)
+                ? msg.data.events
+                : [msg.data];
+            const publicEvents = [];
+
+            for (const event of classroomEvents) {
+              if (event?.type === "CHAT_PRIVATE_MESSAGE") {
+                await routePrivateChatMessage(ws, roomManager, event);
+              } else if (event?.type === "CHAT_PRIVATE_TYPING") {
+                await routePrivateChatTyping(ws, roomManager, event);
+              } else {
+                publicEvents.push(event);
+              }
+            }
+
+            if (publicEvents.length !== classroomEvents.length) {
+              if (!publicEvents.length) return;
+
+              const publicData = publicEvents.length === 1
+                ? publicEvents[0]
+                : { type: "BATCH", events: publicEvents };
+              roomManager.broadcast(ws, {
+                type: MSG_TYPES.SIGNAL,
+                signalType: msg.signalType,
+                data: publicData,
+              });
+              return;
+            }
           }
 
           roomManager.broadcast(ws, {

@@ -310,10 +310,12 @@ function shapeClassroomMessage(row, access, viewerId) {
     const isDeleted = !!row.deletedAt;
     const isMine = row.senderId != null && Number(row.senderId) === Number(viewerId);
     const canDelete = !isDeleted && (isMine || access.isTeacher || access.isAdmin);
+    const visibility = row.visibility === "direct" ? "direct" : "public";
 
     return {
         id: row.id,
         type: "message",
+        visibility,
         role: row.senderRole || "learner",
         name: row.senderName || "Participant",
         text: isDeleted ? "" : row.body,
@@ -324,7 +326,26 @@ function shapeClassroomMessage(row, access, viewerId) {
         isDeleted,
         deletedAt: row.deletedAt ? (row.deletedAt instanceof Date ? row.deletedAt.toISOString() : row.deletedAt) : null,
         canDelete,
+        recipientId: row.recipientId ?? null,
         deliveryStatus: "sent",
+    };
+}
+
+function getVisibleChatWhere(sessionId, viewerId, before = null) {
+    const directVisibility = Number.isFinite(viewerId)
+        ? {
+            OR: [
+                { visibility: "public" },
+                { visibility: "direct", senderId: viewerId },
+                { visibility: "direct", recipientId: viewerId },
+            ],
+        }
+        : { visibility: "public" };
+
+    return {
+        sessionId,
+        ...directVisibility,
+        ...(before ? { createdAt: { lt: before } } : {}),
     };
 }
 
@@ -332,8 +353,9 @@ function formatTranscriptLine(row) {
     const at = row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt;
     const name = row.senderName || "Participant";
     const role = row.senderRole ? ` (${row.senderRole})` : "";
+    const scope = row.visibility === "direct" ? " · Private" : "";
     const body = row.deletedAt ? "[deleted message]" : row.body;
-    return `[${at}] ${name}${role}: ${body}`;
+    return `[${at}]${scope} ${name}${role}: ${body}`;
 }
 
 async function findClassroomSession(sessionId) {
@@ -583,10 +605,8 @@ router.get("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
 
         const limit = parseChatLimit(req.query.limit);
         const before = parseBeforeCursor(req.query.before);
-        const where = {
-            sessionId,
-            ...(before ? { createdAt: { lt: before } } : {}),
-        };
+        const viewerId = Number(req.viewUserId || req.user?.id);
+        const where = getVisibleChatWhere(sessionId, viewerId, before);
 
         const rows = await prisma.classroomMessage.findMany({
             where,
@@ -596,8 +616,6 @@ router.get("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
 
         const hasMore = rows.length > limit;
         const pageRows = rows.slice(0, limit).reverse();
-        const viewerId = Number(req.viewUserId || req.user?.id);
-
         return res.json({
             ok: true,
             messages: pageRows.map((row) =>
@@ -658,6 +676,41 @@ router.post("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
         }
 
         const senderId = Number(req.viewUserId || req.user?.id);
+        const rawRecipientId = req.body?.recipientId;
+        const recipientId =
+            rawRecipientId === undefined || rawRecipientId === null || rawRecipientId === ""
+                ? null
+                : Number(rawRecipientId);
+
+        if (
+            recipientId !== null &&
+            (!Number.isSafeInteger(recipientId) || recipientId <= 0 || recipientId === senderId)
+        ) {
+            return res.status(400).json({ error: "Choose a valid private message recipient" });
+        }
+
+        if (recipientId !== null) {
+            const learnerIds = new Set(
+                [context.session.userId, ...(context.session.participants || [])
+                    .filter((participant) => participant.status !== "canceled")
+                    .map((participant) => participant.userId)]
+                    .filter((id) => Number.isSafeInteger(Number(id)))
+                    .map((id) => Number(id))
+            );
+            const teacherId = Number(context.session.teacherId);
+            const senderIsTeacher = context.access.isTeacher && senderId === teacherId;
+            const senderIsLearner = context.access.isLearner && learnerIds.has(senderId);
+            const allowed = senderIsTeacher
+                ? learnerIds.has(recipientId)
+                : senderIsLearner && recipientId === teacherId;
+
+            if (!allowed) {
+                return res.status(403).json({
+                    error: "Private messages can only be sent between a learner and the teacher",
+                });
+            }
+        }
+
         const sender = Number.isFinite(senderId)
             ? await prisma.user.findUnique({
                 where: { id: senderId },
@@ -677,6 +730,8 @@ router.post("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
                 senderRole: getChatSenderRole(context.access, sender?.role || req.user?.role),
                 senderName: getDisplayName(sender) || getDisplayName(req.user) || null,
                 body,
+                visibility: recipientId === null ? "public" : "direct",
+                recipientId,
             },
         });
 
@@ -753,8 +808,9 @@ router.get("/sessions/:id/chat/export", requireAuth, async (req, res) => {
         const context = await requireClassroomAccess(req, res, sessionId);
         if (!context) return null;
 
+        const viewerId = Number(req.viewUserId || req.user?.id);
         const rows = await prisma.classroomMessage.findMany({
-            where: { sessionId },
+            where: getVisibleChatWhere(sessionId, viewerId),
             orderBy: { createdAt: "asc" },
         });
 

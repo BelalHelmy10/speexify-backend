@@ -82,7 +82,8 @@ model User {
   // Support tickets + messages
   supportTickets       SupportTicket[]
   supportMessages      SupportMessage[]
-  classroomMessages    ClassroomMessage[]
+  classroomMessages    ClassroomMessage[] @relation("ClassroomMessageSender")
+  classroomMessagesReceived ClassroomMessage[] @relation("ClassroomMessageRecipient")
   classroomAnnotations ClassroomAnnotation[]
 
   // ✨ Support ticket assignment (admin can assign tickets to staff)
@@ -641,11 +642,15 @@ model ClassroomMessage {
   session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   senderId Int?
-  sender   User? @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  sender   User? @relation("ClassroomMessageSender", fields: [senderId], references: [id], onDelete: SetNull)
+
+  recipientId Int?
+  recipient   User? @relation("ClassroomMessageRecipient", fields: [recipientId], references: [id], onDelete: SetNull)
 
   senderRole String
   senderName String?
   body       String
+  visibility String @default("public")
 
   deletedAt   DateTime?
   deletedById Int?
@@ -654,7 +659,9 @@ model ClassroomMessage {
   updatedAt DateTime @updatedAt
 
   @@index([sessionId, createdAt])
+  @@index([sessionId, visibility, createdAt])
   @@index([senderId, createdAt])
+  @@index([recipientId, createdAt])
   @@index([deletedAt])
 }
 

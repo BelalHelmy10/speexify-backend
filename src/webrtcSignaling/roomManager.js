@@ -167,6 +167,43 @@ function createRoomManager(options) {
     publish({ eventType: "message", roomId, message, senderConnectionId: getConnectionId(ws) });
   }
 
+  function sendToUserInRoom(roomId, userId, message) {
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const targetUserId = String(userId || "");
+    if (!targetUserId) return;
+
+    for (const peer of room) {
+      const peerMeta = getMeta(peer);
+      if (
+        peerMeta.userId != null &&
+        String(peerMeta.userId) === targetUserId &&
+        peer.readyState === WebSocket.OPEN
+      ) {
+        try {
+          peer.send(JSON.stringify(message));
+        } catch (err) {
+          logger.warn({ err }, `[${name}] Failed to send targeted message`);
+        }
+      }
+    }
+  }
+
+  function sendToUser(ws, userId, message) {
+    const roomId = getMeta(ws)[roomIdKey];
+    if (!roomId) return;
+
+    sendToUserInRoom(roomId, userId, message);
+    publish({
+      eventType: "private-message",
+      roomId,
+      targetUserId: String(userId || ""),
+      message,
+      senderConnectionId: getConnectionId(ws),
+    });
+  }
+
   async function touch(ws) {
     const meta = getMeta(ws);
     const roomId = meta[roomIdKey];
@@ -178,6 +215,8 @@ function createRoomManager(options) {
     if (!event || event.channel !== channelName || !event.roomId) return;
     if (event.eventType === "message") {
       broadcastRoom(event.roomId, event.message);
+    } else if (event.eventType === "private-message") {
+      sendToUserInRoom(event.roomId, event.targetUserId, event.message);
     } else if (event.eventType === "peer-joined" && notifyOnJoin) {
       broadcastRoom(event.roomId, { type: MSG_TYPES.PEER_JOINED, roomId: event.roomId });
     } else if (event.eventType === "peer-left" && notifyOnLeave) {
@@ -198,7 +237,21 @@ function createRoomManager(options) {
     return allSockets;
   }
 
-  return { join, leave, touch, broadcast, broadcastRoom, handleRemoteEvent, getRoom, getRoomId, getRoomCount, getAllSockets, rooms };
+  return {
+    join,
+    leave,
+    touch,
+    broadcast,
+    broadcastRoom,
+    sendToUser,
+    sendToUserInRoom,
+    handleRemoteEvent,
+    getRoom,
+    getRoomId,
+    getRoomCount,
+    getAllSockets,
+    rooms,
+  };
 }
 
 export { createRoomManager };
