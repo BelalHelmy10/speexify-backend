@@ -363,6 +363,11 @@ Start command:
 ```bash
 node index.js
 ```
+The API process also runs the notification-delivery loop as a fallback, so
+queued booking and session-change emails are processed when the deployment
+uses this start command. A separate notification worker remains supported for
+dedicated deployments.
+
 Session reminders now run in a separate worker process.
 
 Use this command in a dedicated worker service:
@@ -393,9 +398,9 @@ Optional payroll worker tuning env vars:
 - `TEACHER_EARNINGS_LOCK_LEASE_MS` (default `max(interval*4, 600000)`)
 
 Notification delivery uses the same durable-worker pattern. In local
-development, `npm run dev` starts the API and notification worker together.
-In production, run the notification worker as a separate continuously running
-service alongside the API:
+development, `npm run dev` starts the API and notification worker together. The
+API start command also runs the delivery loop as a fallback. For production
+deployments that prefer a separate continuously running service, use:
 
 ```bash
 npm run worker:notification-delivery

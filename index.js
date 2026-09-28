@@ -6,6 +6,7 @@ import { setupWebRtcSignaling } from "./src/webrtcSignaling.js";
 import { setupSupportWebSocket } from "./src/services/supportWebSocket.js";
 import { sessionStoreInfo } from "./src/middleware/session.js";
 import { startObservabilityAlerts } from "./src/observability/alerts.js";
+import { startNotificationDeliveryLoop } from "./src/services/notificationDeliveryLoop.js";
 
 logger.info({ sessionStore: sessionStoreInfo }, "[boot] Session store configured");
 
@@ -15,6 +16,12 @@ const server = http.createServer(app);
 setupSupportWebSocket(server);
 setupWebRtcSignaling(server);
 const stopObservabilityAlerts = startObservabilityAlerts();
+// Keep queued booking/cancellation/feedback emails moving even when the
+// deployment runs only the API start command. A separately deployed delivery
+// worker may also run safely because delivery rows are claimed atomically.
+const stopNotificationDelivery = startNotificationDeliveryLoop({
+  workerId: `api-notification-delivery-${process.pid}`,
+});
 
 server.listen(PORT, "0.0.0.0", () => {
   logger.info(
@@ -26,6 +33,7 @@ server.listen(PORT, "0.0.0.0", () => {
 function shutdown(signal) {
   logger.info({ signal }, "[boot] Shutdown signal received");
   stopObservabilityAlerts();
+  stopNotificationDelivery();
 
   server.close((err) => {
     if (err) {
