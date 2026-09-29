@@ -1,295 +1,521 @@
-// src/routes/sessions/bulk-create.js
-// Bulk create recurring weekly sessions for a learner
+// Create recurring weekly sessions for one learner or a group of learners.
 
 import {
-    Router,
-    prisma,
-    requireAuth,
-    requireAdmin,
-    findSessionConflictsWithClient,
-    lockSchedulingResources,
-    getRemainingCredits,
-    consumeOneCreditWithClient,
-    sendBookingNotifications,
-    logger
+  Router,
+  prisma,
+  requireAuth,
+  requireAdmin,
+  findSessionConflictsWithClient,
+  lockSchedulingResources,
+  getRemainingCredits,
+  consumeOneCreditWithClient,
+  sendBookingNotifications,
+  audit,
+  logger,
 } from "./_shared.js";
 import {
-    getIdempotencyKeyFromRequest,
-    beginIdempotentRequest,
-    completeIdempotentRequest,
-    abandonIdempotentRequest,
+  getIdempotencyKeyFromRequest,
+  beginIdempotentRequest,
+  completeIdempotentRequest,
+  abandonIdempotentRequest,
 } from "../../services/idempotencyService.js";
 
 const bulkCreateRouter = Router();
+const SESSION_TYPES = new Set(["ONE_ON_ONE", "GROUP"]);
+
+function httpError(statusCode, body) {
+  const error = new Error(body?.message || body?.error || "Request failed");
+  error.statusCode = statusCode;
+  error.responseBody = body;
+  return error;
+}
+
+function normalizeType(value) {
+  const type = String(value || "ONE_ON_ONE").trim().toUpperCase();
+  if (!SESSION_TYPES.has(type)) {
+    throw httpError(400, {
+      error: "invalid_session_type",
+      message: "type must be ONE_ON_ONE or GROUP",
+    });
+  }
+  return type;
+}
+
+function normalizeAllowNoCredit(value) {
+  return value === true || value === "true";
+}
+
+function parseInteger(value, { field, min, max, fallback = null }) {
+  if (value === undefined || value === null || value === "") {
+    if (fallback !== null) return fallback;
+    throw httpError(400, { error: `${field}_required`, message: `${field} is required` });
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw httpError(400, {
+      error: `invalid_${field}`,
+      message: `${field} must be an integer between ${min} and ${max}`,
+    });
+  }
+  return parsed;
+}
+
+function uniqueIds(values) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [values])
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+}
+
+function parseStartDate(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+    throw httpError(400, {
+      error: "invalid_start_date",
+      message: "startDate must be a valid YYYY-MM-DD date",
+    });
+  }
+
+  const [year, month, day] = String(value).split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    throw httpError(400, {
+      error: "invalid_start_date",
+      message: "startDate must be a valid calendar date",
+    });
+  }
+  return date;
+}
+
+function nextDateForDay(dayOfWeek) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  while (date.getDay() !== dayOfWeek) {
+    date.setDate(date.getDate() + 1);
+  }
+  return date;
+}
+
+function parseTime(value) {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(String(value || ""));
+  if (!match) {
+    throw httpError(400, {
+      error: "invalid_time",
+      message: "time must be in HH:MM format",
+    });
+  }
+  return String(value);
+}
+
+function buildSessionDates(startDate, numberOfSessions, time, durationMin) {
+  const [hours, minutes] = time.split(":").map(Number);
+  const dates = [];
+  let currentDate = new Date(startDate);
+
+  for (let index = 0; index < numberOfSessions; index += 1) {
+    const startAt = new Date(currentDate);
+    startAt.setHours(hours, minutes, 0, 0);
+
+    const endAt = new Date(startAt);
+    endAt.setMinutes(endAt.getMinutes() + durationMin);
+
+    dates.push({ startAt, endAt });
+    currentDate.setDate(currentDate.getDate() + 7);
+  }
+
+  return dates;
+}
+
+async function ensureTeacher(teacherId) {
+  if (!teacherId) return;
+
+  const teacher = await prisma.user.findUnique({
+    where: { id: Number(teacherId) },
+    select: { id: true, role: true, isDisabled: true },
+  });
+
+  if (!teacher || teacher.isDisabled) {
+    throw httpError(404, { error: "teacher_not_found", message: "Teacher not found or disabled" });
+  }
+  if (teacher.role !== "teacher" && teacher.role !== "admin") {
+    throw httpError(400, { error: "invalid_teacher", message: "Selected user is not a teacher" });
+  }
+}
+
+async function ensureLearners(learnerIds) {
+  const learners = await prisma.user.findMany({
+    where: { id: { in: learnerIds } },
+    select: { id: true, email: true, name: true, role: true, isDisabled: true },
+  });
+  const byId = new Map(learners.map((learner) => [learner.id, learner]));
+
+  for (const learnerId of learnerIds) {
+    const learner = byId.get(learnerId);
+    if (!learner || learner.isDisabled) {
+      throw httpError(404, {
+        error: "learner_not_found",
+        message: "One or more selected learners were not found or are disabled",
+        learnerId,
+      });
+    }
+    if (learner.role !== "learner" && learner.role !== "admin") {
+      throw httpError(400, {
+        error: "invalid_learner",
+        message: "All selected participants must be learners",
+        learnerId,
+      });
+    }
+  }
+
+  return learners;
+}
+
+async function ensureNoConflicts({ db, startAt, endAt, learnerIds, teacherId }) {
+  const learnerChecks = await Promise.all(
+    learnerIds.map(async (learnerId) => ({
+      learnerId,
+      conflicts: await findSessionConflictsWithClient(db, {
+        userId: learnerId,
+        startAt,
+        endAt,
+      }),
+    }))
+  );
+
+  const teacherConflicts = teacherId
+    ? await findSessionConflictsWithClient(db, { teacherId, startAt, endAt })
+    : [];
+
+  const learnerConflicts = learnerChecks.filter((entry) => entry.conflicts.length);
+  if (!learnerConflicts.length && !teacherConflicts.length) return;
+
+  throw httpError(409, {
+    error: "time_conflict",
+    message: "One or more requested sessions overlap an existing session",
+    conflicts: [
+      ...learnerConflicts.flatMap((entry) =>
+        entry.conflicts.map((conflict) => ({ ...conflict, learnerId: entry.learnerId }))
+      ),
+      ...teacherConflicts.map((conflict) => ({ ...conflict, teacherId })),
+    ],
+  });
+}
 
 /**
  * POST /api/admin/sessions/bulk-create
- * 
- * Create multiple recurring weekly sessions for a learner.
- * 
- * Body:
- * - learnerId: number (required)
- * - teacherId: number (optional)
- * - dayOfWeek: number (0-6, 0=Sunday) (required)
- * - time: string "HH:MM" (required)
- * - numberOfSessions: number (1-52) (required)
- * - durationMin: number (default 60)
- * - title: string (default "Lesson")
- * - allowNoCredit: boolean (default false)
+ *
+ * Creates weekly recurring sessions. ONE_ON_ONE accepts learnerId; GROUP
+ * accepts learnerIds and creates a participant row plus one credit debit for
+ * every learner on every session.
  */
-bulkCreateRouter.post("/admin/sessions/bulk-create", requireAuth, requireAdmin, async (req, res) => {
+bulkCreateRouter.post(
+  "/admin/sessions/bulk-create",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
     let idempotency = null;
 
     try {
-        const {
-            learnerId,
-            teacherId,
-            dayOfWeek,
-            time,
-            numberOfSessions,
-            durationMin = 60,
-            defaultTitle = "Lesson",
-            customTitles = [], // Array of titles corresponding to sessionDates
-            allowNoCredit = false,
-            startDate, // Optional: specific start date (YYYY-MM-DD)
-        } = req.body;
+      const {
+        type = "ONE_ON_ONE",
+        learnerId,
+        learnerIds,
+        teacherId,
+        capacity,
+        dayOfWeek,
+        time,
+        numberOfSessions,
+        durationMin = 60,
+        defaultTitle = "Lesson",
+        customTitles = [],
+        allowNoCredit = false,
+        allowNoCreditReason = "",
+        startDate,
+      } = req.body || {};
 
-        // Validation
-        if (!learnerId) {
-            return res.status(400).json({ error: "learnerId is required" });
+      const finalType = normalizeType(type);
+      const finalDayOfWeek = parseInteger(dayOfWeek, {
+        field: "dayOfWeek",
+        min: 0,
+        max: 6,
+      });
+      const finalTime = parseTime(time);
+      const finalNumberOfSessions = parseInteger(numberOfSessions, {
+        field: "numberOfSessions",
+        min: 1,
+        max: 52,
+      });
+      const finalDurationMin = parseInteger(durationMin, {
+        field: "durationMin",
+        min: 15,
+        max: 240,
+        fallback: 60,
+      });
+      const finalStartDate = startDate
+        ? parseStartDate(startDate)
+        : nextDateForDay(finalDayOfWeek);
+      const finalTeacherId = teacherId ? Number(teacherId) : null;
+      if (finalTeacherId !== null && (!Number.isInteger(finalTeacherId) || finalTeacherId <= 0)) {
+        throw httpError(400, {
+          error: "invalid_teacher_id",
+          message: "teacherId must be a valid user id",
+        });
+      }
+      const finalLearnerIds = uniqueIds(
+        finalType === "GROUP" ? learnerIds : learnerId
+      );
+
+      if (finalType === "ONE_ON_ONE" && finalLearnerIds.length !== 1) {
+        throw httpError(400, {
+          error: "learner_id_required",
+          message: "A 1:1 schedule requires exactly one learner",
+        });
+      }
+      if (finalType === "GROUP" && finalLearnerIds.length < 2) {
+        throw httpError(400, {
+          error: "group_participants_required",
+          message: "A group schedule requires at least two learners",
+        });
+      }
+      if (finalTeacherId && finalLearnerIds.includes(finalTeacherId)) {
+        throw httpError(400, {
+          error: "teacher_is_participant",
+          message: "Teacher cannot be a participant in the same session",
+        });
+      }
+
+      let finalCapacity = null;
+      if (finalType === "GROUP") {
+        finalCapacity = parseInteger(capacity, {
+          field: "capacity",
+          min: 2,
+          max: 100,
+          fallback: Math.max(6, finalLearnerIds.length),
+        });
+        if (finalLearnerIds.length > finalCapacity) {
+          throw httpError(400, {
+            error: "capacity_exceeded",
+            message: "Selected learners exceed the group capacity",
+            capacity: finalCapacity,
+            participantCount: finalLearnerIds.length,
+          });
         }
-        // dayOfWeek is derived on frontend, but we still validate it loosely
-        if (dayOfWeek === undefined || dayOfWeek < 0 || dayOfWeek > 6) {
-            return res.status(400).json({ error: "dayOfWeek must be 0-6 (Sunday-Saturday)" });
-        }
-        if (!time || !/^\d{2}:\d{2}$/.test(time)) {
-            return res.status(400).json({ error: "time must be in HH:MM format" });
-        }
-        if (!numberOfSessions || numberOfSessions < 1 || numberOfSessions > 52) {
-            return res.status(400).json({ error: "numberOfSessions must be between 1 and 52" });
-        }
+      }
 
-        // Verify learner exists
-        const learner = await prisma.user.findUnique({ where: { id: Number(learnerId) } });
-        if (!learner) {
-            return res.status(404).json({ error: "Learner not found" });
-        }
-        if (learner.role !== "learner") {
-            return res.status(400).json({ error: "User is not a learner" });
-        }
+      const creditOverride = normalizeAllowNoCredit(allowNoCredit);
+      const overrideReason = String(allowNoCreditReason || "").trim();
+      if (creditOverride && overrideReason.length < 6) {
+        throw httpError(400, {
+          error: "credit_override_reason_required",
+          message: "A no-credit override reason must be at least 6 characters",
+        });
+      }
 
-        // Verify teacher if provided
-        if (teacherId) {
-            const teacher = await prisma.user.findUnique({ where: { id: Number(teacherId) } });
-            if (!teacher) {
-                return res.status(404).json({ error: "Teacher not found" });
-            }
-            if (teacher.role !== "teacher" && teacher.role !== "admin") {
-                return res.status(400).json({ error: "User is not a teacher" });
-            }
-        }
+      await ensureTeacher(finalTeacherId);
+      const learners = await ensureLearners(finalLearnerIds);
+      const sessionDates = buildSessionDates(
+        finalStartDate,
+        finalNumberOfSessions,
+        finalTime,
+        finalDurationMin
+      );
+      const titles = Array.isArray(customTitles) ? customTitles : [];
 
-        // Generate session dates
-        const sessionDates = [];
-        let currentDate;
+      idempotency = await beginIdempotentRequest({
+        actorId: req.user.id,
+        scope: "admin.sessions.bulkCreate",
+        key: getIdempotencyKeyFromRequest(req),
+        payload: {
+          type: finalType,
+          learnerIds: finalLearnerIds,
+          teacherId: finalTeacherId,
+          capacity: finalCapacity,
+          dayOfWeek: finalDayOfWeek,
+          time: finalTime,
+          numberOfSessions: finalNumberOfSessions,
+          durationMin: finalDurationMin,
+          defaultTitle,
+          customTitles: titles,
+          allowNoCredit: creditOverride,
+          allowNoCreditReason: creditOverride ? overrideReason : null,
+          startDate: startDate || null,
+        },
+      });
 
-        if (startDate) {
-            // Parse YYYY-MM-DD to local date object
-            const [y, m, d] = startDate.split("-").map(Number);
-            currentDate = new Date(y, m - 1, d);
-        } else {
-            // Legacy: Find next occurrence relative to today
-            const today = new Date();
-            currentDate = new Date(today);
-            while (currentDate.getDay() !== Number(dayOfWeek)) {
-                currentDate.setDate(currentDate.getDate() + 1);
-            }
-        }
+      if (idempotency.state === "replay") {
+        return res.status(idempotency.statusCode).json(idempotency.responseBody);
+      }
+      if (["conflict", "in_progress", "error"].includes(idempotency.state)) {
+        return res.status(idempotency.statusCode).json(idempotency.responseBody);
+      }
 
-        // Generate dates for each session
-        for (let i = 0; i < numberOfSessions; i++) {
-            const sessionDate = new Date(currentDate);
-            sessionDates.push(sessionDate);
-            currentDate.setDate(currentDate.getDate() + 7); // Add 7 days for next week
-        }
+      const { createdSessions, creditResults } = await prisma.$transaction(async (tx) => {
+        await lockSchedulingResources(tx, {
+          learnerIds: finalLearnerIds,
+          teacherId: finalTeacherId,
+        });
 
-        // Build session start times. Conflict checks happen again inside the
-        // transaction after resource locks are held; a pre-transaction check
-        // alone is racy across concurrent API instances.
-        const sessionsToCreate = [];
+        const results = [];
+        const consumedCredits = [];
 
-        for (let i = 0; i < sessionDates.length; i++) {
-            const sessionDate = sessionDates[i];
-            const [hours, minutes] = time.split(":").map(Number);
+        for (let index = 0; index < sessionDates.length; index += 1) {
+          const { startAt, endAt } = sessionDates[index];
+          await ensureNoConflicts({
+            db: tx,
+            startAt,
+            endAt,
+            learnerIds: finalLearnerIds,
+            teacherId: finalTeacherId,
+          });
 
-            const startAt = new Date(sessionDate);
-            startAt.setHours(hours, minutes, 0, 0);
-
-            const endAt = new Date(startAt);
-            endAt.setMinutes(endAt.getMinutes() + Number(durationMin));
-
-            // Determine title for this specific session
-            const sessionTitle = (customTitles[i] || defaultTitle || "Lesson").trim();
-            sessionsToCreate.push({
-                type: "ONE_ON_ONE",
-                title: sessionTitle,
-                userId: Number(learnerId),
-                teacherId: teacherId ? Number(teacherId) : null,
-                startAt,
-                endAt,
-                status: "scheduled",
-            });
-        }
-
-        idempotency = await beginIdempotentRequest({
-            actorId: req.user.id,
-            scope: "admin.sessions.bulkCreate",
-            key: getIdempotencyKeyFromRequest(req),
-            payload: {
-                learnerId: Number(learnerId),
-                teacherId: teacherId ? Number(teacherId) : null,
-                dayOfWeek: Number(dayOfWeek),
-                time,
-                numberOfSessions: Number(numberOfSessions),
-                durationMin: Number(durationMin),
-                defaultTitle,
-                customTitles,
-                allowNoCredit: !!allowNoCredit,
-                startDate: startDate || null,
+          const session = await tx.session.create({
+            data: {
+              type: finalType,
+              userId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : null,
+              capacity: finalCapacity,
+              teacherId: finalTeacherId,
+              title: String(titles[index] || defaultTitle || "Lesson").trim() || "Lesson",
+              startAt,
+              endAt,
+              status: "scheduled",
             },
-        });
+            include: {
+              user: { select: { id: true, name: true, email: true } },
+              teacher: { select: { id: true, name: true, email: true } },
+            },
+          });
 
-        if (idempotency.state === "replay") {
-            return res.status(idempotency.statusCode).json(idempotency.responseBody);
-        }
-        if (
-            idempotency.state === "conflict" ||
-            idempotency.state === "in_progress" ||
-            idempotency.state === "error"
-        ) {
-            return res.status(idempotency.statusCode).json(idempotency.responseBody);
-        }
-
-        // Create all sessions in a transaction
-        const createdSessions = await prisma.$transaction(async (tx) => {
-            const results = [];
-
-            await lockSchedulingResources(tx, {
-                learnerIds: [Number(learnerId)],
-                teacherId: teacherId ? Number(teacherId) : null,
-            });
-
-            for (const sessionData of sessionsToCreate) {
-                const conflictList = await findSessionConflictsWithClient(tx, {
-                    userId: Number(learnerId),
-                    teacherId: teacherId ? Number(teacherId) : null,
-                    startAt: sessionData.startAt,
-                    endAt: sessionData.endAt,
-                });
-                if (conflictList.length > 0) {
-                    const error = new Error("A requested session overlaps an existing session");
-                    error.statusCode = 409;
-                    error.responseBody = {
-                        error: "time_conflict",
-                        message: "One or more requested sessions overlap an existing session",
-                        conflicts: [{
-                            date: sessionData.startAt.toISOString().split("T")[0],
-                            startAt: sessionData.startAt.toISOString(),
-                            conflicts: conflictList,
-                        }],
-                    };
-                    throw error;
-                }
-
-                // Create the session
-                const session = await tx.session.create({
-                    data: sessionData,
-                    include: {
-                        user: { select: { id: true, name: true, email: true } },
-                        teacher: { select: { id: true, name: true, email: true } },
-                    },
-                });
-
-                if (!allowNoCredit) {
-                    const debit = await consumeOneCreditWithClient(tx, session.userId, session.id);
-                    if (!debit.ok) {
-                        const error = new Error("Insufficient credits for all requested sessions");
-                        error.statusCode = 400;
-                        error.responseBody = {
-                            error: "insufficient_credits",
-                            message: "There are not enough credits for all requested sessions",
-                        };
-                        throw error;
-                    }
-                }
-                results.push(session);
-            }
-
-            return results;
-        });
-
-        // Consume credits and send notifications for each session
-        const creditsConsumed = allowNoCredit ? 0 : createdSessions.length;
-        for (const session of createdSessions) {
-            // Send notifications
-            try {
-                await sendBookingNotifications({
-                    session,
-                    learnerIds: [Number(learnerId)],
-                    teacherId: session.teacherId || null,
-                    bookedBy: req.user.id,
-                });
-            } catch (err) {
-                logger.error({ err, sessionId: session.id }, "Failed to send notifications");
-            }
-        }
-
-        // Get updated credit count
-        const creditsAfter = await getRemainingCredits(Number(learnerId));
-
-        logger.info({
-            adminId: req.user.id,
-            learnerId,
-            created: createdSessions.length,
-            creditsConsumed,
-        }, "Bulk recurring sessions created");
-
-        const responseBody = {
-            success: true,
-            created: createdSessions.length,
-            creditsConsumed,
-            creditsAfter,
-            sessions: createdSessions.map((s) => ({
-                id: s.id,
-                date: s.startAt.toISOString().split("T")[0],
-                startAt: s.startAt.toISOString(),
-                title: s.title,
+          await tx.sessionParticipant.createMany({
+            data: finalLearnerIds.map((userId) => ({
+              sessionId: session.id,
+              userId,
+              status: "booked",
             })),
-        };
-        if (idempotency?.state === "started") {
-            await completeIdempotentRequest(idempotency.recordId, {
-                statusCode: 201,
-                responseBody,
-                resourceId: createdSessions[0]?.id || null,
-            });
+            skipDuplicates: true,
+          });
+
+          if (!creditOverride) {
+            for (const userId of finalLearnerIds) {
+              const debit = await consumeOneCreditWithClient(tx, userId, session.id);
+              if (!debit.ok) {
+                const creditsAvailable = await getRemainingCredits(
+                  userId,
+                  tx,
+                  finalType
+                );
+                throw httpError(422, {
+                  error: "insufficient_credits",
+                  message: "One or more learners do not have enough credits",
+                  learnerId: userId,
+                  creditsAvailable,
+                  sessionsRequested: finalNumberOfSessions,
+                });
+              }
+              consumedCredits.push({
+                learnerId: userId,
+                sessionId: session.id,
+                packId: debit.packId,
+              });
+            }
+          }
+
+          results.push(session);
         }
 
-        return res.status(201).json(responseBody);
+        return { createdSessions: results, creditResults: consumedCredits };
+      });
 
-    } catch (err) {
-        if (idempotency?.state === "started") {
-            await abandonIdempotentRequest(idempotency.recordId);
+      await audit(req.user.id, "session_bulk_create", "Session", createdSessions[0]?.id, {
+        type: finalType,
+        learnerIds: finalLearnerIds,
+        teacherId: finalTeacherId,
+        capacity: finalCapacity,
+        created: createdSessions.length,
+        creditResults,
+        creditOverride,
+        creditOverrideReason: creditOverride ? overrideReason : null,
+      });
+
+      for (const session of createdSessions) {
+        try {
+          await sendBookingNotifications({
+            session,
+            learnerIds: finalLearnerIds,
+            teacherId: session.teacherId || null,
+            bookedBy: req.user.id,
+          });
+        } catch (error) {
+          logger.error(
+            { err: error, sessionId: session.id },
+            "Failed to send bulk booking notifications"
+          );
         }
-        logger.error({ err }, "bulk-create recurring sessions error");
-        if (err?.statusCode && err?.responseBody) {
-            return res.status(err.statusCode).json(err.responseBody);
-        }
-        return res.status(500).json({
-            error: "Failed to create sessions",
-            details: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      }
+
+      const creditsAfterByLearner = await Promise.all(
+        learners.map(async (learner) => ({
+          learnerId: learner.id,
+          name: learner.name,
+          email: learner.email,
+          remaining: await getRemainingCredits(learner.id, prisma, finalType),
+        }))
+      );
+      const creditsConsumed = creditOverride
+        ? 0
+        : finalLearnerIds.length * createdSessions.length;
+      const responseBody = {
+        success: true,
+        type: finalType,
+        created: createdSessions.length,
+        participantCount: finalLearnerIds.length,
+        creditsConsumed,
+        creditsAfter:
+          finalType === "ONE_ON_ONE"
+            ? creditsAfterByLearner[0]?.remaining ?? null
+            : null,
+        creditsAfterByLearner,
+        sessions: createdSessions.map((session) => ({
+          id: session.id,
+          date: session.startAt.toISOString().split("T")[0],
+          startAt: session.startAt.toISOString(),
+          endAt: session.endAt?.toISOString() || null,
+          title: session.title,
+          type: session.type,
+          participantCount: finalLearnerIds.length,
+        })),
+      };
+
+      if (idempotency?.state === "started") {
+        await completeIdempotentRequest(idempotency.recordId, {
+          statusCode: 201,
+          responseBody,
+          resourceId: createdSessions[0]?.id || null,
         });
+      }
+
+      return res.status(201).json(responseBody);
+    } catch (error) {
+      if (idempotency?.state === "started") {
+        await abandonIdempotentRequest(idempotency.recordId);
+      }
+      logger.error({ err: error }, "bulk-create recurring sessions error");
+      if (error?.statusCode && error?.responseBody) {
+        return res.status(error.statusCode).json(error.responseBody);
+      }
+      return res.status(500).json({
+        error: "Failed to create sessions",
+        message: error.message,
+        details: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
     }
-});
+  }
+);
 
 export default bulkCreateRouter;

@@ -129,11 +129,12 @@ export async function lockSchedulingResources(
 /**
  * How many total remaining credits does a user have right now?
  */
-export async function getRemainingCredits(userId, db = prisma) {
+export async function getRemainingCredits(userId, db = prisma, sessionType = null) {
   const packs = await db.userPackage.findMany({
     where: {
       userId: Number(userId),
       status: "active",
+      ...(sessionType ? { lessonType: sessionType } : {}),
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
     },
     select: { sessionsTotal: true, sessionsUsed: true },

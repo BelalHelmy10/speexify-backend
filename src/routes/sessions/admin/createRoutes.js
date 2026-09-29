@@ -150,11 +150,11 @@ async function ensureNoConflicts({ db = prisma, startAt, endAt, learnerIds, teac
   }
 }
 
-async function ensureCredits({ db = prisma, learnerIds, allowNoCredit }) {
+async function ensureCredits({ db = prisma, learnerIds, sessionType, allowNoCredit }) {
   if (allowNoCredit) return;
 
   for (const learnerId of learnerIds) {
-    const remaining = await getRemainingCredits(learnerId, db);
+    const remaining = await getRemainingCredits(learnerId, db, sessionType);
     if (remaining <= 0) {
       throw httpError(422, {
         error: "no_credits",
@@ -341,6 +341,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       await ensureCredits({
         db: tx,
         learnerIds: finalLearnerIds,
+        sessionType: finalType,
         allowNoCredit: allowCreditOverride,
       });
 

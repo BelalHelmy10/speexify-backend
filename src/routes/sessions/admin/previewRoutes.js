@@ -304,10 +304,10 @@ async function getConflictPreview({ teacherId, learners, start, end }) {
   };
 }
 
-async function getCreditPreview(learners) {
+async function getCreditPreview(learners, sessionType) {
   const rows = await Promise.all(
     learners.map(async (learner) => {
-      const remaining = await getRemainingCredits(learner.id);
+      const remaining = await getRemainingCredits(learner.id, prisma, sessionType);
       return {
         userId: learner.id,
         name: learner.name,
@@ -458,7 +458,7 @@ router.post(
           start: schedule.start,
           end: schedule.end,
         }),
-        getCreditPreview(learners),
+        getCreditPreview(learners, schedule.type),
       ]);
 
       if (conflicts.total > 0) {

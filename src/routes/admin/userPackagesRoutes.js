@@ -17,7 +17,7 @@ router.get(
   validateRequest({ params: UserIdParamsSchema }),
   async (req, res) => {
     try {
-      const userId = req.params.id;
+      const userId = Number(req.params.id);
 
       const packages = await prisma.userPackage.findMany({
         where: { userId },
@@ -33,9 +33,18 @@ router.get(
         orderBy: { createdAt: "desc" },
       });
 
+      const now = new Date();
       const enhanced = packages.map((p) => ({
         ...p,
-        remaining: (p.sessionsTotal || 0) - (p.sessionsUsed || 0),
+        remaining: Math.max(
+          0,
+          Number(p.sessionsTotal || 0) - Number(p.sessionsUsed || 0)
+        ),
+        expired: Boolean(p.expiresAt && new Date(p.expiresAt) <= now),
+        creditEligible:
+          p.status === "active" &&
+          (!p.expiresAt || new Date(p.expiresAt) > now) &&
+          Number(p.sessionsTotal || 0) > Number(p.sessionsUsed || 0),
         packageTitle: p.package?.title || "Custom/Unknown Package",
         packagePriceUSD: p.package?.priceUSD || null,
       }));
