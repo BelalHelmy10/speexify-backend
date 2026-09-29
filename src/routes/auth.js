@@ -26,6 +26,7 @@ import {
 import { validateRequest } from "../middleware/validateRequest.js";
 import { isValidPhone, normalizePhone } from "../lib/phone.js";
 import { MARKETING_PHONE_CONSENT_VERSION } from "../lib/marketingConsent.js";
+import { notifyNewRegistration } from "../services/registrationNotifications.js";
 
 const router = Router();
 
@@ -115,7 +116,10 @@ const googleUserSelect = {
   phone: true,
   marketingPhoneConsentAt: true,
   marketingPhoneOptOutAt: true,
+  marketingPhoneConsentSource: true,
+  marketingPhoneConsentVersion: true,
   isDisabled: true,
+  createdAt: true,
 };
 
 // ---- Codes + hashing ----
@@ -217,24 +221,26 @@ async function findOrCreateGoogleUser({ email, name }) {
     where: { email },
     select: googleUserSelect,
   });
-  if (existing) return existing;
+  if (existing) return { user: existing, isNew: false };
 
   const hashedPassword = await randomHashedPassword();
 
   try {
-    return await prisma.user.create({
+    const user = await prisma.user.create({
       data: { email, name, hashedPassword, role: "learner" },
       select: googleUserSelect,
     });
+    return { user, isNew: true };
   } catch (err) {
     // Two Google callbacks for the same new account can arrive together.
     // If one request wins the insert, the other should continue as a login.
     if (isUniqueConstraintError(err)) {
       logger.warn({ email }, "[google] user create raced with existing account");
-      return await prisma.user.findUnique({
+      const user = await prisma.user.findUnique({
         where: { email },
         select: googleUserSelect,
       });
+      return { user, isNew: false };
     }
 
     throw err;
@@ -380,7 +386,7 @@ router.post("/google", authLimiter, validateRequest({ body: GoogleLoginBodySchem
       );
     }
 
-    const user = await findOrCreateGoogleUser({ email, name });
+    const { user, isNew } = await findOrCreateGoogleUser({ email, name });
     if (!user) {
       throw new Error("Google user lookup returned no user");
     }
@@ -396,6 +402,10 @@ router.post("/google", authLimiter, validateRequest({ body: GoogleLoginBodySchem
     }
 
     establishLoginSession(req, user);
+
+    if (isNew) {
+      await notifyNewRegistration({ user, source: "google" });
+    }
 
     req.session.save((saveErr) => {
       if (saveErr) {
@@ -832,12 +842,17 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
         language: true,
         phone: true,
         marketingPhoneConsentAt: true,
+        marketingPhoneConsentSource: true,
+        marketingPhoneConsentVersion: true,
         marketingPhoneOptOutAt: true,
         isDisabled: true,
+        createdAt: true,
       },
     });
 
     await prisma.verificationCode.delete({ where: { email } });
+
+    await notifyNewRegistration({ user, source: "email" });
 
     establishLoginSession(req, user);
 

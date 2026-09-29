@@ -198,6 +198,50 @@ export function verificationEmail({ code, locale = "en" }) {
   };
 }
 
+/**
+ * Internal admin alert for a newly created learner account.
+ * Keep this separate from learner-facing copy so registration delivery is
+ * explicit, auditable, and safe to send to the configured admin mailbox.
+ */
+export function adminNewRegistrationEmail({ user, source = "email", adminUrl }) {
+  const name = user?.name || "New learner";
+  const subjectName = String(name).replace(/[\r\n]+/g, " ").slice(0, 120);
+  const profileUrl = safeHref(adminUrl);
+  const joinedAt = formatEmailDate(
+    user?.createdAt || new Date(),
+    user?.timezone,
+    "en"
+  );
+  const consent = user?.marketingPhoneConsentAt ? "Granted" : "Not granted";
+  const rows = [
+    ["Name", name],
+    ["Email", user?.email || "Not provided"],
+    ["Phone", user?.phone || "Not provided"],
+    ["Registration source", source === "google" ? "Google sign-in" : "Email registration"],
+    ["Joined", joinedAt],
+    ["Language", user?.language || "en"],
+    ["Timezone", user?.timezone || "Not set"],
+    ["Marketing phone consent", consent],
+  ];
+
+  return {
+    subject: `Speexify — New learner joined: ${subjectName}`,
+    html: layout("en", "New learner joined Speexify", `
+      <p>A new learner account was created on Speexify.</p>
+      <div style="background:#fff7f2;border:1px solid #ffd8c7;border-radius:16px;padding:20px;margin:20px 0;">
+        ${rows
+          .map(
+            ([label, value]) => `
+              <p style="margin:0 0 10px;"><strong style="color:#0d1b2a;">${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>
+            `
+          )
+          .join("")}
+      </div>
+      ${profileUrl ? `<p><a href="${profileUrl}" style="display:inline-block;background:#f25c2e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:10px;font-weight:700;">View learner profile</a></p>` : ""}
+    `, "#f25c2e"),
+  };
+}
+
 export function passwordResetEmail({ code, locale = "en" }) {
   return {
     subject: emailCopy(locale, "resetSubject"),
