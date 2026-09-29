@@ -1135,12 +1135,19 @@ app.get(
       ];
     }
 
-    const users = await prisma.user.findMany({
+    const userQuery = {
       where,
       select: { id: true, email: true, name: true, role: true, timezone: true },
       orderBy: [{ name: "asc" }, { email: "asc" }],
-      take: 200,
-    });
+    };
+
+    // Scheduling needs the complete learner/teacher directory so the admin can
+    // select anyone, while the general unfiltered user list remains bounded.
+    if (!roleRaw || !["learner", "teacher"].includes(String(roleRaw))) {
+      userQuery.take = 200;
+    }
+
+    const users = await prisma.user.findMany(userQuery);
 
     res.json(users);
   }
@@ -1179,7 +1186,6 @@ app.get(
           timezone: true,
         },
         orderBy: [{ name: "asc" }, { email: "asc" }],
-        take: 100,
       });
 
       res.json(learners);
@@ -1217,7 +1223,6 @@ app.get(
         timezone: true,
       },
       orderBy: [{ name: "asc" }, { email: "asc" }],
-      take: 200,
     });
     res.json(teachers);
   }
