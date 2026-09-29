@@ -24,6 +24,8 @@ import {
   getWsAuthTokenTtlMs,
 } from "../webrtcSignaling/token.js";
 import { validateRequest } from "../middleware/validateRequest.js";
+import { isValidPhone, normalizePhone } from "../lib/phone.js";
+import { MARKETING_PHONE_CONSENT_VERSION } from "../lib/marketingConsent.js";
 
 const router = Router();
 
@@ -48,6 +50,10 @@ const RegisterCompleteBodySchema = z.object({
   code: z.string().trim().regex(/^\d{6}$/),
   password: z.string().min(1).max(200),
   name: z.string().trim().max(120).optional().default(""),
+  phone: z.string().trim().min(8).max(40).refine(isValidPhone, {
+    message: "Enter a valid phone number with 8 to 15 digits",
+  }),
+  marketingPhoneConsent: z.boolean().optional().default(false),
 });
 
 // ---------------------------------------------------------------------------
@@ -85,6 +91,11 @@ const publicUserSelect = {
   role: true,
   timezone: true,
   language: true,
+  phone: true,
+  marketingPhoneConsentAt: true,
+  marketingPhoneConsentSource: true,
+  marketingPhoneConsentVersion: true,
+  marketingPhoneOptOutAt: true,
   isDisabled: true,
   passwordChangedAt: true,
   rateHourlyCents: true,
@@ -101,6 +112,9 @@ const googleUserSelect = {
   role: true,
   timezone: true,
   language: true,
+  phone: true,
+  marketingPhoneConsentAt: true,
+  marketingPhoneOptOutAt: true,
   isDisabled: true,
 };
 
@@ -192,6 +206,9 @@ function establishLoginSession(req, user, { loginAtMs = Date.now() } = {}) {
     role: user.role,
     timezone: user.timezone ?? null,
     language: user.language ?? "en",
+    phone: user.phone ?? null,
+    marketingPhoneConsentAt: user.marketingPhoneConsentAt ?? null,
+    marketingPhoneOptOutAt: user.marketingPhoneOptOutAt ?? null,
   };
 }
 
@@ -251,9 +268,12 @@ router.post("/login", loginLimiter, validateRequest({ body: LoginBodySchema }), 
       role: user.role,
       timezone: user.timezone ?? null,
       language: user.language ?? "en",
+      phone: user.phone ?? null,
+      marketingPhoneConsentAt: user.marketingPhoneConsentAt ?? null,
+      marketingPhoneOptOutAt: user.marketingPhoneOptOutAt ?? null,
     };
     establishLoginSession(req, sessionUser);
-    res.json({ user: sessionUser });
+    res.json({ user: sessionUser, needsContactDetails: !user.phone });
   } catch (err) {
     logger.error({ err }, "Login error");
     res.status(500).json({ error: "Failed to login" });
@@ -397,7 +417,11 @@ router.post("/google", authLimiter, validateRequest({ body: GoogleLoginBodySchem
         Vary: "Cookie",
       });
       logger.info({ email }, "[google] verify ok → session established");
-      return res.json({ ok: true, user: req.session.user });
+      return res.json({
+        ok: true,
+        user: req.session.user,
+        needsContactDetails: !user.phone,
+      });
     });
   } catch (err) {
     const msg = getErrorMessage(err);
@@ -733,6 +757,8 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
     const code = String(req.body?.code || "").trim();
     const password = String(req.body?.password || "");
     const name = String(req.body?.name || "");
+    const phone = normalizePhone(req.body?.phone);
+    const marketingPhoneConsent = Boolean(req.body?.marketingPhoneConsent);
 
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
@@ -782,7 +808,20 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { email, name: name || null, hashedPassword, role: "learner" },
+      data: {
+        email,
+        name: name || null,
+        phone,
+        hashedPassword,
+        role: "learner",
+        ...(marketingPhoneConsent
+          ? {
+              marketingPhoneConsentAt: new Date(),
+              marketingPhoneConsentSource: "registration",
+              marketingPhoneConsentVersion: MARKETING_PHONE_CONSENT_VERSION,
+            }
+          : {}),
+      },
       select: {
         id: true,
         email: true,
@@ -791,6 +830,9 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
         role: true,
         timezone: true,
         language: true,
+        phone: true,
+        marketingPhoneConsentAt: true,
+        marketingPhoneOptOutAt: true,
         isDisabled: true,
       },
     });

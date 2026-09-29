@@ -73,6 +73,8 @@ import {
   saveAvatarFile,
 } from "./lib/profileAvatarUpload.js";
 import { requireUploadsEnabled } from "./lib/uploadAvailability.js";
+import { isValidPhone, normalizePhone } from "./lib/phone.js";
+import { MARKETING_PHONE_CONSENT_VERSION } from "./lib/marketingConsent.js";
 
 const app = express();
 
@@ -375,6 +377,14 @@ const ProfilePatchBodySchema = z
     name: z.string().trim().max(120).nullable().optional(),
     timezone: z.string().trim().max(80).nullable().optional(),
     language: z.enum(LANGUAGE_OPTIONS).nullable().optional(),
+    phone: z.union([
+      z.string().trim().min(8).max(40).refine(isValidPhone, {
+        message: "Enter a valid phone number with 8 to 15 digits",
+      }),
+      z.literal(""),
+      z.null(),
+    ]).optional(),
+    marketingPhoneConsent: z.boolean().optional(),
   })
   .strict()
   .refine((payload) => Object.keys(payload).length > 0, {
@@ -618,6 +628,11 @@ app.get("/api/me", requireAuth, async (req, res) => {
         role: true,
         timezone: true,
         language: true,
+        phone: true,
+        marketingPhoneConsentAt: true,
+        marketingPhoneConsentSource: true,
+        marketingPhoneConsentVersion: true,
+        marketingPhoneOptOutAt: true,
         notificationPreferences: true,
         calendarFeedRevokedAt: true,
         passwordChangedAt: true,
@@ -638,8 +653,13 @@ app.patch(
   validateRequest({ body: ProfilePatchBodySchema }),
   async (req, res) => {
     try {
-      const { name, timezone, language } = req.body;
+      const { name, timezone, language, phone, marketingPhoneConsent } = req.body;
       const data = {};
+      const hasPhone = Object.prototype.hasOwnProperty.call(req.body, "phone");
+      const hasConsent = Object.prototype.hasOwnProperty.call(
+        req.body,
+        "marketingPhoneConsent"
+      );
       if (Object.prototype.hasOwnProperty.call(req.body, "name")) {
         data.name = name?.trim() || null;
       }
@@ -648,6 +668,47 @@ app.patch(
       }
       if (Object.prototype.hasOwnProperty.call(req.body, "language")) {
         data.language = language || "en";
+      }
+
+      let existingContact = null;
+      if (hasPhone || hasConsent) {
+        existingContact = await prisma.user.findUnique({
+          where: { id: req.viewUserId },
+          select: {
+            phone: true,
+            marketingPhoneConsentAt: true,
+            marketingPhoneOptOutAt: true,
+          },
+        });
+      }
+
+      if (hasPhone) {
+        data.phone = normalizePhone(phone);
+      }
+
+      const effectivePhone = hasPhone ? data.phone : existingContact?.phone;
+      if (hasConsent) {
+        if (marketingPhoneConsent) {
+          if (!effectivePhone) {
+            return res.status(422).json({
+              error: "A phone number is required before opting in to marketing messages",
+            });
+          }
+          const alreadyConsented = Boolean(
+            existingContact?.marketingPhoneConsentAt &&
+              !existingContact?.marketingPhoneOptOutAt
+          );
+          if (!alreadyConsented) {
+            data.marketingPhoneConsentAt = new Date();
+            data.marketingPhoneConsentSource = "settings";
+            data.marketingPhoneConsentVersion = MARKETING_PHONE_CONSENT_VERSION;
+          }
+          data.marketingPhoneOptOutAt = null;
+        } else if (existingContact?.marketingPhoneConsentAt) {
+          data.marketingPhoneOptOutAt = new Date();
+        }
+      } else if (hasPhone && !effectivePhone && existingContact?.marketingPhoneConsentAt) {
+        data.marketingPhoneOptOutAt = new Date();
       }
 
       const updated = await prisma.user.update({
@@ -661,6 +722,11 @@ app.patch(
           role: true,
           timezone: true,
           language: true,
+          phone: true,
+          marketingPhoneConsentAt: true,
+          marketingPhoneConsentSource: true,
+          marketingPhoneConsentVersion: true,
+          marketingPhoneOptOutAt: true,
           notificationPreferences: true,
           calendarFeedRevokedAt: true,
           passwordChangedAt: true,
@@ -676,6 +742,9 @@ app.patch(
           avatarUrl: updated.avatarUrl,
           timezone: updated.timezone,
           language: updated.language,
+          phone: updated.phone,
+          marketingPhoneConsentAt: updated.marketingPhoneConsentAt,
+          marketingPhoneOptOutAt: updated.marketingPhoneOptOutAt,
         };
       }
 

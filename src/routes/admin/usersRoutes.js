@@ -12,6 +12,8 @@ import {
   getTeacherRateAt,
   recordTeacherRateHistory,
 } from "../../services/teacherRateService.js";
+import { isValidPhone, normalizePhone } from "../../lib/phone.js";
+import { MARKETING_PHONE_CONSENT_VERSION } from "../../lib/marketingConsent.js";
 
 const router = Router();
 
@@ -35,6 +37,14 @@ const CreateUserBodySchema = z
     name: z.string().trim().max(120).optional().default(""),
     role: RoleSchema.optional().default("learner"),
     timezone: z.string().trim().max(80).nullable().optional().default(null),
+    phone: z.union([
+      z.string().trim().min(8).max(40).refine(isValidPhone, {
+        message: "Enter a valid phone number with 8 to 15 digits",
+      }),
+      z.literal(""),
+      z.null(),
+    ]).optional().default(null),
+    marketingPhoneConsent: z.boolean().optional().default(false),
   })
   .strict();
 
@@ -55,6 +65,14 @@ const PatchUserBodySchema = z
     isDisabled: z.boolean().optional(),
     name: z.string().trim().max(120).nullable().optional(),
     timezone: z.string().trim().max(80).nullable().optional(),
+    phone: z.union([
+      z.string().trim().min(8).max(40).refine(isValidPhone, {
+        message: "Enter a valid phone number with 8 to 15 digits",
+      }),
+      z.literal(""),
+      z.null(),
+    ]).optional(),
+    marketingPhoneConsent: z.boolean().optional(),
     rateHourlyCents: RateCentsSchema.optional(),
     ratePerSessionCents: RateCentsSchema.optional(),
     rateHourlyEgpPiastres: RateCentsSchema.optional(),
@@ -87,6 +105,7 @@ router.get(
         where.OR = [
           { email: { contains: q, mode: "insensitive" } },
           { name: { contains: q, mode: "insensitive" } },
+          { phone: { contains: q } },
         ];
       }
       if (role) where.role = String(role);
@@ -100,6 +119,9 @@ router.get(
           role: true,
           timezone: true,
           language: true,
+          phone: true,
+          marketingPhoneConsentAt: true,
+          marketingPhoneOptOutAt: true,
           isDisabled: true,
           createdAt: true,
           rateHourlyCents: true,
@@ -124,9 +146,14 @@ router.post(
   validateRequest({ body: CreateUserBodySchema }),
   async (req, res) => {
     try {
-      const { email, name, role, timezone } = req.body;
+      const { email, name, role, timezone, phone, marketingPhoneConsent } = req.body;
 
       if (!email) return res.status(400).json({ error: "email required" });
+      if (marketingPhoneConsent && !phone) {
+        return res.status(422).json({
+          error: "A phone number is required before opting in to marketing messages",
+        });
+      }
 
       const exists = await prisma.user.findUnique({ where: { email } });
       if (exists) return res.status(409).json({ error: "User already exists" });
@@ -138,7 +165,21 @@ router.post(
         .digest("hex");
 
       const user = await prisma.user.create({
-        data: { email, name: name || null, role, timezone, hashedPassword },
+        data: {
+          email,
+          name: name || null,
+          role,
+          timezone,
+          phone: normalizePhone(phone),
+          hashedPassword,
+          ...(marketingPhoneConsent
+            ? {
+                marketingPhoneConsentAt: new Date(),
+                marketingPhoneConsentSource: "admin",
+                marketingPhoneConsentVersion: MARKETING_PHONE_CONSENT_VERSION,
+              }
+            : {}),
+        },
         select: {
           id: true,
           email: true,
@@ -146,6 +187,9 @@ router.post(
           role: true,
           timezone: true,
           language: true,
+          phone: true,
+          marketingPhoneConsentAt: true,
+          marketingPhoneOptOutAt: true,
           isDisabled: true,
         },
       });
@@ -228,6 +272,8 @@ router.patch(
         isDisabled,
         name,
         timezone,
+        phone,
+        marketingPhoneConsent,
         rateHourlyCents,
         ratePerSessionCents,
         rateHourlyEgpPiastres,
@@ -247,6 +293,9 @@ router.patch(
             id: true,
             role: true,
             isDisabled: true,
+            phone: true,
+            marketingPhoneConsentAt: true,
+            marketingPhoneOptOutAt: true,
             rateHourlyCents: true,
             ratePerSessionCents: true,
             rateHourlyEgpPiastres: true,
@@ -260,11 +309,21 @@ router.patch(
           throw error;
         }
 
+        const normalizedPhone = phone !== undefined ? normalizePhone(phone) : before.phone;
+        if (marketingPhoneConsent === true && !normalizedPhone) {
+          const error = new Error(
+            "A phone number is required before opting in to marketing messages"
+          );
+          error.code = "MARKETING_PHONE_REQUIRED";
+          throw error;
+        }
+
         const updateData = {
           ...(role ? { role } : {}),
           ...(typeof isDisabled === "boolean" ? { isDisabled } : {}),
           ...(name !== undefined ? { name } : {}),
           ...(timezone !== undefined ? { timezone } : {}),
+          ...(phone !== undefined ? { phone: normalizedPhone } : {}),
           ...(rateHourlyCents !== undefined
             ? {
                 rateHourlyCents:
@@ -282,6 +341,22 @@ router.patch(
               }
             : {}),
         };
+
+        if (marketingPhoneConsent === true) {
+          const alreadyConsented = Boolean(
+            before.marketingPhoneConsentAt && !before.marketingPhoneOptOutAt
+          );
+          if (!alreadyConsented) {
+            updateData.marketingPhoneConsentAt = new Date();
+            updateData.marketingPhoneConsentSource = "admin";
+            updateData.marketingPhoneConsentVersion = MARKETING_PHONE_CONSENT_VERSION;
+          }
+          updateData.marketingPhoneOptOutAt = null;
+        } else if (marketingPhoneConsent === false && before.marketingPhoneConsentAt) {
+          updateData.marketingPhoneOptOutAt = new Date();
+        } else if (phone !== undefined && !normalizedPhone && before.marketingPhoneConsentAt) {
+          updateData.marketingPhoneOptOutAt = new Date();
+        }
 
         if (hasEgpRateChange) {
           rateHistory = await recordTeacherRateHistory({
@@ -330,6 +405,9 @@ router.patch(
             role: true,
             timezone: true,
             isDisabled: true,
+            phone: true,
+            marketingPhoneConsentAt: true,
+            marketingPhoneOptOutAt: true,
             rateHourlyCents: true,
             ratePerSessionCents: true,
             rateHourlyEgpPiastres: true,
@@ -356,6 +434,12 @@ router.patch(
         );
       }
 
+      if (marketingPhoneConsent !== undefined) {
+        await audit(req.user.id, "marketing_phone_consent_update", "User", id, {
+          optedIn: marketingPhoneConsent,
+        });
+      }
+
       if (rateHourlyCents !== undefined || ratePerSessionCents !== undefined || rateHourlyEgpPiastres !== undefined || ratePerSessionEgpPiastres !== undefined) {
         await audit(req.user.id, "teacher_rate_update", "User", id, {
           effectiveFrom: rateHistory?.effectiveFrom || null,
@@ -378,6 +462,9 @@ router.patch(
       res.json(user);
     } catch (err) {
       if (err?.code === "RATE_TEACHER_ONLY") {
+        return res.status(422).json({ error: err.message });
+      }
+      if (err?.code === "MARKETING_PHONE_REQUIRED") {
         return res.status(422).json({ error: err.message });
       }
       logger.error({ err }, "admin.patchUser error");

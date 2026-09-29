@@ -1,5 +1,6 @@
 // src/services/paymentReconciliationService.js
 import crypto from "crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 
@@ -91,6 +92,269 @@ async function ensureWebhookEventsTable() {
     ensureTablePromise = null;
     throw err;
   }
+}
+
+function normalizeAdminDate(value, endOfDay = false) {
+  if (!value) return null;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // Date inputs arrive as YYYY-MM-DD. Treat the end date as inclusive while
+  // keeping the database query half-open, which avoids timezone edge cases.
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`)
+    : new Date(raw);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function buildAdminOrderWhere({
+  status = "all",
+  search = "",
+  packageId = null,
+  from = "",
+  to = "",
+} = {}) {
+  const where = {};
+
+  if (["paid", "pending", "failed"].includes(status)) {
+    where.status = status;
+  }
+
+  if (packageId) {
+    where.packageId = Number(packageId);
+  }
+
+  const fromDate = normalizeAdminDate(from);
+  const toDate = normalizeAdminDate(to, true);
+  if (fromDate || toDate) {
+    where.createdAt = {
+      ...(fromDate ? { gte: fromDate } : {}),
+      ...(toDate ? { lte: toDate } : {}),
+    };
+  }
+
+  const normalizedSearch = String(search || "").trim();
+  if (normalizedSearch) {
+    const searchConditions = [
+      { id: { contains: normalizedSearch, mode: "insensitive" } },
+      { customerEmail: { contains: normalizedSearch, mode: "insensitive" } },
+      { customerPhone: { contains: normalizedSearch, mode: "insensitive" } },
+      { user: { name: { contains: normalizedSearch, mode: "insensitive" } } },
+      { user: { email: { contains: normalizedSearch, mode: "insensitive" } } },
+      { package: { title: { contains: normalizedSearch, mode: "insensitive" } } },
+    ];
+
+    const transactionId = Number(normalizedSearch);
+    if (Number.isInteger(transactionId) && transactionId > 0) {
+      searchConditions.push({ paymobTxnId: transactionId });
+    }
+
+    where.OR = searchConditions;
+  }
+
+  return where;
+}
+
+function serializeWebhookEvent(row) {
+  return {
+    id: Number(row.id),
+    eventKey: row.event_key,
+    transactionId: row.transaction_id,
+    eventStatus: row.event_status,
+    resolution: row.resolution,
+    attemptCount: Number(row.attempt_count || 0),
+    lastError: row.last_error,
+    receivedAt: row.received_at,
+    processedAt: row.processed_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function getLatestWebhookEvents(orderIds) {
+  if (!orderIds.length) return new Map();
+
+  const rows = await prisma.$queryRaw`
+    SELECT DISTINCT ON (order_id)
+      id, order_id, event_key, transaction_id, event_status, resolution,
+      attempt_count, last_error, received_at, processed_at, updated_at
+    FROM payment_webhook_events
+    WHERE provider = ${PROVIDER_PAYMOB}
+      AND order_id IN (${Prisma.join(orderIds)})
+    ORDER BY order_id, received_at DESC, id DESC
+  `;
+
+  return new Map(
+    rows.map((row) => [String(row.order_id), serializeWebhookEvent(row)])
+  );
+}
+
+function summarizeOrder(order, latestWebhook) {
+  return {
+    id: order.id,
+    status: order.status,
+    amountCents: Number(order.amountCents || 0),
+    currency: order.currency || "EGP",
+    psp: order.psp || PROVIDER_PAYMOB,
+    paymobTxnId: order.paymobTxnId == null ? null : Number(order.paymobTxnId),
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    customer: {
+      id: order.user?.id ?? order.userId ?? null,
+      name: order.user?.name || "Unknown customer",
+      email: order.customerEmail || order.user?.email || null,
+      phone: order.customerPhone || order.user?.phone || null,
+    },
+    package: order.package
+      ? { id: order.package.id, title: order.package.title }
+      : order.packageId
+        ? { id: order.packageId, title: "Package unavailable" }
+        : null,
+    discountCode: order.discountCode?.code || null,
+    latestWebhook,
+  };
+}
+
+/**
+ * Admin-facing payment operations data. This intentionally uses the same
+ * Order records that control fulfillment, while joining the reconciliation
+ * table only for provider/webhook health and diagnostics.
+ */
+export async function getPaymobAdminPayments({
+  status = "all",
+  search = "",
+  packageId = null,
+  from = "",
+  to = "",
+  limit = 25,
+  offset = 0,
+} = {}) {
+  await ensureWebhookEventsTable();
+
+  const where = buildAdminOrderWhere({ status, search, packageId, from, to });
+  const safeLimit = Math.min(Math.max(Number(limit) || 25, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+
+  const statusNames = ["paid", "pending", "failed"];
+  const [orders, total, statusAggregates, webhookSummary] = await Promise.all([
+    prisma.order.findMany({
+      where,
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      skip: safeOffset,
+      take: safeLimit,
+      select: {
+        id: true,
+        amountCents: true,
+        currency: true,
+        status: true,
+        psp: true,
+        paymobTxnId: true,
+        createdAt: true,
+        updatedAt: true,
+        userId: true,
+        packageId: true,
+        customerEmail: true,
+        customerPhone: true,
+        discountCode: { select: { code: true } },
+        user: { select: { id: true, name: true, email: true, phone: true } },
+        package: { select: { id: true, title: true } },
+      },
+    }),
+    prisma.order.count({ where }),
+    Promise.all(
+      statusNames.map(async (statusName) => {
+        const aggregate = await prisma.order.aggregate({
+          where: { ...where, status: statusName },
+          _count: { _all: true },
+          _sum: { amountCents: true },
+        });
+        return [statusName, {
+          count: aggregate._count._all,
+          amountCents: Number(aggregate._sum.amountCents || 0),
+        }];
+      })
+    ),
+    getPaymobWebhookReconciliationSummary(),
+  ]);
+
+  const latestWebhooks = await getLatestWebhookEvents(orders.map((order) => order.id));
+  const aggregates = Object.fromEntries(statusAggregates);
+  const paidCount = aggregates.paid?.count || 0;
+  const conversionRate = total > 0 ? Number(((paidCount / total) * 100).toFixed(1)) : 0;
+
+  return {
+    items: orders.map((order) =>
+      summarizeOrder(order, latestWebhooks.get(String(order.id)) || null)
+    ),
+    summary: {
+      totalOrders: total,
+      paidOrders: paidCount,
+      pendingOrders: aggregates.pending?.count || 0,
+      failedOrders: aggregates.failed?.count || 0,
+      paidAmountCents: aggregates.paid?.amountCents || 0,
+      pendingAmountCents: aggregates.pending?.amountCents || 0,
+      failedAmountCents: aggregates.failed?.amountCents || 0,
+      conversionRate,
+      webhook: webhookSummary,
+    },
+    pagination: {
+      limit: safeLimit,
+      offset: safeOffset,
+      total,
+      hasMore: safeOffset + orders.length < total,
+    },
+  };
+}
+
+export async function getPaymobAdminPaymentDetail(orderId) {
+  await ensureWebhookEventsTable();
+
+  const order = await prisma.order.findUnique({
+    where: { id: String(orderId) },
+    select: {
+      id: true,
+      amountCents: true,
+      currency: true,
+      status: true,
+      psp: true,
+      pspOrderId: true,
+      paymobTxnId: true,
+      createdAt: true,
+      updatedAt: true,
+      userId: true,
+      packageId: true,
+      customerEmail: true,
+      customerPhone: true,
+      pricingSnapshot: true,
+      discountCode: { select: { code: true, percentage: true } },
+      user: { select: { id: true, name: true, email: true, phone: true } },
+      package: { select: { id: true, title: true } },
+      userPackage: {
+        select: { id: true, title: true, sessionsTotal: true, status: true, createdAt: true },
+      },
+    },
+  });
+
+  if (!order) return null;
+
+  const events = await prisma.$queryRaw`
+    SELECT id, order_id, event_key, transaction_id, event_status, resolution,
+           attempt_count, last_error, received_at, processed_at, updated_at
+    FROM payment_webhook_events
+    WHERE provider = ${PROVIDER_PAYMOB}
+      AND order_id = ${String(order.id)}
+    ORDER BY received_at DESC, id DESC
+  `;
+
+  return {
+    ...summarizeOrder(order, events[0] ? serializeWebhookEvent(events[0]) : null),
+    pspOrderId: order.pspOrderId == null ? null : Number(order.pspOrderId),
+    pricingSnapshot: order.pricingSnapshot,
+    discount: order.discountCode,
+    fulfillment: order.userPackage,
+    webhookEvents: events.map(serializeWebhookEvent),
+  };
 }
 
 export function buildPaymobEventKey(txn = {}) {
@@ -306,7 +570,7 @@ export async function markWebhookEventFailed(
 export async function getPaymobWebhookReconciliationSummary() {
   await ensureWebhookEventsTable();
 
-  const [statusRows, recentFailures] = await Promise.all([
+  const [statusRows, recentFailures, latestEventRows] = await Promise.all([
     prisma.$queryRaw`
       SELECT event_status, COUNT(*)::int AS count
       FROM payment_webhook_events
@@ -321,6 +585,13 @@ export async function getPaymobWebhookReconciliationSummary() {
       ORDER BY updated_at DESC
       LIMIT 25
     `,
+    prisma.$queryRaw`
+      SELECT received_at
+      FROM payment_webhook_events
+      WHERE provider = ${PROVIDER_PAYMOB}
+      ORDER BY received_at DESC
+      LIMIT 1
+    `,
   ]);
 
   return {
@@ -328,5 +599,6 @@ export async function getPaymobWebhookReconciliationSummary() {
       statusRows.map((row) => [String(row.event_status), Number(row.count || 0)])
     ),
     recentFailures,
+    lastReceivedAt: latestEventRows[0]?.received_at || null,
   };
 }

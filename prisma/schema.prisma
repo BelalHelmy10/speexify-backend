@@ -41,6 +41,11 @@ model User {
   email                     String                 @unique
   name                      String?
   avatarUrl                 String?
+  phone                     String?
+  marketingPhoneConsentAt   DateTime?
+  marketingPhoneConsentSource String?
+  marketingPhoneConsentVersion String?
+  marketingPhoneOptOutAt    DateTime?
   hashedPassword            String
   role                      String                 @default("learner")
   createdAt                 DateTime               @default(now())
@@ -111,6 +116,8 @@ model User {
 
   @@index([role])
   @@index([deletedAt])
+  @@index([phone])
+  @@index([marketingPhoneConsentAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
