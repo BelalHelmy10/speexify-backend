@@ -11,6 +11,8 @@ import {
   feedbackEmail,
   formatEmailDate,
   normalizeEmailLocale,
+  sessionUpdatedLearnerEmail,
+  sessionUpdatedTeacherEmail,
 } from "./emailTemplates.js";
 import { shouldDeliverInAppNotification } from "../lib/notificationPreferences.js";
 import { publishNotificationEvent } from "./notificationStreamHub.js";
@@ -267,6 +269,115 @@ export async function sendBookingNotifications({
   logger.info(
     { sessionId: session.id, learnerIds, teacherId },
     "Booking notifications sent"
+  );
+}
+
+/**
+ * Send a schedule-change notification + email after a session time changes.
+ * The old and new timestamps are kept in the in-app payload so clients can
+ * explain exactly what changed without treating this as a new booking.
+ */
+export async function sendSessionUpdatedNotifications({
+  session,
+  previousStartAt,
+  learnerIds,
+  teacherId,
+}) {
+  const sessionTitle = session.title || "Session";
+  const [learners, teacher] = await Promise.all([
+    prisma.user.findMany({
+      where: { id: { in: learnerIds } },
+      select: { id: true, email: true, name: true, timezone: true, language: true },
+    }),
+    teacherId
+      ? prisma.user.findUnique({
+          where: { id: teacherId },
+          select: { id: true, email: true, name: true, timezone: true, language: true },
+        })
+      : null,
+  ]);
+
+  const recipients = [...learnerIds, ...(teacherId ? [teacherId] : [])];
+  await createNotificationsForMany(recipients, {
+    type: "session_updated",
+    title: "Session time updated",
+    body: `The session "${sessionTitle}" is now scheduled for a new time.`,
+    data: {
+      sessionId: session.id,
+      previousStartAt,
+      startAt: session.startAt,
+      endAt: session.endAt,
+      joinUrl: session.joinUrl,
+      sessionType: session.type,
+      teacherId,
+      learnerIds,
+    },
+  });
+
+  await Promise.all(
+    learners.map(async (learner) => {
+      const locale = normalizeEmailLocale(learner.language);
+      const previousWhen = formatEmailDate(previousStartAt, learner.timezone, locale);
+      const when = formatEmailDate(session.startAt, learner.timezone, locale);
+      const content = sessionUpdatedLearnerEmail({
+        name: learner.name,
+        sessionTitle,
+        teacherName: teacher?.name || "your teacher",
+        previousWhen,
+        when,
+        joinUrl: session.joinUrl,
+        locale,
+      });
+
+      try {
+        await enqueueEmail(learner.email, content.subject, content.html, {
+          userId: learner.id,
+          eventType: "session_updated",
+          sessionId: session.id,
+          locale,
+        });
+      } catch (e) {
+        logger.error(
+          { err: e, sessionId: session.id, learnerId: learner.id },
+          "[notifications] failed to queue session update email to learner"
+        );
+      }
+    })
+  );
+
+  if (teacher) {
+    const locale = normalizeEmailLocale(teacher.language);
+    const previousWhen = formatEmailDate(previousStartAt, teacher.timezone, locale);
+    const when = formatEmailDate(session.startAt, teacher.timezone, locale);
+    const content = sessionUpdatedTeacherEmail({
+      name: teacher.name,
+      sessionTitle,
+      learnerNames: learners.map((learner) => learner.name || learner.email).join(", "),
+      learnerCount: learners.length,
+      previousWhen,
+      when,
+      joinUrl: session.joinUrl,
+      locale,
+    });
+
+    try {
+      await enqueueEmail(teacher.email, content.subject, content.html, {
+        userId: teacher.id,
+        eventType: "session_updated",
+        sessionId: session.id,
+        locale,
+      });
+    } catch (e) {
+      logger.error(
+        { err: e, sessionId: session.id, teacherId },
+        "[notifications] failed to queue session update email to teacher"
+      );
+    }
+  }
+
+  logger.info(
+    { sessionId: session.id, learnerIds, teacherId, previousStartAt, startAt: session.startAt },
+    "Session update notifications queued"
   );
 }
 

@@ -17,6 +17,13 @@ const COPY = {
     joinClassroom: "Join your classroom",
     viewSession: "View Session Details",
     bookingLearnerNote: "You'll receive reminder emails before your session starts.",
+    sessionUpdatedSubject: "Speexify — Session Time Updated",
+    sessionUpdatedTitle: "🕒 Session Time Updated",
+    sessionUpdatedLearnerIntro: "The time of your session has been updated.",
+    sessionUpdatedTeacherIntro: "The time of a session on your schedule has been updated.",
+    previousTime: "Previous time",
+    newTime: "New time",
+    sessionUpdatedNote: "Please use the new time below. Your session details remain unchanged.",
     canceledSubject: "Speexify — Session Canceled",
     canceledTitle: "❌ Session Canceled",
     canceledIntro: "Unfortunately, your session has been canceled.",
@@ -63,6 +70,13 @@ const COPY = {
     joinClassroom: "ادخل إلى الفصل",
     viewSession: "عرض تفاصيل الحصة",
     bookingLearnerNote: "ستصلك رسائل تذكير قبل بدء الحصة.",
+    sessionUpdatedSubject: "Speexify — تم تحديث موعد الحصة",
+    sessionUpdatedTitle: "🕒 تم تحديث موعد الحصة",
+    sessionUpdatedLearnerIntro: "تم تحديث موعد حصتك.",
+    sessionUpdatedTeacherIntro: "تم تحديث موعد حصة في جدولك.",
+    previousTime: "الموعد السابق",
+    newTime: "الموعد الجديد",
+    sessionUpdatedNote: "يرجى اعتماد الموعد الجديد أدناه. تفاصيل الحصة الأخرى لم تتغير.",
     canceledSubject: "Speexify — تم إلغاء الحصة",
     canceledTitle: "❌ تم إلغاء الحصة",
     canceledIntro: "للأسف، تم إلغاء حصتك.",
@@ -227,6 +241,61 @@ export function bookingTeacherEmail({ name, sessionTitle, learnerNames, learnerC
       </div>
       ${safeHref(joinUrl) ? `<p><a href="${safeHref(joinUrl)}" style="display:inline-block;padding:12px 24px;background:#0066ff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">${emailCopy(l, "viewSession")}</a></p>` : ""}
     `),
+  };
+}
+
+export function sessionUpdatedLearnerEmail({
+  name,
+  sessionTitle,
+  teacherName,
+  previousWhen,
+  when,
+  joinUrl,
+  locale,
+}) {
+  const l = normalizeEmailLocale(locale);
+  return {
+    subject: emailCopy(l, "sessionUpdatedSubject"),
+    html: layout(l, emailCopy(l, "sessionUpdatedTitle"), `
+      <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
+      <p>${emailCopy(l, "sessionUpdatedLearnerIntro")}</p>
+      <div style="background:#fff7ed;border-radius:12px;padding:20px;margin:20px 0;border-left:4px solid #f97316;">
+        <p><strong>📚 ${emailCopy(l, "session")}:</strong> ${escapeHtml(sessionTitle)}</p>
+        <p><strong>👨‍🏫 ${emailCopy(l, "teacher")}:</strong> ${escapeHtml(teacherName)}</p>
+        <p style="color:#64748b;"><strong>${emailCopy(l, "previousTime")}:</strong> ${escapeHtml(previousWhen)}</p>
+        <p style="color:#c2410c;font-weight:700;"><strong>📅 ${emailCopy(l, "newTime")}:</strong> ${escapeHtml(when)}</p>
+      </div>
+      ${safeHref(joinUrl) ? `<p><a href="${safeHref(joinUrl)}" style="display:inline-block;padding:12px 24px;background:#0066ff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">${emailCopy(l, "joinClassroom")}</a></p>` : ""}
+      <p style="color:#64748b;font-size:14px;margin-top:30px;">${emailCopy(l, "sessionUpdatedNote")}</p>
+    `, "#c2410c"),
+  };
+}
+
+export function sessionUpdatedTeacherEmail({
+  name,
+  sessionTitle,
+  learnerNames,
+  learnerCount,
+  previousWhen,
+  when,
+  joinUrl,
+  locale,
+}) {
+  const l = normalizeEmailLocale(locale);
+  return {
+    subject: emailCopy(l, "sessionUpdatedSubject"),
+    html: layout(l, emailCopy(l, "sessionUpdatedTitle"), `
+      <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
+      <p>${emailCopy(l, "sessionUpdatedTeacherIntro")}</p>
+      <div style="background:#fff7ed;border-radius:12px;padding:20px;margin:20px 0;border-left:4px solid #f97316;">
+        <p><strong>📚 ${emailCopy(l, "session")}:</strong> ${escapeHtml(sessionTitle)}</p>
+        <p><strong>👨‍🎓 ${learnerCount > 1 ? emailCopy(l, "learners") : emailCopy(l, "learner")}:</strong> ${escapeHtml(learnerNames)}</p>
+        <p style="color:#64748b;"><strong>${emailCopy(l, "previousTime")}:</strong> ${escapeHtml(previousWhen)}</p>
+        <p style="color:#c2410c;font-weight:700;"><strong>📅 ${emailCopy(l, "newTime")}:</strong> ${escapeHtml(when)}</p>
+      </div>
+      ${safeHref(joinUrl) ? `<p><a href="${safeHref(joinUrl)}" style="display:inline-block;padding:12px 24px;background:#0066ff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">${emailCopy(l, "viewSession")}</a></p>` : ""}
+      <p style="color:#64748b;font-size:14px;margin-top:30px;">${emailCopy(l, "sessionUpdatedNote")}</p>
+    `, "#c2410c"),
   };
 }
 

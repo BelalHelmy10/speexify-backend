@@ -14,6 +14,7 @@ const REMINDER_TYPES = new Set(["reminder_24h", "reminder_6h", "reminder_1h"]);
 const SESSION_CHANGE_TYPES = new Set([
   "booking_confirmed",
   "new_booking",
+  "session_updated",
   "session_canceled",
 ]);
 const PROGRESS_TYPES = new Set(["session_completed", "feedback_received"]);

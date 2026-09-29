@@ -19,6 +19,11 @@ import {
   completeIdempotentRequest,
   abandonIdempotentRequest,
 } from "../../services/idempotencyService.js";
+import {
+  DEFAULT_SCHEDULING_TIME_ZONE,
+  resolveTimeZone,
+  zonedDateTimeToUtc,
+} from "../../services/timezone.js";
 
 const bulkCreateRouter = Router();
 const SESSION_TYPES = new Set(["ONE_ON_ONE", "GROUP"]);
@@ -80,11 +85,11 @@ function parseStartDate(value) {
   }
 
   const [year, month, day] = String(value).split("-").map(Number);
-  const date = new Date(year, month - 1, day);
+  const date = new Date(Date.UTC(year, month - 1, day));
   if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
   ) {
     throw httpError(400, {
       error: "invalid_start_date",
@@ -95,10 +100,10 @@ function parseStartDate(value) {
 }
 
 function nextDateForDay(dayOfWeek) {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  while (date.getDay() !== dayOfWeek) {
-    date.setDate(date.getDate() + 1);
+  const now = new Date();
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  while (date.getUTCDay() !== dayOfWeek) {
+    date.setUTCDate(date.getUTCDate() + 1);
   }
   return date;
 }
@@ -114,20 +119,31 @@ function parseTime(value) {
   return String(value);
 }
 
-function buildSessionDates(startDate, numberOfSessions, time, durationMin) {
+function buildSessionDates(startDate, numberOfSessions, time, durationMin, timeZone) {
   const [hours, minutes] = time.split(":").map(Number);
   const dates = [];
-  let currentDate = new Date(startDate);
+  let currentDate = new Date(
+    Date.UTC(
+      startDate.getUTCFullYear(),
+      startDate.getUTCMonth(),
+      startDate.getUTCDate()
+    )
+  );
 
   for (let index = 0; index < numberOfSessions; index += 1) {
-    const startAt = new Date(currentDate);
-    startAt.setHours(hours, minutes, 0, 0);
+    const startAt = zonedDateTimeToUtc({
+      year: currentDate.getUTCFullYear(),
+      month: currentDate.getUTCMonth() + 1,
+      day: currentDate.getUTCDate(),
+      hour: hours,
+      minute: minutes,
+      timeZone,
+    });
 
-    const endAt = new Date(startAt);
-    endAt.setMinutes(endAt.getMinutes() + durationMin);
+    const endAt = new Date(startAt.getTime() + durationMin * 60_000);
 
     dates.push({ startAt, endAt });
-    currentDate.setDate(currentDate.getDate() + 7);
+    currentDate.setUTCDate(currentDate.getUTCDate() + 7);
   }
 
   return dates;
@@ -233,6 +249,7 @@ bulkCreateRouter.post(
         time,
         numberOfSessions,
         durationMin = 60,
+        timeZone = DEFAULT_SCHEDULING_TIME_ZONE,
         defaultTitle = "Lesson",
         customTitles = [],
         allowNoCredit = false,
@@ -247,6 +264,7 @@ bulkCreateRouter.post(
         max: 6,
       });
       const finalTime = parseTime(time);
+      const finalTimeZone = resolveTimeZone(timeZone);
       const finalNumberOfSessions = parseInteger(numberOfSessions, {
         field: "numberOfSessions",
         min: 1,
@@ -324,7 +342,8 @@ bulkCreateRouter.post(
         finalStartDate,
         finalNumberOfSessions,
         finalTime,
-        finalDurationMin
+        finalDurationMin,
+        finalTimeZone
       );
       const titles = Array.isArray(customTitles) ? customTitles : [];
 
@@ -339,6 +358,7 @@ bulkCreateRouter.post(
           capacity: finalCapacity,
           dayOfWeek: finalDayOfWeek,
           time: finalTime,
+          timeZone: finalTimeZone,
           numberOfSessions: finalNumberOfSessions,
           durationMin: finalDurationMin,
           defaultTitle,
