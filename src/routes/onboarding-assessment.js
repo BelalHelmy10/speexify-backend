@@ -351,6 +351,28 @@ router.get(
             orderBy: { createdAt: "desc" },
             select: ASSESSMENT_DETAIL_SELECT,
           },
+          availabilities: {
+            orderBy: [
+              { status: "asc" },
+              { isRecurring: "desc" },
+              { dayOfWeek: "asc" },
+              { specificDate: "asc" },
+              { startTime: "asc" },
+            ],
+            select: {
+              id: true,
+              dayOfWeek: true,
+              specificDate: true,
+              startTime: true,
+              endTime: true,
+              timezone: true,
+              isRecurring: true,
+              status: true,
+              note: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          },
         },
       });
 
@@ -358,11 +380,12 @@ router.get(
         return res.status(404).json({ error: "Learner not found" });
       }
 
-      const { onboardingForms, assessmentSubmissions, ...learner } = user;
+      const { onboardingForms, assessmentSubmissions, availabilities, ...learner } = user;
       res.json({
         user: learner,
         onboardingForms,
         assessments: assessmentSubmissions,
+        availabilities,
         latestOnboarding: latestOrNull(onboardingForms),
         latestAssessment: latestOrNull(assessmentSubmissions),
       });
