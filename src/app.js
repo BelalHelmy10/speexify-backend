@@ -242,6 +242,9 @@ app.use(
 app.use("/api/webhooks", resendWebhooksRoutes);
 
 app.get("/api/health", (_req, res) => {
+  if (process.env.RENDER_GIT_COMMIT) {
+    res.set("X-Deploy-Revision", process.env.RENDER_GIT_COMMIT.slice(0, 12));
+  }
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
     Pragma: "no-cache",

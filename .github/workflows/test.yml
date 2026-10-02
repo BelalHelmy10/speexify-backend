@@ -47,6 +47,7 @@ jobs:
 
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/speexify_test
+      DIRECT_URL: postgres://postgres:postgres@localhost:5432/speexify_test
       REDIS_URL: redis://localhost:6379
       SESSION_REDIS_STRICT: true
       NODE_ENV: test
