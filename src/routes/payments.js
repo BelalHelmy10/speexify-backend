@@ -19,7 +19,6 @@ import {
 } from "../services/paymentReconciliationService.js";
 import {
   createPendingOrder,
-  markOrderPaid,
   markOrderFailed,
   markOrderPendingForRetry,
   getOrderById,
@@ -29,12 +28,18 @@ import { normalizeDiscountCode, validateDiscount } from "../services/paymentPric
 import { paymentResponse, orderPricing, pricingError, verifyQuoteForPurchase } from "../services/pricingQuoteService.js";
 import { prisma } from "../lib/prisma.js";
 import { recordBusinessMetric } from "../observability/metrics.js";
+import {
+  reconcileOrderFromPaymob,
+  reconcileOrderFromPaymobForStatusPoll,
+} from "../services/providerPaymentReconciliation.js";
 
 const paymentDependencies = {prisma, requireAuth, createPaymentIntention, createPendingOrder,
-  getOrderById, orderExists, markOrderPendingForRetry};
+  getOrderById, orderExists, markOrderPendingForRetry,
+  reconcileOrderFromPaymob, reconcileOrderFromPaymobForStatusPoll};
 export function createPaymentsRouter(dependencies = {}) {
 const {prisma, requireAuth, createPaymentIntention, createPendingOrder,
-  getOrderById, orderExists, markOrderPendingForRetry} = {...paymentDependencies, ...dependencies};
+  getOrderById, orderExists, markOrderPendingForRetry,
+  reconcileOrderFromPaymob, reconcileOrderFromPaymobForStatusPoll} = {...paymentDependencies, ...dependencies};
 const router = Router();
 
 const CreateIntentBodySchema = z
@@ -110,6 +115,16 @@ router.post(
             ok: false,
             message: "This order has already been paid",
           });
+        }
+
+        // A missed callback must not let the same paid order open checkout again.
+        // Fail closed if Paymob is unavailable, because a retry could double-charge.
+        const providerState = await reconcileOrderFromPaymob(orderId);
+        if (providerState.status === "paid" || providerState.status === "already_fulfilled") {
+          return res.status(409).json({ ok: false, message: "This order has already been paid" });
+        }
+        if (!["transaction_not_found", "payment_failed"].includes(providerState.status)) {
+          return res.status(409).json({ ok: false, message: "Payment is under review; please contact support" });
         }
 
         if (existingOrder.packageId !== packageId) throw pricingError("ORDER_PACKAGE_MISMATCH", "This order belongs to a different package.");
@@ -426,18 +441,21 @@ router.post("/webhook", async (req, res) => {
 
     if (txn.success && !txn.pending) {
       // Payment successful - mark paid and grant credits
-      const result = await markOrderPaid(orderId, txn.transactionId);
+      const result = await reconcileOrderFromPaymob(orderId, { transactionId: txn.transactionId });
+
+      if (result.status !== "paid" && result.status !== "already_fulfilled") {
+        throw new Error(`Provider payment not confirmed: ${result.status}`);
+      }
 
       logger.info(
         {
           orderId,
           transactionId: txn.transactionId,
-          alreadyGranted: result.alreadyGranted,
-          userPackageId: result.userPackage?.id,
+          userPackageId: result.userPackageId,
         },
         "Order marked as paid, credits granted"
       );
-      resolution = result.alreadyGranted ? "paid_already_granted" : "paid_granted";
+      resolution = result.status === "already_fulfilled" ? "paid_already_granted" : "paid_granted";
     } else if (txn.errorOccurred || (!txn.success && !txn.pending)) {
       // Payment failed
       const failResult = await markOrderFailed(orderId, "payment_failed_or_declined");
@@ -491,7 +509,7 @@ router.get("/orders/:orderId", requireAuth, async (req, res) => {
     const { orderId } = req.params;
     const userId = req.user.id;
 
-    const order = await getOrderById(orderId);
+    let order = await getOrderById(orderId);
 
     // Check order exists and belongs to user
     if (!order) {
@@ -504,6 +522,15 @@ router.get("/orders/:orderId", requireAuth, async (req, res) => {
         "User tried to access another user's order"
       );
       return res.status(403).json({ error: "Access denied" });
+    }
+
+    if (["pending", "failed"].includes(order.status)) {
+      try {
+        const providerState = await reconcileOrderFromPaymobForStatusPoll(orderId);
+        if (providerState.status === "paid") order = await getOrderById(orderId);
+      } catch (err) {
+        logger.warn({ err, orderId }, "Payment status inquiry unavailable");
+      }
     }
 
     return res.json({
@@ -559,6 +586,14 @@ router.post(
         return res
           .status(409)
           .json({ ok: false, error: "Order already paid", status: "paid" });
+      }
+
+      const providerState = await reconcileOrderFromPaymob(orderId);
+      if (providerState.status === "paid" || providerState.status === "already_fulfilled") {
+        return res.status(409).json({ ok: false, error: "Order already paid", status: "paid" });
+      }
+      if (!["transaction_not_found", "payment_failed"].includes(providerState.status)) {
+        return res.status(409).json({ ok: false, error: "Payment is under review; please contact support" });
       }
 
       orderPricing(order);

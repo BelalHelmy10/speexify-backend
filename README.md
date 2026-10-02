@@ -315,6 +315,10 @@ PAYMOB_API_KEY / PAYMOB_INTEGRATION_ID / PAYMOB_IFRAME_ID – Core Paymob paymen
 
 PAYMOB_PAYMENT_METHOD_IDS – Optional comma-separated list of Paymob integration IDs sent to Unified Checkout. Configure the IDs for every enabled method in the same Paymob mode (for example, the test card ID and test Mobile Wallet ID in staging). Never mix Test and Live IDs or credentials.
 
+PAYMOB_NOTIFICATION_URL – Public HTTPS URL for Paymob's transaction callback, ending in `/api/payments/webhook`. On Render, this defaults to `RENDER_EXTERNAL_URL` plus that path. Outside Render, set it explicitly. Checkout fails if neither public URL is available. Paymob documents this intention-level callback for card methods; configure the processed callback URL for every enabled integration in Paymob's dashboard, including wallets.
+
+Payment recovery – The payment-status endpoint checks Paymob when a local order is still pending or failed, and the API process sweeps recent unpaid orders every minute. Both paths verify the provider reference, amount, currency, live/test mode, final success, and refund state before granting credits. Retry checkout checks the provider first to avoid charging an already-paid order again. Keep `PAYMOB_API_KEY` configured so inquiry recovery works if a callback is missed.
+
 LOG_LEVEL – Logging level for pino (debug, info, warn, error).
 
 Deployment notes

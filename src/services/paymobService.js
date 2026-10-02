@@ -12,6 +12,109 @@ import {
 import { logger } from "../lib/logger.js";
 
 const PAYMOB_API_URL = "https://accept.paymob.com/v1";
+const PAYMOB_LEGACY_API_URL = "https://accept.paymob.com/api";
+let inquiryToken = null;
+let inquiryTokenExpiresAt = 0;
+
+function inquiryError(error) {
+  const status = error?.response?.status;
+  return new Error(status ? `Paymob inquiry unavailable (HTTP ${status})` : "Paymob inquiry unavailable");
+}
+
+export function resolvePaymobNotificationUrl({
+  configuredUrl = process.env.PAYMOB_NOTIFICATION_URL,
+  renderExternalUrl = process.env.RENDER_EXTERNAL_URL,
+} = {}) {
+  const candidate = String(configuredUrl || (renderExternalUrl
+    ? `${String(renderExternalUrl).replace(/\/$/, "")}/api/payments/webhook`
+    : "")).trim();
+
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error("PAYMOB_NOTIFICATION_URL or RENDER_EXTERNAL_URL must provide a public webhook URL");
+  }
+
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+    throw new Error("Paymob notification URL must be a public HTTPS URL without credentials, query, or fragment");
+  }
+
+  return url.toString();
+}
+
+async function getPaymobInquiryToken() {
+  if (!PAYMOB_API_KEY) throw new Error("PAYMOB_API_KEY is missing");
+  if (inquiryToken && Date.now() < inquiryTokenExpiresAt) return inquiryToken;
+
+  let response;
+  try {
+    response = await axios.post(
+      `${PAYMOB_LEGACY_API_URL}/auth/tokens`,
+      { api_key: PAYMOB_API_KEY },
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    throw inquiryError(error);
+  }
+  if (!response.data?.token) throw new Error("Paymob did not return an inquiry token");
+  inquiryToken = response.data.token;
+  inquiryTokenExpiresAt = Date.now() + 5 * 60 * 1000;
+  return inquiryToken;
+}
+
+/** Read Paymob's latest transaction for an order reference. A 404 means no transaction yet. */
+export async function inquirePaymobTransaction(orderId) {
+  const reference = String(orderId || "").trim();
+  if (!reference) throw new Error("Order reference is required for Paymob inquiry");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const token = await getPaymobInquiryToken();
+      const response = await axios.post(
+        `${PAYMOB_LEGACY_API_URL}/ecommerce/orders/transaction_inquiry`,
+        { auth_token: token, merchant_order_id: reference },
+        { timeout: 10000 }
+      );
+      return response.data;
+    } catch (error) {
+      if (error?.response?.status === 404) return null;
+      if (error?.response?.status === 401 && attempt === 0) {
+        inquiryToken = null;
+        inquiryTokenExpiresAt = 0;
+        continue;
+      }
+      throw inquiryError(error);
+    }
+  }
+  return null;
+}
+
+/** Verify a signed callback against Paymob's current transaction record. */
+export async function inquirePaymobTransactionById(transactionId) {
+  const id = Number(transactionId);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("Valid Paymob transaction ID required");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const token = await getPaymobInquiryToken();
+      const response = await axios.get(
+        `${PAYMOB_LEGACY_API_URL}/acceptance/transactions/${id}`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 }
+      );
+      return response.data;
+    } catch (error) {
+      if (error?.response?.status === 404) return null;
+      if (error?.response?.status === 401 && attempt === 0) {
+        inquiryToken = null;
+        inquiryTokenExpiresAt = 0;
+        continue;
+      }
+      throw inquiryError(error);
+    }
+  }
+  return null;
+}
 
 function toPositiveInteger(value) {
   const parsed = Number(value);
@@ -49,9 +152,39 @@ export function resolvePaymobPaymentMethods({
   );
 }
 
-/**
- * Create a Payment Intention (Unified Checkout)
- */
+export function buildPaymobIntentionPayload({
+  amountCents,
+  currency = "EGP",
+  orderId,
+  billingData,
+  paymentMethods = [],
+  notificationUrl = resolvePaymobNotificationUrl(),
+}) {
+  return {
+    amount: amountCents,
+    currency,
+    payment_methods: resolvePaymobPaymentMethods({ paymentMethods }),
+    billing_data: {
+      first_name: billingData?.firstName || "NA",
+      last_name: billingData?.lastName || "NA",
+      email: billingData?.email || "NA",
+      phone_number: billingData?.phone || "NA",
+      apartment: "NA",
+      floor: "NA",
+      street: "NA",
+      building: "NA",
+      shipping_method: "NA",
+      postal_code: "NA",
+      city: "NA",
+      country: "EG",
+      state: "NA",
+    },
+    special_reference: orderId,
+    notification_url: notificationUrl,
+  };
+}
+
+/** Create a Payment Intention (Unified Checkout). */
 export async function createPaymentIntention({
   amountCents,
   currency = "EGP",
@@ -65,28 +198,9 @@ export async function createPaymentIntention({
     if (!PAYMOB_PUBLIC_KEY) throw new Error("PAYMOB_PUBLIC_KEY is missing");
 
     // 1) Prepare payload
-    const payload = {
-      amount: amountCents,
-      currency,
-      payment_methods: resolvePaymobPaymentMethods({ paymentMethods }),
-      billing_data: {
-        first_name: billingData?.firstName || "NA",
-        last_name: billingData?.lastName || "NA",
-        email: billingData?.email || "NA",
-        phone_number: billingData?.phone || "NA",
-
-        apartment: "NA",
-        floor: "NA",
-        street: "NA",
-        building: "NA",
-        shipping_method: "NA",
-        postal_code: "NA",
-        city: "NA",
-        country: "EG",
-        state: "NA",
-      },
-      special_reference: orderId,
-    };
+    const payload = buildPaymobIntentionPayload({
+      amountCents, currency, orderId, billingData, paymentMethods,
+    });
 
     // 2) Request Paymob Intention
     const response = await axios.post(`${PAYMOB_API_URL}/intention`, payload, {

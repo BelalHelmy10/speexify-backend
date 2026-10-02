@@ -15,6 +15,8 @@ function setup(country = "EG") {
   const discount = {id: 9, code: "SAVE10", active: true, percentage: 10};
   const orders = new Map();
   const sent = [];
+  let providerState = {status: "transaction_not_found"};
+  let statusPollState = {status: "transaction_not_found"};
   const db = {package: {findMany: async () => [pkg], findUnique: async () => pkg},
     discountCode: {findUnique: async ({where}) => where.code === "SAVE10" ? discount : null}};
   const app = express(); app.use(express.json());
@@ -24,9 +26,22 @@ function setup(country = "EG") {
     orderExists: async id => orders.has(id), getOrderById: async id => orders.get(id),
     createPendingOrder: async data => {const order = {...data, id: data.orderId, status: "pending"}; orders.set(order.id, order); return order;},
     markOrderPendingForRetry: async () => {},
+    reconcileOrderFromPaymob: async () => {
+      if (providerState instanceof Error) throw providerState;
+      return providerState;
+    },
+    reconcileOrderFromPaymobForStatusPoll: async id => {
+      if (statusPollState.status === "paid") {
+        orders.set(id, {...orders.get(id), status: "paid",
+          userPackage: {id: 42, title: "Intensive", sessionsTotal: 24, sessionsUsed: 0, status: "active"}});
+      }
+      return statusPollState;
+    },
     createPaymentIntention: async data => {sent.push(data); return {checkoutUrl: "https://example.test/payment", intentionId: "test"};},
   }));
-  return {app, pkg, discount, orders, sent};
+  return {app, pkg, discount, orders, sent,
+    setProviderState: state => {providerState = state;},
+    setStatusPollState: state => {statusPollState = state;}};
 }
 
 test("catalog → signed quote → stored order → Paymob agree across regions with fixed EGP pricing", async () => {
@@ -93,6 +108,33 @@ test("existing and recovered orders return the stored amount, including legacy o
   assert.ok(sent.every(p => p.amountCents === 380000 && p.currency === "EGP"));
   orders.get("old").userId = 2;
   await request(app).post("/payments/orders/old/retry-intent").expect(403);
+});
+
+test("a verified payment or a pending provider transaction cannot be charged again", async () => {
+  const {app, orders, sent, setProviderState} = setup();
+  orders.set("old", {id: "old", packageId: 3, userId: 1, amountCents: 380000, currency: "EGP", status: "pending"});
+
+  setProviderState({status: "paid"});
+  await request(app).post("/payments/create-intent").send({orderId: "old", packageId: 3}).expect(409);
+  await request(app).post("/payments/orders/old/retry-intent").expect(409);
+
+  setProviderState({status: "payment_pending"});
+  await request(app).post("/payments/create-intent").send({orderId: "old", packageId: 3}).expect(409);
+  await request(app).post("/payments/orders/old/retry-intent").expect(409);
+
+  setProviderState(new Error("provider unavailable"));
+  await request(app).post("/payments/create-intent").send({orderId: "old", packageId: 3}).expect(500);
+  await request(app).post("/payments/orders/old/retry-intent").expect(500);
+  assert.equal(sent.length, 0);
+});
+
+test("a payment-status poll reflects provider-confirmed fulfillment", async () => {
+  const {app, orders, setStatusPollState} = setup();
+  orders.set("old", {id: "old", packageId: 3, userId: 1, amountCents: 380000, currency: "EGP", status: "pending"});
+  setStatusPollState({status: "paid"});
+  const response = await request(app).get("/payments/orders/old").expect(200);
+  assert.equal(response.body.status, "paid");
+  assert.equal(response.body.userPackage.status, "active");
 });
 
 test("unknown geography has the same Egypt fallback in production", async () => {

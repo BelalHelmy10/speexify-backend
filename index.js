@@ -7,6 +7,7 @@ import { setupSupportWebSocket } from "./src/services/supportWebSocket.js";
 import { sessionStoreInfo } from "./src/middleware/session.js";
 import { startObservabilityAlerts } from "./src/observability/alerts.js";
 import { startNotificationDeliveryLoop } from "./src/services/notificationDeliveryLoop.js";
+import { startPendingPaymentReconciliationLoop } from "./src/services/providerPaymentReconciliation.js";
 
 logger.info({ sessionStore: sessionStoreInfo }, "[boot] Session store configured");
 
@@ -22,6 +23,7 @@ const stopObservabilityAlerts = startObservabilityAlerts();
 const stopNotificationDelivery = startNotificationDeliveryLoop({
   workerId: `api-notification-delivery-${process.pid}`,
 });
+const stopPaymentReconciliation = startPendingPaymentReconciliationLoop();
 
 server.listen(PORT, "0.0.0.0", () => {
   logger.info(
@@ -34,6 +36,7 @@ function shutdown(signal) {
   logger.info({ signal }, "[boot] Shutdown signal received");
   stopObservabilityAlerts();
   stopNotificationDelivery();
+  stopPaymentReconciliation();
 
   server.close((err) => {
     if (err) {
