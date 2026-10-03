@@ -42,12 +42,11 @@ function getStoredClassroomState(value) {
 
 function getClassroomAccess(req, session) {
     const viewerId = Number(req.viewUserId);
-    const realUserId = Number(req.user?.id);
     const isParticipant = (session.participants || []).some(
         (p) => p.userId === viewerId && p.status !== "canceled"
     );
     const isLearner = isParticipant || session.userId === viewerId;
-    const isTeacher = session.teacherId === realUserId;
+    const isTeacher = session.teacherId === viewerId;
     const isAdmin = req.user?.role === "admin";
 
     return { isLearner, isTeacher, isAdmin };

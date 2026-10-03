@@ -54,6 +54,7 @@ import teacherEarningsRoutes from "./routes/teacherEarnings.js";
 import discountRoutes from "./routes/discounts.js";
 import privacyRoutes from "./routes/privacy.js";
 import resendWebhooksRoutes from "./routes/resendWebhooks.js";
+import jibriRecordingsRoutes from "./routes/jibriRecordings.js";
 import freeSessionRoutes from "./routes/free-session.js";
 import {
   buildRequestContext,
@@ -240,6 +241,7 @@ app.use(
 // Provider webhooks use their own signature verification and intentionally
 // bypass browser CSRF/session middleware.
 app.use("/api/webhooks", resendWebhooksRoutes);
+app.use("/api/internal/jibri", jibriRecordingsRoutes);
 
 app.get("/api/health", (_req, res) => {
   if (process.env.RENDER_GIT_COMMIT) {

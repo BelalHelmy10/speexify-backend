@@ -6,6 +6,7 @@ import userPackagesRoutes from "./admin/userPackagesRoutes.js";
 import userAttendanceRoutes from "./admin/userAttendanceRoutes.js";
 import paymentsRoutes from "./admin/paymentsRoutes.js";
 import registrationsRoutes from "./admin/registrationsRoutes.js";
+import recordingsRoutes from "./admin/recordingsRoutes.js";
 
 const router = Router();
 
@@ -16,5 +17,6 @@ router.use(userPackagesRoutes);
 router.use(userAttendanceRoutes);
 router.use(paymentsRoutes);
 router.use(registrationsRoutes);
+router.use(recordingsRoutes);
 
 export default router;

@@ -120,6 +120,20 @@ model User {
   @@index([marketingPhoneConsentAt])
 }
 
+model ClassRecording {
+  id           Int      @id @default(autoincrement())
+  sessionId    Int?
+  session      Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  sessionTitle String
+  objectKey    String   @unique
+  contentType  String
+  sizeBytes    BigInt
+  createdAt    DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([createdAt])
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ✨ NEW: Availability - Users can set their available time slots
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,6 +448,7 @@ model Session {
   participants         SessionParticipant[]
   classroomMessages    ClassroomMessage[]
   classroomAnnotations ClassroomAnnotation[]
+  recordings           ClassRecording[]
 
   createdAt                       DateTime      @default(now())
   updatedAt                       DateTime      @updatedAt

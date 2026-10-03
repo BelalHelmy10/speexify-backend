@@ -112,7 +112,8 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
 
         // Permission: learner participant OR legacy owner OR teacher OR admin
         const isLearner = isParticipant || session.userId === viewerId;
-        const isTeacher = session.teacherId === req.user.id;
+        // Show the viewed teacher's classroom role during admin impersonation.
+        const isTeacher = session.teacherId === viewerId;
         const isAdmin = req.user.role === "admin";
 
         if (!(isLearner || isTeacher || isAdmin)) {
