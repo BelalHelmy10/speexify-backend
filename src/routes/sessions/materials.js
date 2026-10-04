@@ -86,7 +86,7 @@ router.post("/sessions/:id/materials", requireAuth, requireUploadsEnabled, async
   try {
     const access = await getAccessibleSession(req, res);
     if (!access) return;
-    if (!access.isTeacher || access.session.status !== "scheduled") {
+    if (!access.isTeacher || !["scheduled", "completed"].includes(access.session.status)) {
       return res.status(403).json({ error: "Only the teacher can upload to an open classroom" });
     }
 

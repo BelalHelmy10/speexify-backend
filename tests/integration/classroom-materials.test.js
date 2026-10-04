@@ -17,6 +17,8 @@ test("only the teacher can upload a PDF and only classroom members can read it",
     findMany: prisma.classroomMaterial.findMany,
   };
   let storedMaterial = null;
+  let sessionStatus = "scheduled";
+  const uploadedFiles = [];
   prisma.user.findUnique = async ({ where }) => ({
     id: where.id,
     role: where.id === 20 ? "teacher" : "learner",
@@ -27,11 +29,12 @@ test("only the teacher can upload a PDF and only classroom members can read it",
     id: 42,
     teacherId: 20,
     userId: 10,
-    status: "scheduled",
+    status: sessionStatus,
     participants: [],
   });
   prisma.classroomMaterial.create = async ({ data }) => {
     storedMaterial = { ...data, createdAt: new Date() };
+    uploadedFiles.push(data.filename);
     return storedMaterial;
   };
   prisma.classroomMaterial.findFirst = async ({ where }) =>
@@ -84,14 +87,28 @@ test("only the teacher can upload a PDF and only classroom members can read it",
       .get(`/sessions/42/materials/${storedMaterial.id}/file`)
       .set("x-test-user", "30");
     assert.equal(outsider.statusCode, 403);
+
+    sessionStatus = "completed";
+    const pastSessionUpload = await request(app)
+      .post("/sessions/42/materials")
+      .set("x-test-user", "20")
+      .attach("file", pdf, "past-class.pdf");
+    assert.equal(pastSessionUpload.statusCode, 201);
+
+    sessionStatus = "canceled";
+    const canceledUpload = await request(app)
+      .post("/sessions/42/materials")
+      .set("x-test-user", "20")
+      .attach("file", pdf, "canceled-class.pdf");
+    assert.equal(canceledUpload.statusCode, 403);
   } finally {
     prisma.user.findUnique = originals.user;
     prisma.session.findUnique = originals.session;
     prisma.classroomMaterial.create = originals.create;
     prisma.classroomMaterial.findFirst = originals.findFirst;
     prisma.classroomMaterial.findMany = originals.findMany;
-    if (storedMaterial) {
-      await fs.rm(path.join(uploadRoot, "classroom-materials", storedMaterial.filename), { force: true });
-    }
+    await Promise.all(uploadedFiles.map((filename) =>
+      fs.rm(path.join(uploadRoot, "classroom-materials", filename), { force: true })
+    ));
   }
 });
