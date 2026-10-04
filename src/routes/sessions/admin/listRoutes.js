@@ -71,7 +71,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       where.teacherId = Number(teacherId);
     }
 
-    if (type === "ONE_ON_ONE" || type === "GROUP") {
+    if (["ONE_ON_ONE", "GROUP", "TRAINING"].includes(type)) {
       where.type = type;
     }
 
@@ -86,6 +86,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     if (needsFeedback === "1" || needsFeedback === "true") {
       where.status = "completed";
       where.feedbackScore = null;
+      where.type = { not: "TRAINING" };
     }
 
     if (q) {
@@ -143,6 +144,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         include: {
           user: { select: { id: true, name: true, email: true } },
           teacher: { select: { id: true, name: true, email: true } },
+          trainingAdmin: { select: { id: true, name: true, email: true } },
           participants: {
             select: {
               userId: true,

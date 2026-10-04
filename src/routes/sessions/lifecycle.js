@@ -1,4 +1,5 @@
 import { cancelBooking } from "../../services/cancelBooking.js";
+import { sendSessionUpdatedNotifications } from "../../services/notificationsService.js";
 // src/routes/sessions/lifecycle.js
 // Session lifecycle: complete, cancel, reschedule
 
@@ -134,6 +135,7 @@ router.post(
                 endAt: true,
                 userId: true,
                 teacherId: true,
+                trainingAdminId: true,
                 joinUrl: true,
                 participants: { select: { userId: true, status: true } },
             },
@@ -333,8 +335,13 @@ router.post(
             select: {
                 id: true,
                 type: true,
+                title: true,
                 userId: true,
                 teacherId: true,
+                trainingAdminId: true,
+                startAt: true,
+                endAt: true,
+                joinUrl: true,
                 status: true,
                 participants: { select: { userId: true, status: true } },
             },
@@ -400,6 +407,14 @@ router.post(
             startAt: newStart,
             endAt: newEnd,
         });
+
+        if (session.type === "TRAINING") {
+            try {
+                await sendSessionUpdatedNotifications({ session: updated, previousStartAt: session.startAt, learnerIds: [], teacherId: session.teacherId });
+            } catch (notificationError) {
+                logger.error({ err: notificationError, sessionId: id }, "training reschedule notifications failed");
+            }
+        }
 
         res.json({ ok: true, session: updated });
     } catch (e) {

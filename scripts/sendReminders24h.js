@@ -26,6 +26,8 @@ async function main() {
   // Find sessions starting ~24 hours from now, not yet reminded
   const sessions = await prisma.session.findMany({
     where: {
+      type: { not: "TRAINING" },
+      userId: { not: null },
       startAt: { gte: in24h, lt: in25h },
       reminder24hSentAt: null,
     },

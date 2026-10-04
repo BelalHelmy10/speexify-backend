@@ -146,9 +146,9 @@ function getSnapshotErrorMessage(error) {
 export async function enqueueTeacherEarningSnapshot(sessionId, db = prisma) {
   const session = await db.session.findUnique({
     where: { id: Number(sessionId) },
-    select: { id: true, teacherId: true, status: true },
+    select: { id: true, teacherId: true, status: true, type: true },
   });
-  if (!session || session.status !== "completed" || !session.teacherId) return null;
+  if (!session || session.status !== "completed" || session.type === "TRAINING" || !session.teacherId) return null;
 
   return db.teacherEarningSnapshotJob.upsert({
     where: { sessionId: session.id },
@@ -179,7 +179,7 @@ export async function completeSessionWithTeacherEarningOutbox(
       });
       const session = await tx.session.findUnique({
         where: { id: Number(sessionId) },
-        select: { id: true, teacherId: true, status: true, completedAt: true },
+        select: { id: true, teacherId: true, status: true, type: true, completedAt: true },
       });
       if (!session) {
         const error = new Error("Session not found");
@@ -353,11 +353,11 @@ export async function getTeacherEarningsReconciliation(db = prisma) {
     const [completedSessions, earningRows, pendingSnapshotJobs, failedSnapshotJobs, processingSnapshotJobs] =
       await Promise.all([
         db.session.count({
-          where: { status: "completed", teacherId: { not: null } },
+          where: { status: "completed", type: { not: "TRAINING" }, teacherId: { not: null } },
         }),
         db.teacherEarning.count({
           where: {
-            session: { status: "completed", teacherId: { not: null } },
+            session: { status: "completed", type: { not: "TRAINING" }, teacherId: { not: null } },
           },
         }),
         db.teacherEarningSnapshotJob.count({
@@ -420,6 +420,7 @@ export async function ensureTeacherEarningForSession(
       id: true,
       teacherId: true,
       status: true,
+      type: true,
       startAt: true,
       endAt: true,
       completedAt: true,
@@ -428,7 +429,7 @@ export async function ensureTeacherEarningForSession(
     },
   });
 
-  if (!session || session.status !== "completed") return null;
+  if (!session || session.status !== "completed" || session.type === "TRAINING") return null;
 
   const teacherId = session.teacherId || Number(teacherIdOverride) || null;
   if (!teacherId) return null;
@@ -509,7 +510,7 @@ export async function syncTeacherEarnings(
   { allowHistoricalBackfill = false } = {}
 ) {
   const sessions = await db.session.findMany({
-    where: { teacherId: Number(teacherId), status: "completed" },
+    where: { teacherId: Number(teacherId), status: "completed", type: { not: "TRAINING" } },
     select: { id: true },
     orderBy: { startAt: "asc" },
   });

@@ -35,7 +35,7 @@ async function main() {
   console.log(`${apply ? "Applying" : "Dry run"} teacher earnings backfill in ${TEACHER_EARNINGS_CURRENCY}.`);
   for (const teacher of teachers) {
     const completedSessions = await prisma.session.findMany({
-      where: { teacherId: teacher.id, status: "completed" },
+      where: { teacherId: teacher.id, status: "completed", type: { not: "TRAINING" } },
       select: { completedAt: true, updatedAt: true, endAt: true, startAt: true },
     });
     const missing = Math.max(0, completedSessions.length - teacher._count.teacherEarnings);

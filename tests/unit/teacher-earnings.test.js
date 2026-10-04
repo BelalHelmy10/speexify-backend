@@ -17,6 +17,33 @@ import {
   getLocalMonthKey,
 } from "../../src/services/teacherEarningsService.js";
 
+test("completed training is unpaid through completion and historical sync", async () => {
+  let status = "scheduled";
+  let snapshotWrites = 0;
+  let earningWrites = 0;
+  const db = {
+    $transaction: async (work) => work(db),
+    session: {
+      updateMany: async ({ data }) => { status = data.status; return { count: 1 }; },
+      findUnique: async () => ({ id: 91, type: "TRAINING", teacherId: 7, status }),
+      findMany: async ({ where }) => {
+        assert.deepEqual(where.type, { not: "TRAINING" });
+        return [];
+      },
+    },
+    teacherEarningSnapshotJob: { upsert: async () => { snapshotWrites += 1; } },
+    teacherEarning: { create: async () => { earningWrites += 1; } },
+  };
+
+  const completed = await completeSessionWithTeacherEarningOutbox(91, db);
+  assert.equal(completed.session.status, "completed");
+  assert.equal(completed.job, null);
+  assert.equal(await ensureTeacherEarningForSession(91, db), null);
+  await syncTeacherEarnings(7, db, { allowHistoricalBackfill: true });
+  assert.equal(snapshotWrites, 0);
+  assert.equal(earningWrites, 0);
+});
+
 test("teacher earnings use EGP piastres and hourly duration", () => {
   const result = calculateTeacherEarning({ rateHourlyEgpPiastres: 12000, minutes: 45 });
   assert.equal(TEACHER_EARNINGS_CURRENCY, "EGP");

@@ -353,6 +353,14 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                         { userId }, // legacy fallback
                     ],
                 }
+                : role === "admin"
+                ? {
+                    OR: [
+                        { trainingAdminId: userId },
+                        { participants: { some: { userId } } },
+                        { userId },
+                    ],
+                }
                 : {
                     OR: [
                         { participants: { some: { userId } } },
@@ -405,6 +413,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                 teacherId: true,
                 userId: true,
                 teacher: { select: { id: true, name: true, email: true } },
+                trainingAdmin: { select: { id: true, name: true, email: true } },
                 user: { select: { id: true, name: true, email: true } },
                 participants: {
                     select: {
@@ -510,6 +519,14 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
                         { userId }, // legacy
                     ],
                 }
+                : role === "admin"
+                ? {
+                    OR: [
+                        { trainingAdminId: userId },
+                        { participants: { some: { userId } } },
+                        { userId },
+                    ],
+                }
                 : {
                     OR: [{ participants: { some: { userId } } }, { userId }],
                 };
@@ -543,6 +560,8 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
                 type: true,
                 capacity: true,
                 feedback: { select: { id: true } },
+                teacher: { select: { id: true, name: true, email: true } },
+                trainingAdmin: { select: { id: true, name: true, email: true } },
                 participants: {
                     select: { userId: true, status: true },
                 },

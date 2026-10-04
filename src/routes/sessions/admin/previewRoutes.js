@@ -23,7 +23,7 @@ const DAY_INDEX = {
 };
 
 function normalizeSessionType(type) {
-  return type === "GROUP" ? "GROUP" : "ONE_ON_ONE";
+  return type === "GROUP" || type === "TRAINING" ? type : "ONE_ON_ONE";
 }
 
 function uniqueNumericIds(values) {
@@ -52,13 +52,15 @@ function parseSchedule(body) {
   }
 
   const learnerIds =
-    type === "GROUP"
+    type === "TRAINING"
+      ? []
+      : type === "GROUP"
       ? uniqueNumericIds(body.learnerIds)
       : body.learnerId
         ? [Number(body.learnerId)]
         : [];
 
-  if (!learnerIds.length) {
+  if (type !== "TRAINING" && !learnerIds.length) {
     return {
       error:
         type === "GROUP"
@@ -80,7 +82,7 @@ function parseSchedule(body) {
         : Number(body.capacity),
     title:
       String(body.title || "").trim() ||
-      (type === "GROUP" ? "Group Session" : "Lesson"),
+      (type === "GROUP" ? "Group Session" : type === "TRAINING" ? "Teacher Training" : "Lesson"),
     joinUrl: String(body.joinUrl || body.meetingUrl || "").trim() || null,
     notes: String(body.notes || "").trim() || null,
     allowNoCredit: body.allowNoCredit === true || body.allowNoCredit === "true",
@@ -326,7 +328,7 @@ async function getCreditPreview(learners, sessionType) {
   };
 }
 
-function buildNotificationPreview({ learners, teacher, joinUrl }) {
+function buildNotificationPreview({ learners, teacher, joinUrl, type }) {
   const recipients = [
     ...learners.map((learner) => ({
       role: "learner",
@@ -352,7 +354,7 @@ function buildNotificationPreview({ learners, teacher, joinUrl }) {
     meetingMode: joinUrl ? "External meeting link" : "Built-in classroom link",
     recipients,
     summary: [
-      `${learners.length} learner${learners.length === 1 ? "" : "s"}`,
+      type === "TRAINING" ? "unpaid teacher training" : `${learners.length} learner${learners.length === 1 ? "" : "s"}`,
       teacher ? "1 teacher" : "no teacher yet",
       joinUrl ? "external meeting URL included" : "built-in classroom will be used",
     ],
@@ -418,12 +420,22 @@ router.post(
       const blockers = [];
       const warnings = [];
 
+      if (schedule.type === "TRAINING" && !schedule.teacherId) {
+        blockers.push("Choose a teacher for training.");
+      }
+      if (schedule.type === "TRAINING" && (req.body?.learnerId || (Array.isArray(req.body?.learnerIds) && req.body.learnerIds.length) || schedule.capacity !== null)) {
+        blockers.push("Training cannot include learners or capacity.");
+      }
+
       if (schedule.teacherId && !teacher) {
         blockers.push("Selected teacher was not found.");
       } else if (teacher?.isDisabled) {
         blockers.push("Selected teacher is disabled.");
       } else if (teacher && !["teacher", "admin"].includes(teacher.role)) {
         blockers.push("Selected teacher is not a teacher or admin.");
+      }
+      if (schedule.type === "TRAINING" && teacher && teacher.role !== "teacher") {
+        blockers.push("Training must be assigned to a teacher.");
       }
 
       const foundLearnerIds = new Set(learners.map((learner) => learner.id));
@@ -458,7 +470,9 @@ router.post(
           start: schedule.start,
           end: schedule.end,
         }),
-        getCreditPreview(learners, schedule.type),
+        schedule.type === "TRAINING"
+          ? Promise.resolve({ requiredCredits: 0, requiresOverride: false, learners: [] })
+          : getCreditPreview(learners, schedule.type),
       ]);
 
       if (conflicts.total > 0) {
@@ -512,6 +526,7 @@ router.post(
           learners,
           teacher,
           joinUrl: schedule.joinUrl,
+          type: schedule.type,
         }),
       });
     } catch (err) {

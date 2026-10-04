@@ -30,7 +30,7 @@ function httpError(statusCode, body) {
 }
 
 function normalizeSessionType(type) {
-  return type === "GROUP" ? "GROUP" : "ONE_ON_ONE";
+  return type === "GROUP" || type === "TRAINING" ? type : "ONE_ON_ONE";
 }
 
 function normalizeAllowNoCredit(value) {
@@ -200,7 +200,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       learnerIds,
       teacherId,
       capacity,
-      title = "Lesson",
+      title,
       startAt,
       durationMin,
       endAt,
@@ -233,35 +233,55 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     }
 
     const finalType = normalizeSessionType(type);
+    const isTraining = finalType === "TRAINING";
     const finalTeacherId = teacherId ? Number(teacherId) : null;
     const finalCapacity = parseFinalCapacity(capacity);
     const finalTitle =
       String(title || "").trim() ||
-      (finalType === "GROUP" ? "Group Session" : "Lesson");
+      (finalType === "GROUP" ? "Group Session" : isTraining ? "Teacher Training" : "Lesson");
     const finalJoinUrl = (joinUrl ?? meetingUrl ?? "").trim() || null;
+    if (finalJoinUrl) {
+      try {
+        const parsed = new URL(finalJoinUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Invalid protocol");
+      } catch {
+        return res.status(400).json({ error: "Meeting URL must be a valid http or https URL" });
+      }
+    }
     const finalNotes = (notes ?? "").trim() || null;
     const allowCreditOverride = normalizeAllowNoCredit(allowNoCredit);
     const overrideReason = String(
       allowNoCreditReason || creditOverrideReason || ""
     ).trim();
 
-    if (allowCreditOverride && overrideReason.length < 6) {
+    if (isTraining && (!Number.isInteger(finalTeacherId) || finalTeacherId <= 0)) {
+      return res.status(400).json({ error: "A teacher is required for training" });
+    }
+    if (isTraining && (learnerId || (Array.isArray(learnerIds) && learnerIds.length) || finalCapacity !== null)) {
+      return res.status(400).json({ error: "Training sessions cannot have learners or capacity" });
+    }
+    if (!isTraining && allowCreditOverride && overrideReason.length < 6) {
       return res.status(400).json({
         error: "credit_override_reason_required",
         message: "No-credit override reason must be at least 6 characters.",
       });
     }
 
-    await ensureTeacher(finalTeacherId);
+    const teacher = await ensureTeacher(finalTeacherId);
+    if (isTraining && teacher?.role !== "teacher") {
+      return res.status(400).json({ error: "Training must be assigned to a teacher" });
+    }
 
     const finalLearnerIds =
-      finalType === "GROUP"
+      isTraining
+        ? []
+        : finalType === "GROUP"
         ? uniqueLearnerIds(Array.isArray(learnerIds) ? learnerIds : [])
         : learnerId
           ? [Number(learnerId)]
           : [];
 
-    if (!finalLearnerIds.length) {
+    if (!isTraining && !finalLearnerIds.length) {
       return res.status(400).json({
         error:
           finalType === "GROUP"
@@ -295,7 +315,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       });
     }
 
-    await ensureLearners(finalLearnerIds);
+    if (!isTraining) await ensureLearners(finalLearnerIds);
     idempotency = await beginIdempotentRequest({
       actorId: req.user.id,
       scope: "admin.sessions.create",
@@ -310,8 +330,8 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         endAt: finalEndAt.toISOString(),
         joinUrl: finalJoinUrl,
         notes: finalNotes,
-        allowNoCredit: allowCreditOverride,
-        allowNoCreditReason: allowCreditOverride ? overrideReason : null,
+        allowNoCredit: isTraining || allowCreditOverride,
+        allowNoCreditReason: !isTraining && allowCreditOverride ? overrideReason : null,
       },
     });
 
@@ -342,7 +362,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         db: tx,
         learnerIds: finalLearnerIds,
         sessionType: finalType,
-        allowNoCredit: allowCreditOverride,
+        allowNoCredit: isTraining || allowCreditOverride,
       });
 
       const createdSession = await tx.session.create({
@@ -351,6 +371,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
           userId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : null,
           capacity: finalType === "GROUP" ? finalCapacity : null,
           teacherId: finalTeacherId,
+          trainingAdminId: isTraining ? req.user.id : null,
           title: finalTitle,
           startAt: start,
           endAt: finalEndAt,
@@ -366,7 +387,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             userId: finalLearnerIds[0],
           },
         });
-      } else {
+      } else if (finalType === "GROUP") {
         await tx.sessionParticipant.createMany({
           data: finalLearnerIds.map((id) => ({
             sessionId: createdSession.id,
@@ -380,7 +401,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         tx,
         learnerIds: finalLearnerIds,
         sessionId: createdSession.id,
-        allowNoCredit: allowCreditOverride,
+        allowNoCredit: isTraining || allowCreditOverride,
       });
 
       return { session: createdSession, creditResults: consumedCredits };
@@ -394,8 +415,8 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       capacity: finalCapacity,
       creditResults,
       creditConsumed: creditResults.some((result) => result.consumed),
-      creditOverrideAllowed: allowCreditOverride,
-      creditOverrideReason: allowCreditOverride ? overrideReason : null,
+      creditOverrideAllowed: !isTraining && allowCreditOverride,
+      creditOverrideReason: !isTraining && allowCreditOverride ? overrideReason : null,
     });
 
     try {

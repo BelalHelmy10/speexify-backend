@@ -13,6 +13,7 @@ import lifecycleRouter from "./lifecycle.js";
 import learnerRouter from "./learner.js";
 import adminRouter from "./admin.js";
 import classroomRouter from "./classroom.js";
+import materialsRouter from "./materials.js";
 import bulkCreateRouter from "./bulk-create.js";
 
 const router = Router();
@@ -28,6 +29,7 @@ router.use(lifecycleRouter);
 router.use(learnerRouter);
 router.use(adminRouter);
 router.use(classroomRouter);
+router.use(materialsRouter);
 router.use(crudRouter); // CRUD routes last since they have catch-all patterns like /sessions/:id
 
 export default router;

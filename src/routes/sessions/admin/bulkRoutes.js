@@ -10,6 +10,7 @@ import {
   logger,
   audit,
 } from "./shared.js";
+import { sendCancellationNotifications } from "../../../services/notificationsService.js";
 
 const router = Router();
 
@@ -43,6 +44,12 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
         id: true,
         status: true,
         type: true,
+        title: true,
+        startAt: true,
+        endAt: true,
+        teacherId: true,
+        trainingAdminId: true,
+        joinUrl: true,
         userId: true,
         participants: { select: { userId: true, status: true } },
       },
@@ -61,6 +68,10 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
         if (action === "delete") {
           await prisma.session.delete({ where: { id: session.id } });
           await audit(req.user.id, "session_delete", "Session", session.id, { bulk: true });
+          if (session.type === "TRAINING") {
+            try { await sendCancellationNotifications({ session, learnerIds: [], teacherId: session.teacherId, canceledBy: req.user.id }); }
+            catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training deletion notifications failed"); }
+          }
           affected++;
         } else if (action === "cancel") {
           if (session.status !== "canceled") {
@@ -68,9 +79,17 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
             refundedCredits += cancellation.refundResults.filter(r => r.refunded).length;
 
             await audit(req.user.id, "session_cancel", "Session", session.id, { bulk: true });
+            if (session.type === "TRAINING") {
+              try { await sendCancellationNotifications({ session, learnerIds: [], teacherId: session.teacherId, canceledBy: req.user.id }); }
+              catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training cancellation notifications failed"); }
+            }
             affected++;
           }
         } else if (action === "assign-teacher") {
+          if (session.type === "TRAINING") {
+            errors.push({ sessionId: session.id, error: "Edit training individually to notify the teacher and check conflicts" });
+            continue;
+          }
           const teacher = await prisma.user.findFirst({
             where: { id: Number(teacherId), role: { in: ["teacher", "admin"] } },
           });

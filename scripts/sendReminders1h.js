@@ -31,6 +31,8 @@ async function main() {
 
   const sessions = await prisma.session.findMany({
     where: {
+      type: { not: "TRAINING" },
+      userId: { not: null },
       startAt: { gte: in1h, lt: in70m },
       reminder1hSentAt: null,
     },

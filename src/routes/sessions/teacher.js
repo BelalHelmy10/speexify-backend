@@ -90,6 +90,7 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
                 createdAt: true,
                 updatedAt: true,
                 user: { select: { id: true, email: true, name: true } },
+                trainingAdmin: { select: { id: true, email: true, name: true } },
                 participants: {
                     select: {
                         userId: true,

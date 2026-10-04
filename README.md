@@ -283,9 +283,9 @@ ALLOWED_ORIGINS – Comma-separated list of allowed frontend origins for CORS (e
 
 UPLOADS_ENABLED – Explicit production upload policy. Set to `false` until durable external storage and malware scanning are configured; disabled upload and attachment endpoints return `503` and never write to the local filesystem. Set to `true` only with both `UPLOAD_STORAGE_ROOT` and `UPLOAD_MALWARE_SCAN_COMMAND` configured.
 
-UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars and support attachments. It is optional when uploads are disabled; when uploads are enabled in production, it is required and must not be the default process-local `uploads` directory.
+UPLOAD_STORAGE_ROOT – Absolute path to the durable shared filesystem mount used for avatars, support attachments, and classroom PDFs. It is optional when uploads are disabled; when uploads are enabled in production, it is required and must not be the default process-local `uploads` directory.
 
-UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar and support attachment before it is persisted or served. It is required only when uploads are enabled in production; `clamdscan` is the recommended ClamAV deployment command.
+UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar, support attachment, and classroom PDF before it is persisted or served. It is required only when uploads are enabled in production; `clamdscan` is the recommended ClamAV deployment command.
 
 GOOGLE_CLIENT_ID – Server-only Google OAuth audience. It is required in production and must match the OAuth client whose authorized JavaScript origins include the deployed frontend.
 

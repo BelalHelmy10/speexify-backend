@@ -48,7 +48,7 @@ async function main() {
   for (const teacher of teachers) {
     const hasRate = Boolean(teacher.rateHourlyEgpPiastres || teacher.ratePerSessionEgpPiastres);
     const completedSessions = await prisma.session.count({
-      where: { teacherId: teacher.id, status: "completed" },
+      where: { teacherId: teacher.id, status: "completed", type: { not: "TRAINING" } },
     });
     const earningEntries = teacher._count.teacherEarnings;
     const missingEntries = Math.max(0, completedSessions - earningEntries);

@@ -49,6 +49,7 @@ router.get("/sessions", requireAuth, async (req, res) => {
             },
             include: {
                 teacher: { select: { id: true, name: true, email: true } },
+                trainingAdmin: { select: { id: true, name: true, email: true } },
                 user: { select: { id: true, name: true, email: true } }, // Legacy learner
                 participants: {
                     select: {
@@ -89,6 +90,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
             include: {
                 user: { select: { id: true, name: true, email: true } }, // Legacy 1:1 learner
                 teacher: { select: { id: true, name: true, email: true } },
+                trainingAdmin: { select: { id: true, name: true, email: true } },
                 participants: {
                     select: {
                         userId: true,

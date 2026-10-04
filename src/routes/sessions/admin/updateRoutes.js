@@ -12,6 +12,7 @@ import {
   audit,
 } from "./shared.js";
 import { isTerminalSessionStatus } from "../../../services/sessionLifecycleService.js";
+import { sendSessionUpdatedNotifications, sendCancellationNotifications, sendBookingNotifications } from "../../../services/notificationsService.js";
 
 const router = Router();
 
@@ -29,11 +30,17 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
         endAt: true,
         userId: true,
         teacherId: true,
+        trainingAdminId: true,
+        title: true,
+        joinUrl: true,
         participants: { select: { userId: true, status: true } },
       },
     });
 
     if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.type === "TRAINING" && (req.body.userId !== undefined || req.body.capacity !== undefined || req.body.teacherId === null)) {
+      return res.status(400).json({ error: "Training requires a teacher and cannot have learners or capacity" });
+    }
 
     const patch = {};
     const allowed = [
@@ -119,6 +126,12 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
 
     if (patch.userId !== undefined) patch.userId = Number(patch.userId) || null;
     if (patch.teacherId !== undefined) patch.teacherId = Number(patch.teacherId) || null;
+    if (existing.type === "TRAINING" && patch.teacherId !== undefined) {
+      const teacher = await prisma.user.findUnique({ where: { id: patch.teacherId || 0 }, select: { role: true, isDisabled: true } });
+      if (!teacher || teacher.role !== "teacher" || teacher.isDisabled) {
+        return res.status(400).json({ error: "Training must be assigned to an active teacher" });
+      }
+    }
     if (patch.capacity !== undefined) patch.capacity = Number(patch.capacity) || null;
     if (patch.startAt !== undefined) patch.startAt = new Date(patch.startAt);
     if (patch.endAt !== undefined) patch.endAt = patch.endAt ? new Date(patch.endAt) : null;
@@ -155,6 +168,21 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       ...patch,
       creditResults,
     });
+
+    if (existing.type === "TRAINING") {
+      try {
+        if (nextStatus === "canceled" && prevStatus !== "canceled") {
+          await sendCancellationNotifications({ session: updated, learnerIds: [], teacherId: existing.teacherId, canceledBy: req.user.id });
+        } else if (patch.teacherId !== undefined && patch.teacherId !== existing.teacherId) {
+          await sendCancellationNotifications({ session: { ...existing, trainingAdminId: null }, learnerIds: [], teacherId: existing.teacherId, canceledBy: req.user.id });
+          await sendBookingNotifications({ session: updated, learnerIds: [], teacherId: updated.teacherId, bookedBy: updated.trainingAdminId });
+        } else if (changesSchedule) {
+          await sendSessionUpdatedNotifications({ session: updated, previousStartAt: existing.startAt, learnerIds: [], teacherId: updated.teacherId });
+        }
+      } catch (notificationError) {
+        logger.error({ err: notificationError, sessionId: id }, "training update notifications failed");
+      }
+    }
 
     const activeParticipants = (updated.participants || []).filter(
       (p) => p.status !== "canceled"
