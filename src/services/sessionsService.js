@@ -65,6 +65,8 @@ export async function findSessionConflictsWithClient(
       ...whereCommon,
       OR: [
         { userId: Number(userId) },
+        { teacherId: Number(userId) },
+        { trainingAdminId: Number(userId) },
         {
           participants: {
             some: { userId: Number(userId), status: { not: "canceled" } },
@@ -76,7 +78,10 @@ export async function findSessionConflictsWithClient(
 
   // Teacher conflict: teacherId still lives on Session
   if (teacherId) {
-    clauses.push({ ...whereCommon, teacherId: Number(teacherId) });
+    clauses.push({ ...whereCommon, OR: [
+      { teacherId: Number(teacherId) },
+      { participants: { some: { userId: Number(teacherId), status: { not: "canceled" } } } },
+    ] });
   }
 
   if (!clauses.length) return [];
@@ -115,8 +120,8 @@ export async function lockSchedulingResources(
     ...learnerIds
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0)
-      .map((id) => `learner:${id}`),
-    ...(teacherId ? [`teacher:${Number(teacherId)}`] : []),
+      .map((id) => `user:${id}`),
+    ...(teacherId ? [`user:${Number(teacherId)}`] : []),
   ];
 
   for (const key of [...new Set(keys)].sort()) {

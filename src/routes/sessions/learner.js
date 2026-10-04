@@ -349,7 +349,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                 ? {
                     OR: [
                         { teacherId: userId },
-                        { participants: { some: { userId } } },
+                        { participants: { some: { userId, status: { not: "canceled" } } } },
                         { userId }, // legacy fallback
                     ],
                 }
@@ -357,13 +357,13 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                 ? {
                     OR: [
                         { trainingAdminId: userId },
-                        { participants: { some: { userId } } },
+                        { participants: { some: { userId, status: { not: "canceled" } } } },
                         { userId },
                     ],
                 }
                 : {
                     OR: [
-                        { participants: { some: { userId } } },
+                        { participants: { some: { userId, status: { not: "canceled" } } } },
                         { userId }, // legacy fallback
                     ],
                 };
@@ -461,7 +461,7 @@ router.get("/me/sessions", requireAuth, async (req, res) => {
                 participantCount: activeParticipants.length,
                 // For GROUP sessions, include learner list
                 learners:
-                    rest.type === "GROUP"
+                    rest.type === "GROUP" || rest.type === "TRAINING"
                         ? activeParticipants.map((p) => p.user)
                         : rest.user
                             ? [rest.user]
@@ -515,7 +515,7 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
                 ? {
                     OR: [
                         { teacherId: userId },
-                        { participants: { some: { userId } } },
+                        { participants: { some: { userId, status: { not: "canceled" } } } },
                         { userId }, // legacy
                     ],
                 }
@@ -523,12 +523,12 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
                 ? {
                     OR: [
                         { trainingAdminId: userId },
-                        { participants: { some: { userId } } },
+                        { participants: { some: { userId, status: { not: "canceled" } } } },
                         { userId },
                     ],
                 }
                 : {
-                    OR: [{ participants: { some: { userId } } }, { userId }],
+                    OR: [{ participants: { some: { userId, status: { not: "canceled" } } } }, { userId }],
                 };
 
         const where = {

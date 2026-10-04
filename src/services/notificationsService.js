@@ -30,8 +30,8 @@ async function sendTrainingEmail(recipient, session, subject, body) {
   const when = formatEmailDate(session.startAt, recipient.timezone, locale);
   const details = session.joinUrl
     ? `<p>Meeting link: <a href="${escapeNotificationHtml(session.joinUrl)}">${escapeNotificationHtml(session.joinUrl)}</a></p>`
-    : "<p>Open the session from your teacher dashboard.</p>";
-  await enqueueEmail(recipient.email, subject, `<p>Hello ${escapeNotificationHtml(recipient.name || "there")},</p><p>${escapeNotificationHtml(body)} <strong>${escapeNotificationHtml(session.title || "Teacher Training")}</strong> — ${escapeNotificationHtml(when)}.</p>${details}`, {
+    : "<p>Open the session from your dashboard.</p>";
+  await enqueueEmail(recipient.email, subject, `<p>Hello ${escapeNotificationHtml(recipient.name || "there")},</p><p>${escapeNotificationHtml(body)} <strong>${escapeNotificationHtml(session.title || "Training Session")}</strong> — ${escapeNotificationHtml(when)}.</p>${details}`, {
     userId: recipient.id, eventType: "training_session", sessionId: session.id, locale,
   });
 }
@@ -160,24 +160,20 @@ export async function sendBookingNotifications({
   const sessionTitle = session.title || "Lesson";
 
   if (session.type === "TRAINING") {
-    if (!teacherId) return;
-    const [teacher, organizer] = await Promise.all([
-      prisma.user.findUnique({ where: { id: teacherId }, select: { id: true, email: true, name: true, timezone: true, language: true } }),
+    const participantIds = [...new Set([...(learnerIds || []), ...(teacherId ? [teacherId] : [])])];
+    const [people, organizer] = await Promise.all([
+      prisma.user.findMany({ where: { id: { in: participantIds } }, select: { id: true, email: true, name: true, timezone: true, language: true } }),
       bookedBy ? prisma.user.findUnique({ where: { id: bookedBy }, select: { id: true, name: true, email: true, timezone: true, language: true } }) : null,
     ]);
-    if (!teacher) return;
     const organizerName = organizer?.name || organizer?.email || "an administrator";
-    await createNotification({
-      userId: teacherId,
-      type: "new_booking",
-      title: "Teacher training scheduled",
-      body: `Your unpaid training session "${sessionTitle}" with ${organizerName} has been scheduled.`,
-      data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: session.type },
-    });
-    await sendTrainingEmail(teacher, session, "Teacher training scheduled", `Your unpaid training session with ${organizerName} is scheduled:`);
-    if (organizer && organizer.id !== teacherId) {
-      await createNotification({ userId: organizer.id, type: "new_booking", title: "Teacher training scheduled", body: `You scheduled unpaid training "${sessionTitle}" with ${teacher.name || teacher.email}.`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
-      await sendTrainingEmail(organizer, session, "Teacher training scheduled", `You scheduled unpaid training with ${teacher.name || teacher.email}:`);
+    for (const person of people) {
+      if (person.id === organizer?.id) continue;
+      await createNotification({ userId: person.id, type: "new_booking", title: "Training scheduled", body: `Your unpaid training session "${sessionTitle}" with ${organizerName} has been scheduled.`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: session.type } });
+      await sendTrainingEmail(person, session, "Training scheduled", `Your unpaid training session with ${organizerName} is scheduled:`);
+    }
+    if (organizer) {
+      await createNotification({ userId: organizer.id, type: "new_booking", title: "Training scheduled", body: `You scheduled unpaid training "${sessionTitle}" with ${people.length} participant(s).`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
+      await sendTrainingEmail(organizer, session, "Training scheduled", `You scheduled unpaid training with ${people.length} participant(s):`);
     }
     return;
   }
@@ -338,10 +334,13 @@ export async function sendSessionUpdatedNotifications({
   ]);
 
   if (session.type === "TRAINING") {
-    if (!teacher) return;
-    await createNotification({ userId: teacherId, type: "session_updated", title: "Training time updated", body: `Your unpaid training session "${sessionTitle}" has a new time.`, data: { sessionId: session.id, previousStartAt, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
-    await sendTrainingEmail(teacher, session, "Training time updated", "Your unpaid training session has a new time:");
-    if (session.trainingAdminId && session.trainingAdminId !== teacherId) {
+    const people = await prisma.user.findMany({ where: { id: { in: [...new Set([...(learnerIds || []), ...(teacherId ? [teacherId] : [])])] } }, select: { id: true, email: true, name: true, timezone: true, language: true } });
+    for (const person of people) {
+      if (person.id === session.trainingAdminId) continue;
+      await createNotification({ userId: person.id, type: "session_updated", title: "Training time updated", body: `Your unpaid training session "${sessionTitle}" has a new time.`, data: { sessionId: session.id, previousStartAt, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
+      await sendTrainingEmail(person, session, "Training time updated", "Your unpaid training session has a new time:");
+    }
+    if (session.trainingAdminId) {
       const organizer = await prisma.user.findUnique({ where: { id: session.trainingAdminId }, select: { id: true, email: true, name: true, timezone: true, language: true } });
       if (organizer) {
         await createNotification({ userId: organizer.id, type: "session_updated", title: "Training time updated", body: `Training "${sessionTitle}" has a new time.`, data: { sessionId: session.id, previousStartAt, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
@@ -469,12 +468,13 @@ export async function sendCancellationNotifications({
   ]);
 
   if (session.type === "TRAINING") {
-    if (!teacher) return;
-    await createNotification({ userId: teacherId, type: "session_canceled", title: "Training canceled", body: `Your unpaid training session "${sessionTitle}" was canceled.`, data: { sessionId: session.id, startAt: session.startAt, sessionType: session.type } });
-    if (canceledBy !== teacherId) {
-      await sendTrainingEmail(teacher, session, "Teacher training canceled", "Your unpaid training session was canceled:");
+    const people = await prisma.user.findMany({ where: { id: { in: [...new Set([...(learnerIds || []), ...(teacherId ? [teacherId] : [])])] } }, select: { id: true, email: true, name: true, timezone: true, language: true } });
+    for (const person of people) {
+      if (person.id === session.trainingAdminId) continue;
+      await createNotification({ userId: person.id, type: "session_canceled", title: "Training canceled", body: `Your unpaid training session "${sessionTitle}" was canceled.`, data: { sessionId: session.id, startAt: session.startAt, sessionType: session.type } });
+      if (canceledBy !== person.id) await sendTrainingEmail(person, session, "Training canceled", "Your unpaid training session was canceled:");
     }
-    if (session.trainingAdminId && session.trainingAdminId !== teacherId) {
+    if (session.trainingAdminId) {
       const organizer = await prisma.user.findUnique({ where: { id: session.trainingAdminId }, select: { id: true, email: true, name: true, timezone: true, language: true } });
       if (organizer) {
         await createNotification({ userId: organizer.id, type: "session_canceled", title: "Training canceled", body: `Training "${sessionTitle}" was canceled.`, data: { sessionId: session.id, startAt: session.startAt, sessionType: session.type } });

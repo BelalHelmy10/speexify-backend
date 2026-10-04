@@ -53,7 +53,7 @@ function parseSchedule(body) {
 
   const learnerIds =
     type === "TRAINING"
-      ? []
+      ? uniqueNumericIds([...(Array.isArray(body.learnerIds) ? body.learnerIds : []), ...(body.learnerId ? [body.learnerId] : [])])
       : type === "GROUP"
       ? uniqueNumericIds(body.learnerIds)
       : body.learnerId
@@ -72,7 +72,8 @@ function parseSchedule(body) {
   return {
     type,
     learnerIds,
-    teacherId: body.teacherId ? Number(body.teacherId) : null,
+    teacherIds: type === "TRAINING" ? uniqueNumericIds([...(Array.isArray(body.teacherIds) ? body.teacherIds : []), ...(body.teacherId ? [body.teacherId] : [])]) : [],
+    teacherId: body.teacherId ? Number(body.teacherId) : (type === "TRAINING" ? Number(body.teacherIds?.[0]) || null : null),
     start,
     end,
     durationMin: Math.round((end.getTime() - start.getTime()) / 60_000),
@@ -82,7 +83,7 @@ function parseSchedule(body) {
         : Number(body.capacity),
     title:
       String(body.title || "").trim() ||
-      (type === "GROUP" ? "Group Session" : type === "TRAINING" ? "Teacher Training" : "Lesson"),
+      (type === "GROUP" ? "Group Session" : type === "TRAINING" ? "Training Session" : "Lesson"),
     joinUrl: String(body.joinUrl || body.meetingUrl || "").trim() || null,
     notes: String(body.notes || "").trim() || null,
     allowNoCredit: body.allowNoCredit === true || body.allowNoCredit === "true",
@@ -328,7 +329,7 @@ async function getCreditPreview(learners, sessionType) {
   };
 }
 
-function buildNotificationPreview({ learners, teacher, joinUrl, type }) {
+function buildNotificationPreview({ learners, teacher, trainingTeachers = [], joinUrl, type }) {
   const recipients = [
     ...learners.map((learner) => ({
       role: "learner",
@@ -346,7 +347,8 @@ function buildNotificationPreview({ learners, teacher, joinUrl, type }) {
           },
         ]
       : []),
-  ];
+    ...trainingTeachers.map((person) => ({ role: "teacher", userId: person.id, name: person.name, email: person.email })),
+  ].filter((person, index, all) => all.findIndex((other) => other.userId === person.userId) === index);
 
   return {
     willSend: recipients.length > 0,
@@ -354,8 +356,8 @@ function buildNotificationPreview({ learners, teacher, joinUrl, type }) {
     meetingMode: joinUrl ? "External meeting link" : "Built-in classroom link",
     recipients,
     summary: [
-      type === "TRAINING" ? "unpaid teacher training" : `${learners.length} learner${learners.length === 1 ? "" : "s"}`,
-      teacher ? "1 teacher" : "no teacher yet",
+      type === "TRAINING" ? `unpaid training with ${recipients.length} participant(s)` : `${learners.length} learner${learners.length === 1 ? "" : "s"}`,
+      type === "TRAINING" ? "teachers and learners are welcome" : teacher ? "1 teacher" : "no teacher yet",
       joinUrl ? "external meeting URL included" : "built-in classroom will be used",
     ],
   };
@@ -390,7 +392,7 @@ router.post(
         });
       }
 
-      const [teacher, learners] = await Promise.all([
+      const [teacher, learners, trainingTeachers] = await Promise.all([
         schedule.teacherId
           ? prisma.user.findUnique({
               where: { id: schedule.teacherId },
@@ -415,16 +417,27 @@ router.post(
             isDisabled: true,
           },
         }),
+        schedule.type === "TRAINING" ? prisma.user.findMany({ where: { id: { in: schedule.teacherIds } }, select: { id: true, email: true, name: true, role: true, timezone: true, isDisabled: true } }) : Promise.resolve([]),
       ]);
 
       const blockers = [];
       const warnings = [];
 
-      if (schedule.type === "TRAINING" && !schedule.teacherId) {
-        blockers.push("Choose a teacher for training.");
+      if (schedule.type === "TRAINING" && !schedule.teacherIds.length && !schedule.learnerIds.length) {
+        blockers.push("Choose at least one teacher or learner for training.");
       }
-      if (schedule.type === "TRAINING" && (req.body?.learnerId || (Array.isArray(req.body?.learnerIds) && req.body.learnerIds.length) || schedule.capacity !== null)) {
-        blockers.push("Training cannot include learners or capacity.");
+      if (schedule.type === "TRAINING" && schedule.capacity !== null) {
+        blockers.push("Training cannot have capacity.");
+      }
+      if (schedule.type === "TRAINING") {
+        const foundTeachers = new Set(trainingTeachers.map((person) => person.id));
+        for (const id of schedule.teacherIds) {
+          if (!foundTeachers.has(id)) blockers.push(`Teacher ${id} was not found.`);
+        }
+        for (const person of trainingTeachers) {
+          if (person.role !== "teacher" || person.isDisabled) blockers.push(`${person.name || person.email} must be an active teacher.`);
+        }
+        if (schedule.teacherIds.some((id) => schedule.learnerIds.includes(id))) blockers.push("A person cannot be both teacher and learner.");
       }
 
       if (schedule.teacherId && !teacher) {
@@ -449,24 +462,22 @@ router.post(
         if (learner.isDisabled) {
           blockers.push(`${learner.name || learner.email} is disabled.`);
         }
-        if (!["learner", "admin"].includes(learner.role)) {
+        if (schedule.type === "TRAINING" ? learner.role !== "learner" : !["learner", "admin"].includes(learner.role)) {
           blockers.push(`${learner.name || learner.email} is not a learner.`);
         }
       }
 
-      if (teacher && schedule.learnerIds.includes(teacher.id)) {
+      if (schedule.type !== "TRAINING" && teacher && schedule.learnerIds.includes(teacher.id)) {
         blockers.push("Teacher cannot be a participant in the same session.");
       }
 
       const [availability, conflicts, credit] = await Promise.all([
-        getTeacherAvailabilityPreview({
-          teacher,
-          start: schedule.start,
-          end: schedule.end,
-        }),
+        schedule.type === "TRAINING" && !teacher
+          ? Promise.resolve({ status: "not_required", label: "No lead teacher", message: "Training can include learners without a teacher.", matchingSlots: [], sameDaySlots: [] })
+          : getTeacherAvailabilityPreview({ teacher, start: schedule.start, end: schedule.end }),
         getConflictPreview({
           teacherId: schedule.teacherId,
-          learners,
+          learners: schedule.type === "TRAINING" ? [...learners, ...trainingTeachers.filter((person) => person.id !== schedule.teacherId)] : learners,
           start: schedule.start,
           end: schedule.end,
         }),
@@ -477,6 +488,10 @@ router.post(
 
       if (conflicts.total > 0) {
         blockers.push("The selected time conflicts with an existing session.");
+      }
+      if (schedule.type === "TRAINING") {
+        const organizerConflicts = await findSessionConflicts({ startAt: schedule.start, endAt: schedule.end, userId: req.user.id });
+        if (organizerConflicts.length) blockers.push("The admin trainer has another session at this time.");
       }
 
       if (credit.requiresOverride && !schedule.allowNoCredit) {
@@ -509,6 +524,7 @@ router.post(
           capacity: schedule.capacity,
         },
         teacher,
+        trainingTeachers,
         learners,
         timezones: {
           teacher: teacher?.timezone || null,
@@ -525,6 +541,7 @@ router.post(
         notifications: buildNotificationPreview({
           learners,
           teacher,
+          trainingTeachers,
           joinUrl: schedule.joinUrl,
           type: schedule.type,
         }),

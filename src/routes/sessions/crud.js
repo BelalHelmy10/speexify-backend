@@ -55,7 +55,7 @@ router.get("/sessions", requireAuth, async (req, res) => {
                     select: {
                         userId: true,
                         status: true,
-                        user: { select: { id: true, name: true, email: true } },
+                        user: { select: { id: true, name: true, email: true, role: true } },
                     },
                 },
             },
@@ -96,7 +96,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
                         userId: true,
                         status: true,
                         attendedAt: true,
-                        user: { select: { id: true, name: true, email: true } },
+                        user: { select: { id: true, name: true, email: true, role: true } },
                     },
                 },
                 feedback: true, // FIX: Use correct relation name
@@ -169,7 +169,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
             participantCount: activeParticipants.length,
             // For GROUP sessions, list all learners
             learners:
-                session.type === "GROUP"
+                session.type === "GROUP" || session.type === "TRAINING"
                     ? activeParticipants.map((p) => ({
                         ...p.user,
                         status: p.status,

@@ -198,6 +198,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       type = "ONE_ON_ONE",
       learnerId,
       learnerIds,
+      teacherIds,
       teacherId,
       capacity,
       title,
@@ -238,7 +239,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     const finalCapacity = parseFinalCapacity(capacity);
     const finalTitle =
       String(title || "").trim() ||
-      (finalType === "GROUP" ? "Group Session" : isTraining ? "Teacher Training" : "Lesson");
+      (finalType === "GROUP" ? "Group Session" : isTraining ? "Training Session" : "Lesson");
     const finalJoinUrl = (joinUrl ?? meetingUrl ?? "").trim() || null;
     if (finalJoinUrl) {
       try {
@@ -254,11 +255,17 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       allowNoCreditReason || creditOverrideReason || ""
     ).trim();
 
-    if (isTraining && (!Number.isInteger(finalTeacherId) || finalTeacherId <= 0)) {
-      return res.status(400).json({ error: "A teacher is required for training" });
+    if (isTraining && finalCapacity !== null) {
+      return res.status(400).json({ error: "Training sessions cannot have capacity" });
     }
-    if (isTraining && (learnerId || (Array.isArray(learnerIds) && learnerIds.length) || finalCapacity !== null)) {
-      return res.status(400).json({ error: "Training sessions cannot have learners or capacity" });
+    const trainingTeacherIds = isTraining ? uniqueLearnerIds([...(Array.isArray(teacherIds) ? teacherIds : []), ...(finalTeacherId ? [finalTeacherId] : [])]) : [];
+    const trainingLearnerIds = isTraining ? uniqueLearnerIds([...(Array.isArray(learnerIds) ? learnerIds : []), ...(learnerId ? [learnerId] : [])]) : [];
+    const trainingParticipantIds = [...new Set([...trainingTeacherIds, ...trainingLearnerIds])];
+    if (isTraining && !trainingParticipantIds.length) {
+      return res.status(400).json({ error: "Choose at least one teacher or learner for training" });
+    }
+    if (isTraining && trainingTeacherIds.some((id) => trainingLearnerIds.includes(id))) {
+      return res.status(400).json({ error: "A person cannot be both teacher and learner" });
     }
     if (!isTraining && allowCreditOverride && overrideReason.length < 6) {
       return res.status(400).json({
@@ -268,8 +275,15 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     }
 
     const teacher = await ensureTeacher(finalTeacherId);
-    if (isTraining && teacher?.role !== "teacher") {
-      return res.status(400).json({ error: "Training must be assigned to a teacher" });
+    if (isTraining && finalTeacherId && teacher?.role !== "teacher") return res.status(400).json({ error: "Training teachers must have the teacher role" });
+    if (isTraining) {
+      const people = await prisma.user.findMany({ where: { id: { in: trainingParticipantIds } }, select: { id: true, role: true, isDisabled: true } });
+      const byId = new Map(people.map((person) => [person.id, person]));
+      for (const id of trainingParticipantIds) {
+        const person = byId.get(id);
+        if (!person || person.isDisabled) return res.status(400).json({ error: `Participant ${id} was not found or is disabled` });
+        if (person.role !== (trainingTeacherIds.includes(id) ? "teacher" : "learner")) return res.status(400).json({ error: `Participant ${id} has the wrong role` });
+      }
     }
 
     const finalLearnerIds =
@@ -323,6 +337,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       payload: {
         type: finalType,
         learnerIds: finalLearnerIds,
+        trainingParticipantIds,
         teacherId: finalTeacherId,
         capacity: finalCapacity,
         title: finalTitle,
@@ -348,14 +363,14 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
     const { session, creditResults } = await prisma.$transaction(async (tx) => {
       await lockSchedulingResources(tx, {
-        learnerIds: finalLearnerIds,
+        learnerIds: isTraining ? [...trainingParticipantIds, req.user.id] : finalLearnerIds,
         teacherId: finalTeacherId,
       });
       await ensureNoConflicts({
         db: tx,
         startAt: start,
         endAt: finalEndAt,
-        learnerIds: finalLearnerIds,
+        learnerIds: isTraining ? [...trainingParticipantIds, req.user.id] : finalLearnerIds,
         teacherId: finalTeacherId,
       });
       await ensureCredits({
@@ -370,7 +385,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
           type: finalType,
           userId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : null,
           capacity: finalType === "GROUP" ? finalCapacity : null,
-          teacherId: finalTeacherId,
+          teacherId: isTraining ? (trainingTeacherIds[0] || null) : finalTeacherId,
           trainingAdminId: isTraining ? req.user.id : null,
           title: finalTitle,
           startAt: start,
@@ -387,9 +402,9 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             userId: finalLearnerIds[0],
           },
         });
-      } else if (finalType === "GROUP") {
+      } else if (finalType === "GROUP" || isTraining) {
         await tx.sessionParticipant.createMany({
-          data: finalLearnerIds.map((id) => ({
+          data: (isTraining ? trainingParticipantIds : finalLearnerIds).map((id) => ({
             sessionId: createdSession.id,
             userId: id,
           })),
@@ -412,6 +427,7 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       learnerIds: finalLearnerIds,
       learnerId: finalType === "ONE_ON_ONE" ? finalLearnerIds[0] : undefined,
       teacherId: finalTeacherId,
+      trainingParticipantIds,
       capacity: finalCapacity,
       creditResults,
       creditConsumed: creditResults.some((result) => result.consumed),
@@ -422,8 +438,8 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     try {
       await sendBookingNotifications({
         session,
-        learnerIds: finalLearnerIds,
-        teacherId: finalTeacherId,
+        learnerIds: isTraining ? trainingParticipantIds : finalLearnerIds,
+        teacherId: isTraining ? (trainingTeacherIds[0] || null) : finalTeacherId,
         bookedBy: req.user.id,
       });
     } catch (e) {

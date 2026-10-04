@@ -33,31 +33,24 @@ async function sendReminderForSession({ session, kind }) {
   const learnerIds = await getLearnerIdsForSession(session);
 
   if (session.type === "TRAINING") {
-    if (!teacherId) return;
-    const teacher = await prisma.user.findUnique({
-      where: { id: teacherId },
-      select: { id: true, name: true, email: true, timezone: true, language: true },
-    });
-    if (!teacher) return;
+    const participantIds = [...new Set([...(session.participants || []).filter((p) => p.status !== "canceled").map((p) => p.userId), ...(teacherId ? [teacherId] : [])])];
+    const people = await prisma.user.findMany({ where: { id: { in: participantIds } }, select: { id: true, name: true, email: true, timezone: true, language: true } });
     const notifType = { "24h": "reminder_24h", "6h": "reminder_6h", "1h": "reminder_1h" }[kind] || "reminder_1h";
-    await createNotification({
-      userId: teacherId,
-      type: notifType,
-      title: "Teacher training reminder",
-      body: `Your unpaid training session "${session.title || "Teacher Training"}" is coming up.`,
-      data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: "TRAINING" },
-    });
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-    const locale = normalizeEmailLocale(teacher.language);
-    const when = formatEmailDate(session.startAt, teacher.timezone, locale);
-    const link = session.joinUrl ? `<p>Meeting link: <a href="${escapeHtml(session.joinUrl)}">${escapeHtml(session.joinUrl)}</a></p>` : "<p>Open the session from your teacher dashboard.</p>";
-    await enqueueEmail(teacher.email, "Teacher training reminder", `<p>Hello ${escapeHtml(teacher.name || "teacher")},</p><p>Your unpaid training session <strong>${escapeHtml(session.title || "Teacher Training")}</strong> starts ${escapeHtml(when)}.</p>${link}`, { userId: teacher.id, eventType: notifType, sessionId: session.id, locale });
-    if (session.trainingAdminId && session.trainingAdminId !== teacherId) {
+    const link = session.joinUrl ? `<p>Meeting link: <a href="${escapeHtml(session.joinUrl)}">${escapeHtml(session.joinUrl)}</a></p>` : "<p>Open the session from your dashboard.</p>";
+    for (const person of people) {
+      if (person.id === session.trainingAdminId) continue;
+      await createNotification({ userId: person.id, type: notifType, title: "Training reminder", body: `Your unpaid training session "${session.title || "Training"}" is coming up.`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: "TRAINING" } });
+      const locale = normalizeEmailLocale(person.language);
+      const when = formatEmailDate(session.startAt, person.timezone, locale);
+      await enqueueEmail(person.email, "Training reminder", `<p>Hello ${escapeHtml(person.name || "there")},</p><p>Your unpaid training session <strong>${escapeHtml(session.title || "Training")}</strong> starts ${escapeHtml(when)}.</p>${link}`, { userId: person.id, eventType: notifType, sessionId: session.id, locale });
+    }
+    if (session.trainingAdminId) {
       const organizer = await prisma.user.findUnique({ where: { id: session.trainingAdminId }, select: { id: true, name: true, email: true, timezone: true, language: true } });
       if (organizer) {
-        await createNotification({ userId: organizer.id, type: notifType, title: "Teacher training reminder", body: `Training "${session.title || "Teacher Training"}" is coming up.`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: "TRAINING" } });
+        await createNotification({ userId: organizer.id, type: notifType, title: "Training reminder", body: `Training "${session.title || "Training Session"}" is coming up.`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, joinUrl: session.joinUrl, sessionType: "TRAINING" } });
         const organizerWhen = formatEmailDate(session.startAt, organizer.timezone, normalizeEmailLocale(organizer.language));
-        await enqueueEmail(organizer.email, "Teacher training reminder", `<p>Hello ${escapeHtml(organizer.name || "there")},</p><p>Your training session <strong>${escapeHtml(session.title || "Teacher Training")}</strong> starts ${escapeHtml(organizerWhen)}.</p>${link}`, { userId: organizer.id, eventType: notifType, sessionId: session.id, locale: normalizeEmailLocale(organizer.language) });
+        await enqueueEmail(organizer.email, "Training reminder", `<p>Hello ${escapeHtml(organizer.name || "there")},</p><p>Your training session <strong>${escapeHtml(session.title || "Training Session")}</strong> starts ${escapeHtml(organizerWhen)}.</p>${link}`, { userId: organizer.id, eventType: notifType, sessionId: session.id, locale: normalizeEmailLocale(organizer.language) });
       }
     }
     return;

@@ -151,7 +151,7 @@ router.post(
             !!sessionRow.teacherId && sessionRow.teacherId === req.user.id;
 
         const participant = (sessionRow.participants || []).find(
-            (p) => p.userId === viewerId
+            (p) => p.userId === viewerId && p.status !== "canceled"
         );
         const isLegacyOwner = sessionRow.userId === viewerId;
         const isLearner = !!participant || isLegacyOwner;
@@ -175,6 +175,9 @@ router.post(
                 code: SESSION_TERMINAL_ERROR_CODE,
                 error: "Completed sessions cannot be canceled",
             });
+        }
+        if (sessionRow.type === "TRAINING" && !isAdmin && !isTeacher && sessionRow.participants.filter((p) => p.status !== "canceled").length <= 1) {
+            return res.status(409).json({ error: "Ask an admin to cancel this training session" });
         }
 
         idempotency = await beginIdempotentRequest({
@@ -209,7 +212,7 @@ router.post(
         // ─────────────────────────────────────────────
         // GROUP: learner cancels ONLY their seat
         // ─────────────────────────────────────────────
-        if (sessionRow.type === "GROUP" && isLearner && !isAdmin && !isTeacher) {
+        if (["GROUP", "TRAINING"].includes(sessionRow.type) && isLearner && !isAdmin && !isTeacher) {
             const cancellation = await cancelBooking(sessionRow.id, {userId: viewerId, refund: refundableByLearner});
             const refunded = cancellation.refundResults.some(r => r.refunded);
 
@@ -218,7 +221,7 @@ router.post(
                 await sendCancellationNotifications({
                     session: sessionRow,
                     learnerIds: [viewerId],
-                    teacherId: sessionRow.teacherId,
+                    teacherId: sessionRow.type === "TRAINING" ? null : sessionRow.teacherId,
                     canceledBy: req.user.id,
                     scope: "participant",
                     refunded,
@@ -256,7 +259,7 @@ router.post(
 
         // ✅ Determine recipients
         const learnerIds = [];
-        if (sessionRow.type === "GROUP") {
+        if (sessionRow.type === "GROUP" || sessionRow.type === "TRAINING") {
             const active = (sessionRow.participants || [])
                 .filter((p) => p.status !== "canceled")
                 .map((p) => p.userId);
@@ -366,7 +369,7 @@ router.post(
         const newEnd = endAt ? new Date(endAt) : null;
 
         // FIX: Check conflicts for ALL active participants in GROUP sessions
-        if (session.type === "GROUP") {
+        if (session.type === "GROUP" || session.type === "TRAINING") {
             const activeParticipants = (session.participants || [])
                 .filter((p) => p.status !== "canceled")
                 .map((p) => p.userId);
@@ -387,6 +390,10 @@ router.post(
                         conflicts,
                     });
                 }
+            }
+            if (session.type === "TRAINING" && session.trainingAdminId) {
+                const conflicts = await findSessionConflicts({ startAt: newStart, endAt: newEnd, userId: session.trainingAdminId, excludeId: id });
+                if (conflicts.length) return res.status(409).json({ error: "Admin trainer has a time conflict", conflicts });
             }
         } else {
             // ONE_ON_ONE: check legacy userId
@@ -410,7 +417,7 @@ router.post(
 
         if (session.type === "TRAINING") {
             try {
-                await sendSessionUpdatedNotifications({ session: updated, previousStartAt: session.startAt, learnerIds: [], teacherId: session.teacherId });
+                await sendSessionUpdatedNotifications({ session: updated, previousStartAt: session.startAt, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId });
             } catch (notificationError) {
                 logger.error({ err: notificationError, sessionId: id }, "training reschedule notifications failed");
             }

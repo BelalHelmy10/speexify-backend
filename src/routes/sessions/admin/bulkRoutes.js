@@ -69,7 +69,7 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
           await prisma.session.delete({ where: { id: session.id } });
           await audit(req.user.id, "session_delete", "Session", session.id, { bulk: true });
           if (session.type === "TRAINING") {
-            try { await sendCancellationNotifications({ session, learnerIds: [], teacherId: session.teacherId, canceledBy: req.user.id }); }
+            try { await sendCancellationNotifications({ session, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId, canceledBy: req.user.id }); }
             catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training deletion notifications failed"); }
           }
           affected++;
@@ -80,7 +80,7 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
 
             await audit(req.user.id, "session_cancel", "Session", session.id, { bulk: true });
             if (session.type === "TRAINING") {
-              try { await sendCancellationNotifications({ session, learnerIds: [], teacherId: session.teacherId, canceledBy: req.user.id }); }
+              try { await sendCancellationNotifications({ session, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId, canceledBy: req.user.id }); }
               catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training cancellation notifications failed"); }
             }
             affected++;

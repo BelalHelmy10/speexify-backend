@@ -18,6 +18,7 @@ import {
   logger,
   audit,
 } from "./shared.js";
+import { sendCancellationNotifications } from "../../../services/notificationsService.js";
 import {
   getIdempotencyKeyFromRequest,
   beginIdempotentRequest,
@@ -27,7 +28,7 @@ import {
 
 const router = Router();
 
-// POST /api/admin/sessions/:id/participants - Add participants to GROUP session
+// POST /api/admin/sessions/:id/participants - Add participants to GROUP or TRAINING session
 router.post(
   "/admin/sessions/:id/participants",
   requireAuth,
@@ -49,9 +50,9 @@ router.post(
       } = req.body || {};
 
       const idsRaw = Array.isArray(userIds) ? userIds : userId ? [userId] : [];
-      const ids = idsRaw
+      const ids = [...new Set(idsRaw
         .map((x) => Number(x))
-        .filter((x) => x && !Number.isNaN(x));
+        .filter((x) => x && !Number.isNaN(x)))];
 
       if (!ids.length) {
         return res.status(400).json({ error: "Provide userId or userIds[]" });
@@ -72,7 +73,7 @@ router.post(
       });
 
       if (!session) return res.status(404).json({ error: "Session not found" });
-      if (session.type !== "GROUP") {
+      if (session.type !== "GROUP" && session.type !== "TRAINING") {
         return res.status(400).json({
           error: "Only GROUP sessions support participants management",
         });
@@ -87,7 +88,6 @@ router.post(
           .status(400)
           .json({ error: "Cannot add participants to a completed session" });
       }
-
       const existing = new Map(
         (session.participants || []).map((p) => [p.userId, p.status])
       );
@@ -129,7 +129,7 @@ router.post(
             .status(404)
             .json({ error: "User not found or disabled", userId: uid });
         }
-        if (u.role !== "learner" && u.role !== "admin") {
+        if (session.type === "TRAINING" ? !["teacher", "learner"].includes(u.role) : !["learner", "admin"].includes(u.role)) {
           return res
             .status(400)
             .json({ error: "userId must refer to a learner", userId: uid });
@@ -139,7 +139,8 @@ router.post(
           startAt,
           endAt,
           userId: uid,
-          teacherId: session.teacherId || undefined,
+          teacherId: session.type === "TRAINING" ? undefined : session.teacherId || undefined,
+          excludeId: sessionId,
         });
         if (conflicts.length) {
           return res
@@ -147,8 +148,8 @@ router.post(
             .json({ error: "Time conflict", userId: uid, conflicts });
         }
 
-        const remaining = await getRemainingCredits(uid);
-        if (!allowNoCredit && remaining <= 0) {
+        const remaining = session.type === "TRAINING" ? null : await getRemainingCredits(uid);
+        if (session.type !== "TRAINING" && !allowNoCredit && remaining <= 0) {
           return res.status(422).json({
             error: "no_credits",
             userId: uid,
@@ -192,7 +193,7 @@ router.post(
         const additions = [...new Set(toAdd)].filter(uid => !activeIds.has(uid));
         await lockSchedulingResources(tx, {
           learnerIds: additions,
-          teacherId: current.teacherId,
+          teacherId: current.type === "TRAINING" ? null : current.teacherId,
         });
         if (!allowOverCapacity && current.capacity && activeIds.size + additions.length > current.capacity) {
           throw Object.assign(new Error("Session capacity exceeded"), { statusCode: 409 });
@@ -203,7 +204,7 @@ router.post(
             startAt: current.startAt,
             endAt: current.endAt,
             userId: uid,
-            teacherId: current.teacherId || undefined,
+            teacherId: current.type === "TRAINING" ? undefined : current.teacherId || undefined,
             excludeId: sessionId,
           });
           if (conflicts.length) {
@@ -212,7 +213,7 @@ router.post(
               responseBody: { error: "Time conflict", userId: uid, conflicts },
             });
           }
-          if (!allowNoCredit) {
+          if (current.type !== "TRAINING" && !allowNoCredit) {
             const debit = await consumeOneCreditWithClient(tx, uid, sessionId);
             if (!debit.ok) throw Object.assign(new Error("Learner has no credits"), { statusCode: 422 });
             results.push({ learnerId: uid, consumed: true, packId: debit.packId });
@@ -222,6 +223,10 @@ router.post(
             create: { sessionId, userId: uid, status: "booked" },
             update: { status: "booked" },
           });
+        }
+        if (current.type === "TRAINING" && !current.teacherId) {
+          const nextTeacher = await tx.user.findFirst({ where: { id: { in: additions }, role: "teacher", isDisabled: false }, select: { id: true } });
+          if (nextTeacher) await tx.session.update({ where: { id: sessionId }, data: { teacherId: nextTeacher.id } });
         }
         return results;
       });
@@ -235,7 +240,7 @@ router.post(
         await sendBookingNotifications({
           session,
           learnerIds: toAdd,
-          teacherId: session.teacherId,
+          teacherId: session.type === "TRAINING" ? null : session.teacherId,
           bookedBy: req.user.id,
         });
       } catch (e) {
@@ -295,13 +300,18 @@ router.delete(
           id: true,
           type: true,
           status: true,
+          title: true,
           startAt: true,
+          endAt: true,
+          teacherId: true,
+          trainingAdminId: true,
+          joinUrl: true,
           participants: { select: { userId: true, status: true } },
         },
       });
 
       if (!session) return res.status(404).json({ error: "Session not found" });
-      if (session.type !== "GROUP") {
+      if (session.type !== "GROUP" && session.type !== "TRAINING") {
         return res.status(400).json({
           error: "Only GROUP sessions support participants management",
         });
@@ -326,10 +336,18 @@ router.delete(
           error: "Completed sessions cannot be canceled",
         });
       }
+      if (session.type === "TRAINING" && session.participants.filter((p) => p.status !== "canceled").length <= 1) {
+        return res.status(400).json({ error: "Training needs at least one participant" });
+      }
 
       const refundable = !!refund && new Date(session.startAt).getTime() - Date.now() >= 12 * 60 * 60 * 1000;
-      const cancellation = await cancelBooking(sessionId, {userId: targetUserId, refund: refundable});
+      const cancellation = await cancelBooking(sessionId, {userId: targetUserId, refund: session.type === "TRAINING" ? false : refundable});
       const refunded = cancellation.refundResults.some(r => r.refunded);
+
+      if (session.type === "TRAINING") {
+        try { await sendCancellationNotifications({ session: { ...session, trainingAdminId: null }, learnerIds: [targetUserId], teacherId: null, canceledBy: req.user.id }); }
+        catch (notificationError) { logger.error({ err: notificationError, sessionId }, "training participant removal notifications failed"); }
+      }
 
       await audit(req.user.id, "session_remove_participant", "Session", sessionId, {
         removedUserId: targetUserId,

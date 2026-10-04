@@ -38,8 +38,8 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
     });
 
     if (!existing) return res.status(404).json({ error: "Not found" });
-    if (existing.type === "TRAINING" && (req.body.userId !== undefined || req.body.capacity !== undefined || req.body.teacherId === null)) {
-      return res.status(400).json({ error: "Training requires a teacher and cannot have learners or capacity" });
+    if (existing.type === "TRAINING" && (req.body.userId !== undefined || req.body.capacity !== undefined)) {
+      return res.status(400).json({ error: "Training participants are managed separately and capacity is unavailable" });
     }
 
     const patch = {};
@@ -87,7 +87,7 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       patch.teacherId !== undefined ? Number(patch.teacherId) : existing.teacherId;
 
     if (patch.startAt || patch.endAt || patch.teacherId) {
-      if (existing.type === "GROUP") {
+      if (existing.type === "GROUP" || existing.type === "TRAINING") {
         const activeParticipants = (existing.participants || [])
           .filter((p) => p.status !== "canceled")
           .map((p) => p.userId);
@@ -107,6 +107,10 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
               conflicts,
             });
           }
+        }
+        if (existing.type === "TRAINING" && existing.trainingAdminId) {
+          const conflicts = await findSessionConflicts({ startAt: start, endAt: end, userId: existing.trainingAdminId, excludeId: id });
+          if (conflicts.length) return res.status(409).json({ error: "Admin trainer has a time conflict", conflicts });
         }
       } else {
         const userId = patch.userId !== undefined ? Number(patch.userId) : existing.userId;
@@ -172,12 +176,12 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
     if (existing.type === "TRAINING") {
       try {
         if (nextStatus === "canceled" && prevStatus !== "canceled") {
-          await sendCancellationNotifications({ session: updated, learnerIds: [], teacherId: existing.teacherId, canceledBy: req.user.id });
+          await sendCancellationNotifications({ session: updated, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: existing.teacherId, canceledBy: req.user.id });
         } else if (patch.teacherId !== undefined && patch.teacherId !== existing.teacherId) {
           await sendCancellationNotifications({ session: { ...existing, trainingAdminId: null }, learnerIds: [], teacherId: existing.teacherId, canceledBy: req.user.id });
-          await sendBookingNotifications({ session: updated, learnerIds: [], teacherId: updated.teacherId, bookedBy: updated.trainingAdminId });
+          await sendBookingNotifications({ session: updated, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: updated.teacherId, bookedBy: updated.trainingAdminId });
         } else if (changesSchedule) {
-          await sendSessionUpdatedNotifications({ session: updated, previousStartAt: existing.startAt, learnerIds: [], teacherId: updated.teacherId });
+          await sendSessionUpdatedNotifications({ session: updated, previousStartAt: existing.startAt, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: updated.teacherId });
         }
       } catch (notificationError) {
         logger.error({ err: notificationError, sessionId: id }, "training update notifications failed");
@@ -192,7 +196,7 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       ...updated,
       participantCount: activeParticipants.length,
       learners:
-        updated.type === "GROUP"
+        updated.type === "GROUP" || updated.type === "TRAINING"
           ? activeParticipants.map((p) => ({ ...p.user, status: p.status }))
           : updated.user
             ? [{ ...updated.user, status: "booked" }]

@@ -68,7 +68,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
     }
 
     if (teacherId && Number.isFinite(Number(teacherId))) {
-      where.teacherId = Number(teacherId);
+      where.AND = [...(where.AND || []), { OR: [{ teacherId: Number(teacherId) }, { type: "TRAINING", participants: { some: { userId: Number(teacherId), status: { not: "canceled" } } } }] }];
     }
 
     if (["ONE_ON_ONE", "GROUP", "TRAINING"].includes(type)) {
@@ -81,6 +81,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
     if (needsTeacher === "1" || needsTeacher === "true") {
       where.teacherId = null;
+      where.type = { not: "TRAINING" };
     }
 
     if (needsFeedback === "1" || needsFeedback === "true") {
@@ -149,7 +150,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
             select: {
               userId: true,
               status: true,
-              user: { select: { id: true, name: true, email: true } },
+              user: { select: { id: true, name: true, email: true, role: true } },
             },
           },
         },
@@ -168,7 +169,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
         ...s,
         participantCount: activeParticipants.length,
         learners:
-          s.type === "GROUP"
+          s.type === "GROUP" || s.type === "TRAINING"
             ? activeParticipants.map((p) => ({
                 ...p.user,
                 status: p.status,

@@ -49,9 +49,10 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
             );
         }
 
-        const where = { teacherId };
+        const membership = { OR: [{ teacherId }, { type: "TRAINING", participants: { some: { userId: teacherId, status: { not: "canceled" } } } }] };
+        const where = { AND: [membership] };
         if (range === "upcoming") {
-            where.AND = [
+            where.AND.push(
                 {
                     OR: [
                         { startAt: { gte: now } },
@@ -64,12 +65,12 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
                     ],
                 },
                 { status: { not: "canceled" } },
-            ];
+            );
         } else if (range === "past") {
-            where.OR = [
+            where.AND.push({ OR: [
                 { endAt: { lt: now } },
                 { AND: [{ endAt: null }, { startAt: { lt: now } }] },
-            ];
+            ] });
         }
 
         const sessions = await prisma.session.findMany({
@@ -118,7 +119,7 @@ router.get("/teacher/sessions", requireAuth, async (req, res) => {
                 participantCount: activeParticipants.length,
                 // For GROUP sessions, provide a learners array
                 learners:
-                    s.type === "GROUP"
+                    s.type === "GROUP" || s.type === "TRAINING"
                         ? activeParticipants.map((p) => p.user)
                         : s.user
                             ? [s.user]
