@@ -47,6 +47,8 @@ const PRODUCTION_ENV_REQUIREMENTS = [
   "UPLOADS_ENABLED",
   "UPLOAD_STORAGE_ROOT",
   "UPLOAD_MALWARE_SCAN_COMMAND",
+  "CLASSROOM_S3_BUCKET",
+  "CLASSROOM_S3_REGION",
 ];
 
 function collectJsFiles(pathFragment) {
@@ -123,12 +125,19 @@ function collectEnvReadiness() {
   const uploadsEnabled = ["1", "true", "yes", "on"].includes(
     String(process.env.UPLOADS_ENABLED || "").trim().toLowerCase()
   );
+  const classroomUploadsEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.CLASSROOM_UPLOADS_ENABLED || "").trim().toLowerCase()
+  );
+  const cloudinaryReady = ["CLASSROOM_CLOUDINARY_CLOUD_NAME", "CLASSROOM_CLOUDINARY_API_KEY", "CLASSROOM_CLOUDINARY_API_SECRET"]
+    .every((name) => Boolean(String(process.env[name] || "").trim()));
 
   return PRODUCTION_ENV_REQUIREMENTS.map((name) => ({
     name,
-    required:
-      uploadsEnabled ||
-      !["UPLOAD_STORAGE_ROOT", "UPLOAD_MALWARE_SCAN_COMMAND"].includes(name),
+    required: name.startsWith("CLASSROOM_S3_")
+      ? classroomUploadsEnabled && !uploadsEnabled && !cloudinaryReady
+      : name === "UPLOAD_MALWARE_SCAN_COMMAND"
+        ? uploadsEnabled || (classroomUploadsEnabled && !(cloudinaryReady && process.env.CLASSROOM_CLOUDINARY_MALWARE_SCAN === "true"))
+        : name === "UPLOAD_STORAGE_ROOT" ? uploadsEnabled : true,
     present: Boolean(String(process.env[name] || "").trim()),
   }));
 }

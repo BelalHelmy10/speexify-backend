@@ -95,11 +95,43 @@ test("production uploads are disabled by default until durable storage is config
     GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
     REDIS_URL: "redis://localhost:6379",
     UPLOADS_ENABLED: undefined,
+    CLASSROOM_UPLOADS_ENABLED: undefined,
     UPLOAD_STORAGE_ROOT: undefined,
     UPLOAD_MALWARE_SCAN_COMMAND: undefined,
   });
 
   assert.equal(env.UPLOADS_ENABLED, false);
+  assert.equal(env.CLASSROOM_UPLOADS_ENABLED, false);
+});
+
+test("production classroom uploads require scanning even when legacy uploads are disabled", async () => {
+  await assert.rejects(() => importFreshEnv({
+    NODE_ENV: "production",
+    SESSION_SECRET: "speexify-production-session-secret-0004",
+    OBS_METRICS_TOKEN: "speexify-production-metrics-token-0004",
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    REDIS_URL: "redis://localhost:6379",
+    UPLOADS_ENABLED: "false",
+    CLASSROOM_UPLOADS_ENABLED: "true",
+    UPLOAD_MALWARE_SCAN_COMMAND: undefined,
+  }), /UPLOAD_MALWARE_SCAN_COMMAND/);
+});
+
+test("production classroom uploads can use explicit Cloudinary remote scanning", async () => {
+  const env = await importFreshEnv({
+    NODE_ENV: "production",
+    SESSION_SECRET: "speexify-production-session-secret-0004",
+    OBS_METRICS_TOKEN: "speexify-production-metrics-token-0004",
+    GOOGLE_CLIENT_ID: "production-client.apps.googleusercontent.com",
+    REDIS_URL: "redis://localhost:6379",
+    UPLOADS_ENABLED: "false", CLASSROOM_UPLOADS_ENABLED: "true",
+    CLASSROOM_CLOUDINARY_CLOUD_NAME: "test-cloud",
+    CLASSROOM_CLOUDINARY_API_KEY: "test-key",
+    CLASSROOM_CLOUDINARY_API_SECRET: "test-secret",
+    CLASSROOM_CLOUDINARY_MALWARE_SCAN: "true",
+    UPLOAD_MALWARE_SCAN_COMMAND: undefined,
+  });
+  assert.equal(env.CLASSROOM_CLOUDINARY_MALWARE_SCAN, true);
 });
 
 test("production env rejects missing OBS_METRICS_TOKEN", async () => {

@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import path from "node:path";
 import express from "express";
 import request from "supertest";
 import router from "../../src/routes/sessions/materials.js";
 import { prisma } from "../../src/lib/prisma.js";
-import { uploadRoot } from "../../src/lib/uploadStorage.js";
+import { deleteMaterial } from "../../src/services/classroomMaterialStorage.js";
+import { MAX_CLASSROOM_PDF_BYTES } from "../../src/services/classroomMaterialStorage.js";
 
 test("only the teacher can upload a PDF and only classroom members can read it", async () => {
   const originals = {
@@ -83,10 +82,74 @@ test("only the teacher can upload a PDF and only classroom members can read it",
     assert.equal(file.headers["content-type"], "application/pdf");
     assert.deepEqual(file.body, pdf);
 
+    const partial = await request(app)
+      .get(`/sessions/42/materials/${storedMaterial.id}/file`)
+      .set("x-test-user", "10").set("Range", "bytes=0-4");
+    assert.equal(partial.statusCode, 206);
+    assert.equal(partial.headers["accept-ranges"], "bytes");
+    assert.deepEqual(partial.body, Buffer.from("%PDF-"));
+    assert.equal(partial.headers["cache-control"], "private, no-store");
+
+    const invalidRange = await request(app)
+      .get(`/sessions/42/materials/${storedMaterial.id}/file`)
+      .set("x-test-user", "10").set("Range", "bytes=99999-100000");
+    assert.equal(invalidRange.statusCode, 416);
+
     const outsider = await request(app)
       .get(`/sessions/42/materials/${storedMaterial.id}/file`)
       .set("x-test-user", "30");
     assert.equal(outsider.statusCode, 403);
+
+    const objectCount = globalThis.materialStorageTestObjects?.size;
+    const create = prisma.classroomMaterial.create;
+    prisma.classroomMaterial.create = async () => { throw new Error("Database unavailable"); };
+    const failed = await request(app).post("/sessions/42/materials")
+      .set("x-test-user", "20").attach("file", pdf, "rollback.pdf");
+    assert.equal(failed.statusCode, 500);
+    if (objectCount != null) assert.equal(globalThis.materialStorageTestObjects.size, objectCount);
+    prisma.classroomMaterial.create = create;
+
+    const oversized = await request(app).post("/sessions/42/materials")
+      .set("x-test-user", "20")
+      .attach("file", Buffer.alloc(MAX_CLASSROOM_PDF_BYTES + 1), "too-large.pdf");
+    assert.equal(oversized.statusCode, 413);
+    if (process.env.CLASSROOM_CLOUDINARY_MALWARE_SCAN === "true") {
+      const count = globalThis.materialStorageTestObjects.size;
+      globalThis.rejectNextCloudinaryPdf = true;
+      const rejected = await request(app).post("/sessions/42/materials")
+        .set("x-test-user", "20").attach("file", pdf, "rejected.pdf");
+      assert.equal(rejected.statusCode, 422);
+      assert.equal(globalThis.materialStorageTestObjects.size, count);
+    }
+
+    if (globalThis.materialStorageTestObjects) {
+      let release;
+      let ready;
+      let entered = 0;
+      const bothUploading = new Promise((resolve) => { ready = resolve; });
+      globalThis.materialStorageTestGate = {
+        entered: () => { if (++entered === 2) ready(); },
+        wait: new Promise((resolve) => { release = resolve; }),
+      };
+      const uploadRequests = [1, 2].map((number) => request(app)
+        .post("/sessions/42/materials").set("x-test-user", "20")
+        .attach("file", pdf, `concurrent-${number}.pdf`).then((response) => response));
+      try {
+        await Promise.race([bothUploading, new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Concurrent uploads never started")), 3000).unref())]);
+        const busy = await request(app).post("/sessions/42/materials")
+          .set("x-test-user", "20").attach("file", pdf, "busy.pdf");
+        assert.equal(busy.statusCode, 429);
+        assert.equal(busy.headers["retry-after"], "5");
+        const available = await request(app).get("/sessions/42/materials").set("x-test-user", "10");
+        assert.equal(available.statusCode, 200);
+      } finally {
+        release();
+        globalThis.materialStorageTestGate = null;
+        const completed = await Promise.all(uploadRequests);
+        assert.deepEqual(completed.map((response) => response.statusCode), [201, 201]);
+      }
+    }
 
     sessionStatus = "completed";
     const pastSessionUpload = await request(app)
@@ -107,8 +170,6 @@ test("only the teacher can upload a PDF and only classroom members can read it",
     prisma.classroomMaterial.create = originals.create;
     prisma.classroomMaterial.findFirst = originals.findFirst;
     prisma.classroomMaterial.findMany = originals.findMany;
-    await Promise.all(uploadedFiles.map((filename) =>
-      fs.rm(path.join(uploadRoot, "classroom-materials", filename), { force: true })
-    ));
+    await Promise.all(uploadedFiles.map((filename) => deleteMaterial(42, filename)));
   }
 });

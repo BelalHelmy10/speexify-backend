@@ -148,11 +148,22 @@ function main() {
     ),
     checkCustom(
       "uploads:malware_scanner",
-      !truthy("UPLOADS_ENABLED", false) || hasValue("UPLOAD_MALWARE_SCAN_COMMAND"),
+      !(truthy("UPLOADS_ENABLED", false) || truthy("CLASSROOM_UPLOADS_ENABLED", false)) || hasValue("UPLOAD_MALWARE_SCAN_COMMAND") ||
+        (!truthy("UPLOADS_ENABLED", false) && truthy("CLASSROOM_CLOUDINARY_MALWARE_SCAN", false) &&
+          ["CLASSROOM_CLOUDINARY_CLOUD_NAME", "CLASSROOM_CLOUDINARY_API_KEY", "CLASSROOM_CLOUDINARY_API_SECRET"].every(hasValue)),
       "fail",
-      truthy("UPLOADS_ENABLED", false)
+      (truthy("UPLOADS_ENABLED", false) || truthy("CLASSROOM_UPLOADS_ENABLED", false))
         ? "UPLOAD_MALWARE_SCAN_COMMAND is required when uploads are enabled"
         : "uploads disabled; no malware scanner required"
+    ),
+    checkCustom(
+      "classroom_uploads:storage",
+      !truthy("CLASSROOM_UPLOADS_ENABLED", false) ||
+        (hasValue("CLASSROOM_S3_BUCKET") && hasValue("CLASSROOM_S3_REGION")) ||
+        (hasValue("CLASSROOM_CLOUDINARY_CLOUD_NAME") && hasValue("CLASSROOM_CLOUDINARY_API_KEY") && hasValue("CLASSROOM_CLOUDINARY_API_SECRET")) ||
+        (truthy("UPLOADS_ENABLED", false) && hasValue("UPLOAD_STORAGE_ROOT")),
+      "fail",
+      "Enabled classroom uploads require private S3 or Cloudinary storage, or the existing durable upload mount"
     ),
     checkCustom(
       "runtime:alerts_enabled",

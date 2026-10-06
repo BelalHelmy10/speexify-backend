@@ -119,13 +119,21 @@ if (isProd && !GOOGLE_CLIENT_ID) {
 // storage, so keep uploads disabled until a durable external storage adapter
 // and malware scanner are configured.
 export const UPLOADS_ENABLED = parseBooleanEnv("UPLOADS_ENABLED", !isProd);
+// Classroom PDFs can use private object storage independently of legacy uploads.
+export const CLASSROOM_UPLOADS_ENABLED = parseBooleanEnv(
+  "CLASSROOM_UPLOADS_ENABLED", UPLOADS_ENABLED
+);
+export const CLASSROOM_CLOUDINARY_MALWARE_SCAN = parseBooleanEnv("CLASSROOM_CLOUDINARY_MALWARE_SCAN", false);
 
 // If uploads are enabled, they must be scanned before they are persisted or
 // served. Disabled uploads do not require scanner infrastructure at startup.
 export const UPLOAD_MALWARE_SCAN_COMMAND = readSecretEnv(
   "UPLOAD_MALWARE_SCAN_COMMAND"
 );
-if (isProd && UPLOADS_ENABLED && !UPLOAD_MALWARE_SCAN_COMMAND) {
+const classroomRemoteScanning = CLASSROOM_CLOUDINARY_MALWARE_SCAN &&
+  ["CLASSROOM_CLOUDINARY_CLOUD_NAME", "CLASSROOM_CLOUDINARY_API_KEY", "CLASSROOM_CLOUDINARY_API_SECRET"]
+    .every((name) => Boolean(String(process.env[name] || "").trim()));
+if (isProd && (UPLOADS_ENABLED || (CLASSROOM_UPLOADS_ENABLED && !classroomRemoteScanning)) && !UPLOAD_MALWARE_SCAN_COMMAND) {
   throw new Error(
     "UPLOAD_MALWARE_SCAN_COMMAND must point to the production malware scanner"
   );

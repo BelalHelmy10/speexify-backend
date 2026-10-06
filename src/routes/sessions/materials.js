@@ -1,19 +1,27 @@
 import { Router } from "express";
 import multer from "multer";
 import crypto from "node:crypto";
+import os from "node:os";
+import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { prisma, requireAuth, logger } from "./_shared.js";
-import { requireUploadsEnabled } from "../../lib/uploadAvailability.js";
-import { uploadRoot } from "../../lib/uploadStorage.js";
-import { scanUploadBuffer } from "../../lib/uploadSecurity.js";
+import { CLASSROOM_UPLOADS_ENABLED, CLASSROOM_CLOUDINARY_MALWARE_SCAN } from "../../config/env.js";
+import { classroomCloudinaryConfigured } from "../../services/classroomCloudinaryStorage.js";
+import { UPLOADS_DISABLED_MESSAGE } from "../../lib/uploadAvailability.js";
+import { scanUploadFile } from "../../lib/uploadSecurity.js";
+import { storeMaterial, deleteMaterial, sendMaterial, MAX_CLASSROOM_PDF_BYTES } from "../../services/classroomMaterialStorage.js";
 
 const router = Router();
-const MAX_PDF_BYTES = 25 * 1024 * 1024;
-const materialRoot = path.join(uploadRoot, "classroom-materials");
+const MAX_PDF_BYTES = MAX_CLASSROOM_PDF_BYTES;
+let activeUploads = 0;
+const MAX_CONCURRENT_UPLOADS = 2;
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_PDF_BYTES, files: 1 },
+  storage: multer.diskStorage({
+    destination: (req, _file, callback) => callback(null, req.materialTempDir),
+    filename: (_req, _file, callback) => callback(null, "upload.pdf"),
+  }),
+  limits: { fileSize: MAX_PDF_BYTES, files: 1, fields: 0, parts: 1 },
 }).single("file");
 
 function parseSessionId(value) {
@@ -75,68 +83,83 @@ router.get("/sessions/:id/materials", requireAuth, async (req, res) => {
       where: { sessionId: access.session.id },
       orderBy: { createdAt: "asc" },
     });
-    res.json({ materials: materials.map(materialResponse) });
+    res.json({ materials: materials.map(materialResponse), maxPdfBytes: MAX_PDF_BYTES });
   } catch (error) {
     logger.error({ err: error }, "GET classroom materials failed");
     res.status(500).json({ error: "Failed to load classroom materials" });
   }
 });
 
-router.post("/sessions/:id/materials", requireAuth, requireUploadsEnabled, async (req, res) => {
+router.post("/sessions/:id/materials", requireAuth, async (req, res) => {
+  let tempDir;
+  let storedFilename;
+  let sessionId;
+  let acquired = false;
   try {
     const access = await getAccessibleSession(req, res);
     if (!access) return;
     if (!access.isTeacher || !["scheduled", "completed"].includes(access.session.status)) {
       return res.status(403).json({ error: "Only the teacher can upload to an open classroom" });
     }
-
-    upload(req, res, async (uploadError) => {
-      if (uploadError) {
-        const tooLarge = uploadError.code === "LIMIT_FILE_SIZE";
-        return res.status(tooLarge ? 413 : 400).json({
-          error: tooLarge ? "PDF must be 25 MB or smaller" : "Invalid PDF upload",
-        });
-      }
-      const file = req.file;
-      const isPdf = file?.buffer?.subarray(0, 5).toString("ascii") === "%PDF-" &&
-        file.buffer.subarray(-1024).includes(Buffer.from("%%EOF"));
-      if (!file || !isPdf || !/\.pdf$/i.test(file.originalname || "")) {
-        return res.status(400).json({ error: "Choose a valid PDF file" });
-      }
-
-      let filePath;
-      try {
-        await fs.mkdir(materialRoot, { recursive: true, mode: 0o700 });
-        await scanUploadBuffer(file.buffer, ".pdf");
-        const id = crypto.randomUUID();
-        const filename = `${id}.pdf`;
-        const title = path.basename(file.originalname.replace(/\\/g, "/"))
-          .replace(/[\x00-\x1f\x7f]/g, "")
-          .slice(0, 180) || "Uploaded PDF.pdf";
-        filePath = path.join(materialRoot, filename);
-        await fs.writeFile(filePath, file.buffer, { flag: "wx", mode: 0o600 });
-        const material = await prisma.classroomMaterial.create({
-          data: {
-            id,
-            sessionId: access.session.id,
-            uploadedBy: Number(req.viewUserId),
-            title,
-            filename,
-            size: file.size,
-          },
-        });
-        return res.status(201).json({ material: materialResponse(material) });
-      } catch (error) {
-        if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
-        logger.error({ err: error }, "POST classroom material failed");
-        return res.status(error.statusCode || 500).json({
-          error: error.statusCode ? error.message : "Failed to upload PDF",
-        });
-      }
+    if (!CLASSROOM_UPLOADS_ENABLED) {
+      return res.status(503).json({ error: UPLOADS_DISABLED_MESSAGE, code: "UPLOADS_DISABLED" });
+    }
+    if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+      res.set("Retry-After", "5");
+      return res.status(429).json({ error: "Uploads are busy. Please try again in a few seconds." });
+    }
+    activeUploads += 1;
+    acquired = true;
+    sessionId = access.session.id;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "speexify-pdf-"));
+    req.materialTempDir = tempDir;
+    await promisify(upload)(req, res);
+    const file = req.file;
+    if (!file || !/\.pdf$/i.test(file.originalname || "") || file.size < 10) {
+      return res.status(400).json({ error: "Choose a valid PDF file" });
+    }
+    // Inspect only the header/trailer; keep the 25 MB file out of the JS heap.
+    const handle = await fs.open(file.path, "r");
+    let valid;
+    try {
+      const header = Buffer.alloc(5);
+      const trailer = Buffer.alloc(Math.min(file.size, 1024));
+      await handle.read(header, 0, header.length, 0);
+      await handle.read(trailer, 0, trailer.length, file.size - trailer.length);
+      valid = header.toString("ascii") === "%PDF-" && trailer.includes(Buffer.from("%%EOF"));
+    } finally { await handle.close(); }
+    if (!valid) return res.status(400).json({ error: "Choose a valid PDF file" });
+    if (!(classroomCloudinaryConfigured && CLASSROOM_CLOUDINARY_MALWARE_SCAN)) {
+      await scanUploadFile(file.path);
+    }
+    const id = crypto.randomUUID();
+    const title = path.basename(file.originalname.replace(/\\/g, "/"))
+      .replace(/[\x00-\x1f\x7f]/g, "").slice(0, 180) || "Uploaded PDF.pdf";
+    storedFilename = await storeMaterial(sessionId, `${id}.pdf`, file.path, file.size);
+    const material = await prisma.classroomMaterial.create({
+      data: { id, sessionId, uploadedBy: Number(req.viewUserId), title,
+        filename: storedFilename, size: file.size },
     });
+    storedFilename = null; // Database now owns the object.
+    return res.status(201).json({ material: materialResponse(material) });
   } catch (error) {
-    logger.error({ err: error }, "POST classroom material authorization failed");
-    res.status(500).json({ error: "Failed to upload PDF" });
+    if (storedFilename) {
+      await deleteMaterial(sessionId, storedFilename).catch((cleanupError) =>
+        logger.error({ err: cleanupError }, "Classroom PDF rollback failed"));
+    }
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === "LIMIT_FILE_SIZE";
+      return res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? `PDF must be ${MAX_PDF_BYTES / (1024 * 1024)} MB or smaller` : "Invalid PDF upload",
+      });
+    }
+    logger.error({ err: error }, "POST classroom material failed");
+    if (!res.destroyed) res.status(error.statusCode || 500).json({
+      error: error.statusCode ? error.message : "Failed to upload PDF",
+    });
+  } finally {
+    if (acquired) activeUploads -= 1;
+    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
@@ -148,20 +171,10 @@ router.get("/sessions/:id/materials/:materialId/file", requireAuth, async (req, 
       where: { id: req.params.materialId, sessionId: access.session.id },
     });
     if (!material) return res.status(404).json({ error: "PDF not found" });
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": "inline",
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    return res.sendFile(path.join(materialRoot, material.filename), (error) => {
-      if (error && !res.headersSent) {
-        res.status(error.statusCode || 404).json({ error: "PDF not found" });
-      }
-    });
+    return await sendMaterial(req, res, material);
   } catch (error) {
     logger.error({ err: error }, "GET classroom material file failed");
-    res.status(500).json({ error: "Failed to load PDF" });
+    if (!res.headersSent && !res.destroyed) res.status(500).json({ error: "Failed to load PDF" });
   }
 });
 
