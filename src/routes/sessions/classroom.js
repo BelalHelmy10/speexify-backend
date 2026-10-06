@@ -89,11 +89,23 @@ function sanitizePdfScrollPatch(scroll) {
     if (!scroll || typeof scroll !== "object" || Array.isArray(scroll)) return null;
     const scrollNorm = clampNumber(scroll.scrollNorm, 0, 1);
     if (scrollNorm === null) return null;
+    const region = scroll.view?.region;
+    let view;
+    if (region && ["x", "y", "width", "height"].every(key => Number.isFinite(region[key])) &&
+        region.width > 0 && region.height > 0) {
+        const width = Math.min(1, Math.max(0.001, region.width));
+        const height = Math.min(1, Math.max(0.001, region.height));
+        view = { page: Math.max(1, Math.floor(Number(scroll.page) || 1)),
+            manual: scroll.view.manual === true,
+            region: {x: Math.min(1-width, Math.max(0, region.x)),
+                y: Math.min(1-height, Math.max(0, region.y)), width, height} };
+    }
 
     return {
         resourceId: safeString(scroll.resourceId, 300) ?? null,
         page: Math.max(1, Math.floor(Number(scroll.page) || 1)),
         scrollNorm,
+        ...(view ? {view} : {}),
         updatedAt: new Date().toISOString(),
     };
 }
