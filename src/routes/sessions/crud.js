@@ -2,6 +2,7 @@
 // Session list and get single session endpoints
 
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
+import { isSessionReviewAvailable } from "../../services/sessionReviewService.js";
 
 const router = Router();
 const SESSIONS_DEFAULT_LIMIT = 100;
@@ -126,6 +127,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
             req.query.classroomJoin === "1" &&
             isClassroomLocked(session) &&
             isLearner &&
+            !isSessionReviewAvailable(session) &&
             !(isTeacher || isAdmin)
         ) {
             return res.status(423).json({
@@ -165,6 +167,7 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
             isLearner,
             isTeacher,
             isAdmin,
+            reviewAvailable: isSessionReviewAvailable(session),
             teacherFeedback,
             participantCount: activeParticipants.length,
             // For GROUP sessions, list all learners

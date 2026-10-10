@@ -3,6 +3,10 @@
 
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
 import { consumeRateLimit } from "../../services/rateLimitService.js";
+import {
+    parseSessionResources,
+    sanitizeReviewResourceSnapshot,
+} from "../../services/sessionReviewService.js";
 
 const router = Router();
 
@@ -957,8 +961,9 @@ router.post("/sessions/:id/resources-used", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "Invalid session id" });
         }
 
-        const { resourceId, resourceTitle } = req.body || {};
-        if (!resourceId) {
+        const { resourceId, resourceTitle, resourceSnapshot } = req.body || {};
+        const normalizedResourceId = safeString(resourceId, 300);
+        if (!normalizedResourceId) {
             return res.status(400).json({ error: "resourceId is required" });
         }
 
@@ -992,9 +997,7 @@ router.post("/sessions/:id/resources-used", requireAuth, async (req, res) => {
         let resourcesUsedAt = {};
 
         try {
-            resourcesUsed = Array.isArray(session.resourcesUsed)
-                ? session.resourcesUsed
-                : JSON.parse(session.resourcesUsed || "[]");
+            resourcesUsed = parseSessionResources(session.resourcesUsed);
         } catch {
             resourcesUsed = [];
         }
@@ -1011,18 +1014,34 @@ router.post("/sessions/:id/resources-used", requireAuth, async (req, res) => {
 
         // Add resource if not already tracked
         const resourceEntry = {
-            id: String(resourceId),
-            title: resourceTitle || null,
+            id: normalizedResourceId,
+            title: safeString(resourceTitle, 300) || null,
             firstOpenedAt: new Date().toISOString(),
+            snapshot: sanitizeReviewResourceSnapshot(resourceSnapshot),
         };
 
         const existingIndex = resourcesUsed.findIndex(
-            (r) => r.id === String(resourceId) || r === String(resourceId)
+            (r) => r?.id === normalizedResourceId || r === normalizedResourceId
         );
 
         if (existingIndex === -1) {
             resourcesUsed.push(resourceEntry);
-            resourcesUsedAt[String(resourceId)] = new Date().toISOString();
+            resourcesUsedAt[normalizedResourceId] = new Date().toISOString();
+        } else if (
+            resourceEntry.snapshot &&
+            !resourcesUsed[existingIndex]?.snapshot
+        ) {
+            const existing = resourcesUsed[existingIndex];
+            resourcesUsed[existingIndex] = {
+                ...(existing && typeof existing === "object" ? existing : {}),
+                id: normalizedResourceId,
+                title: existing?.title || resourceEntry.title,
+                firstOpenedAt:
+                    existing?.firstOpenedAt ||
+                    resourcesUsedAt[normalizedResourceId] ||
+                    resourceEntry.firstOpenedAt,
+                snapshot: resourceEntry.snapshot,
+            };
         }
 
         const updated = await prisma.session.update({

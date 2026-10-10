@@ -12,6 +12,7 @@ import attendanceRouter from "./attendance.js";
 import lifecycleRouter from "./lifecycle.js";
 import learnerRouter from "./learner.js";
 import adminRouter from "./admin.js";
+import reviewRouter from "./review.js";
 import classroomRouter from "./classroom.js";
 import materialsRouter from "./materials.js";
 import bulkCreateRouter from "./bulk-create.js";
@@ -28,6 +29,7 @@ router.use(attendanceRouter);
 router.use(lifecycleRouter);
 router.use(learnerRouter);
 router.use(adminRouter);
+router.use(reviewRouter);
 router.use(classroomRouter);
 router.use(materialsRouter);
 router.use(crudRouter); // CRUD routes last since they have catch-all patterns like /sessions/:id
