@@ -31,6 +31,52 @@ function frontendBaseUrl() {
     return String(process.env.FRONTEND_URL || "https://speexify.com").replace(/\/$/, "");
 }
 
+/**
+ * Consume a discount only after its order has produced a UserPackage. The
+ * optimistic usedCount condition makes concurrent webhook deliveries safe,
+ * while the caller's UserPackage uniqueness keeps retries idempotent.
+ */
+export async function consumeDiscountAfterSuccessfulPurchase(tx, discountCodeId) {
+    if (!discountCodeId) return { consumed: false, reason: "no_discount" };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const discount = await tx.discountCode.findUnique({
+            where: { id: Number(discountCodeId) },
+            select: { id: true, code: true, active: true, maxUses: true, usedCount: true },
+        });
+        if (!discount) return { consumed: false, reason: "missing_discount" };
+
+        const maxUses = discount.maxUses == null ? null : Number(discount.maxUses);
+        const usedCount = Number(discount.usedCount || 0);
+        if (maxUses != null && usedCount >= maxUses) {
+            return {
+                consumed: false,
+                reason: "already_exhausted",
+                discountCode: discount.code,
+            };
+        }
+
+        const reachesLimit = maxUses != null && usedCount + 1 >= maxUses;
+        const updated = await tx.discountCode.updateMany({
+            where: { id: discount.id, usedCount },
+            data: {
+                usedCount: { increment: 1 },
+                ...(reachesLimit ? { active: false } : {}),
+            },
+        });
+        if (updated.count === 1) {
+            return {
+                consumed: true,
+                discountCode: discount.code,
+                usedCount: usedCount + 1,
+                maxUses,
+            };
+        }
+    }
+
+    return { consumed: false, reason: "concurrent_update" };
+}
+
 async function sendPaidOrderNotifications(result) {
     const order = result?.order;
     if (!order?.id || !order.userId) return;
@@ -257,7 +303,12 @@ export async function markOrderPaid(orderId, paymobTxnId) {
                     },
                 });
 
-                return { order, userPackage, alreadyGranted: false };
+                const discountUsage = await consumeDiscountAfterSuccessfulPurchase(
+                    tx,
+                    order.discountCodeId
+                );
+
+                return { order, userPackage, alreadyGranted: false, discountUsage };
             } catch (error) {
                 if (error?.code === "P2002") {
                     const existingUserPackage = await tx.userPackage.findUnique({
@@ -283,6 +334,20 @@ export async function markOrderPaid(orderId, paymobTxnId) {
             { orderId, paymobTxnId, alreadyGranted: result.alreadyGranted },
             "Order marked as paid"
         );
+        if (["already_exhausted", "concurrent_update"].includes(result.discountUsage?.reason)) {
+            await notifyAdmins({
+                type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+                title: "Paid order used an exhausted discount",
+                body: `Order ${orderId} was fulfilled, but its discount had already reached the redemption limit. Review the payment before issuing any adjustment.`,
+                severity: "critical",
+                adminPath: `/admin?section=payments&orderId=${encodeURIComponent(orderId)}`,
+                data: { orderId, discountUsage: result.discountUsage },
+                dedupeKey: `discount-redemption-conflict:${orderId}`,
+                dedupeWindowMs: null,
+                email: "critical",
+                mandatory: true,
+            });
+        }
         await sendPaidOrderNotifications(result);
         return result;
     } catch (error) {
