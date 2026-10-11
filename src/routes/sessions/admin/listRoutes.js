@@ -46,6 +46,7 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       to = "",
       needsTeacher = "",
       needsFeedback = "",
+      sessionId = "",
       sort = "",
     } = req.query;
     const take = parseBoundedInt(req.query.limit, {
@@ -61,6 +62,10 @@ router.get("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
 
     const now = new Date();
     const where = {};
+
+    if (sessionId && Number.isSafeInteger(Number(sessionId)) && Number(sessionId) > 0) {
+      where.id = Number(sessionId);
+    }
 
     if (userId && Number.isFinite(Number(userId))) {
       const uid = Number(userId);

@@ -7,6 +7,10 @@ import {
   recordingsStorageReady,
   validRecordingKey,
 } from "../services/classRecordingStorage.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -26,6 +30,16 @@ router.post("/recordings", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
   if (!recordingsStorageReady()) {
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.RECORDING_FAILED,
+      title: "Recording storage is unavailable",
+      body: "Jibri attempted to register a class recording, but recording storage is not configured.",
+      severity: "critical",
+      adminPath: "/admin/recordings",
+      dedupeKey: "recording-storage-unavailable",
+      email: "critical",
+      mandatory: true,
+    });
     return res.status(503).json({ error: "Recording storage is not configured" });
   }
   const sessionId = Number(req.body?.sessionId);
@@ -54,9 +68,30 @@ router.post("/recordings", async (req, res) => {
       update: {},
       select: { id: true },
     });
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.RECORDING_READY,
+      title: "Class recording ready",
+      body: `The recording for “${session.title || `Session #${sessionId}`}” is ready.`,
+      severity: "success",
+      adminPath: `/admin/recordings?sessionId=${sessionId}`,
+      data: { recordingId: recording.id, sessionId },
+      dedupeKey: `recording-ready:${recording.id}`,
+      dedupeWindowMs: null,
+    });
     return res.status(201).json({ id: recording.id });
   } catch (err) {
     logger.error({ err, sessionId }, "Jibri recording registration failed");
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.RECORDING_FAILED,
+      title: "Class recording failed",
+      body: `The recording for session #${sessionId || "unknown"} could not be verified or registered.`,
+      severity: "critical",
+      adminPath: `/admin/recordings?sessionId=${sessionId || ""}`,
+      data: { sessionId: sessionId || null },
+      dedupeKey: `recording-failed:${sessionId || "unknown"}:${String(err?.message || "error").slice(0, 80)}`,
+      email: "critical",
+      mandatory: true,
+    });
     return res.status(502).json({ error: "Could not verify or register recording" });
   }
 });

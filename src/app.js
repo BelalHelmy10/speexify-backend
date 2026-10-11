@@ -76,6 +76,10 @@ import {
 import { requireUploadsEnabled } from "./lib/uploadAvailability.js";
 import { isValidPhone, normalizePhone } from "./lib/phone.js";
 import { MARKETING_PHONE_CONSENT_VERSION } from "./lib/marketingConsent.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "./services/adminAlertsService.js";
 
 const app = express();
 
@@ -316,6 +320,9 @@ const DEFAULT_NOTIFICATION_PREFERENCES = Object.freeze({
   weeklyProgressDigest: true,
   productUpdates: false,
   reminderLeadTime: "24h",
+  adminInAppOperationalAlerts: true,
+  adminEmailCriticalAlerts: true,
+  adminDailyDigest: true,
 });
 
 function isValidTimeZone(value) {
@@ -439,6 +446,9 @@ const NotificationPreferencesBodySchema = z
     weeklyProgressDigest: z.boolean().optional(),
     productUpdates: z.boolean().optional(),
     reminderLeadTime: z.enum(["1h", "6h", "24h", "none"]).optional(),
+    adminInAppOperationalAlerts: z.boolean().optional(),
+    adminEmailCriticalAlerts: z.boolean().optional(),
+    adminDailyDigest: z.boolean().optional(),
   })
   .strict()
   .refine((payload) => Object.keys(payload).length > 0, {
@@ -554,6 +564,16 @@ app.post("/api/contact", contactIpLimiter, validateRequest({ body: ContactBodySc
   `;
 
   try {
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.LEAD,
+      title: "New contact-form message",
+      body: `${name} submitted a ${topic || "general"} enquiry${company ? ` for ${company}` : ""}.`,
+      severity: "info",
+      adminPath: "/admin",
+      data: { contactEmail: email, topic: topic || null },
+      dedupeKey: `contact-form:${email}:${Date.now()}`,
+      email: "none",
+    });
     await enqueueEmail("hello@speexify.com", subject || "[Contact] New message", html, {
       eventType: "contact_form",
     });

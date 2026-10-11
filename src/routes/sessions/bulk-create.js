@@ -24,6 +24,10 @@ import {
   resolveTimeZone,
   zonedDateTimeToUtc,
 } from "../../services/timezone.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../services/adminAlertsService.js";
 
 const bulkCreateRouter = Router();
 const SESSION_TYPES = new Set(["ONE_ON_ONE", "GROUP"]);
@@ -463,6 +467,25 @@ bulkCreateRouter.post(
         creditOverrideReason: creditOverride ? overrideReason : null,
       });
 
+      if (creditOverride) {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+          title: "Session series created without credits",
+          body: `${createdSessions.length} session(s) for ${finalLearnerIds.length} learner(s) used an admin credit override: ${overrideReason}.`,
+          severity: "warning",
+          adminPath: `/admin?section=sessions&sessionId=${createdSessions[0]?.id || ""}`,
+          data: {
+            sessionIds: createdSessions.map((session) => session.id),
+            learnerIds: finalLearnerIds,
+            reason: overrideReason,
+            actorId: req.user.id,
+          },
+          dedupeKey: `credit-override-series:${createdSessions[0]?.id || idempotency?.recordId}`,
+          dedupeWindowMs: null,
+          excludeAdminIds: [req.user.id],
+        });
+      }
+
       for (const session of createdSessions) {
         try {
           await sendBookingNotifications({
@@ -487,6 +510,21 @@ bulkCreateRouter.post(
           remaining: await getRemainingCredits(learner.id, prisma, finalType),
         }))
       );
+      const depletedLearnerIds = creditsAfterByLearner
+        .filter((learner) => learner.remaining === 0)
+        .map((learner) => learner.learnerId);
+      if (!creditOverride && depletedLearnerIds.length) {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+          title: "Learner credits reached zero",
+          body: `${depletedLearnerIds.length} learner account(s) used their final credits in the newly created session series.`,
+          severity: "warning",
+          adminPath: `/admin?section=sessions&sessionId=${createdSessions[0]?.id || ""}`,
+          data: { sessionIds: createdSessions.map((session) => session.id), learnerIds: depletedLearnerIds },
+          dedupeKey: `credits-zero-series:${createdSessions[0]?.id || idempotency?.recordId}`,
+          dedupeWindowMs: null,
+        });
+      }
       const creditsConsumed = creditOverride
         ? 0
         : finalLearnerIds.length * createdSessions.length;

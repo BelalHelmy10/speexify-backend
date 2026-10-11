@@ -1,5 +1,8 @@
 import { cancelBooking } from "../../services/cancelBooking.js";
-import { sendSessionUpdatedNotifications } from "../../services/notificationsService.js";
+import {
+    sendCompletionNotifications,
+    sendSessionUpdatedNotifications,
+} from "../../services/notificationsService.js";
 // src/routes/sessions/lifecycle.js
 // Session lifecycle: complete, cancel, reschedule
 
@@ -58,10 +61,14 @@ router.post(
             where: { id },
             select: {
                 id: true,
+                title: true,
                 type: true,
                 status: true,
                 userId: true,
                 teacherId: true,
+                startAt: true,
+                endAt: true,
+                joinUrl: true,
                 participants: { select: { userId: true, status: true } },
             },
         });
@@ -103,6 +110,19 @@ router.post(
 
         // Credits are consumed on booking, not on completion
         // No credit operations needed here
+
+        try {
+            const learnerIds = session.participants?.length
+                ? session.participants.filter((participant) => participant.status !== "canceled").map((participant) => participant.userId)
+                : session.userId ? [session.userId] : [];
+            await sendCompletionNotifications({
+                session: { ...session, status: "completed" },
+                learnerIds,
+                teacherId: session.teacherId,
+            });
+        } catch (notificationError) {
+            logger.error({ err: notificationError, sessionId: id }, "completion notifications failed");
+        }
 
         res.json({ ok: true });
     } catch (e) {
@@ -415,12 +435,18 @@ router.post(
             endAt: newEnd,
         });
 
-        if (session.type === "TRAINING") {
-            try {
-                await sendSessionUpdatedNotifications({ session: updated, previousStartAt: session.startAt, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId });
-            } catch (notificationError) {
-                logger.error({ err: notificationError, sessionId: id }, "training reschedule notifications failed");
-            }
+        try {
+            const learnerIds = session.participants?.length
+                ? session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId)
+                : session.userId ? [session.userId] : [];
+            await sendSessionUpdatedNotifications({
+                session: updated,
+                previousStartAt: session.startAt,
+                learnerIds,
+                teacherId: session.teacherId,
+            });
+        } catch (notificationError) {
+            logger.error({ err: notificationError, sessionId: id }, "reschedule notifications failed");
         }
 
         res.json({ ok: true, session: updated });

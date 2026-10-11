@@ -12,7 +12,11 @@ import {
   audit,
 } from "./shared.js";
 import { isTerminalSessionStatus } from "../../../services/sessionLifecycleService.js";
-import { sendSessionUpdatedNotifications, sendCancellationNotifications, sendBookingNotifications } from "../../../services/notificationsService.js";
+import {
+  sendSessionUpdatedNotifications,
+  sendCancellationNotifications,
+  sendTeacherAssignmentNotifications,
+} from "../../../services/notificationsService.js";
 
 const router = Router();
 
@@ -173,19 +177,36 @@ router.patch("/admin/sessions/:id", requireAuth, requireAdmin, async (req, res) 
       creditResults,
     });
 
-    if (existing.type === "TRAINING") {
-      try {
-        if (nextStatus === "canceled" && prevStatus !== "canceled") {
-          await sendCancellationNotifications({ session: updated, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: existing.teacherId, canceledBy: req.user.id });
-        } else if (patch.teacherId !== undefined && patch.teacherId !== existing.teacherId) {
-          await sendCancellationNotifications({ session: { ...existing, trainingAdminId: null }, learnerIds: [], teacherId: existing.teacherId, canceledBy: req.user.id });
-          await sendBookingNotifications({ session: updated, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: updated.teacherId, bookedBy: updated.trainingAdminId });
-        } else if (changesSchedule) {
-          await sendSessionUpdatedNotifications({ session: updated, previousStartAt: existing.startAt, learnerIds: updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: updated.teacherId });
-        }
-      } catch (notificationError) {
-        logger.error({ err: notificationError, sessionId: id }, "training update notifications failed");
+    try {
+      const learnerIds = updated.participants?.length
+        ? updated.participants.filter((p) => p.status !== "canceled").map((p) => p.userId)
+        : updated.userId ? [updated.userId] : [];
+      if (nextStatus === "canceled" && prevStatus !== "canceled") {
+        await sendCancellationNotifications({
+          session: updated,
+          learnerIds,
+          teacherId: existing.teacherId,
+          canceledBy: req.user.id,
+          refunded: creditResults.some((result) => result.refunded),
+        });
+      } else if (patch.teacherId !== undefined && patch.teacherId !== existing.teacherId) {
+        await sendTeacherAssignmentNotifications({
+          session: updated,
+          learnerIds,
+          previousTeacherId: existing.teacherId,
+          teacherId: updated.teacherId,
+          changedBy: req.user.id,
+        });
+      } else if (changesSchedule) {
+        await sendSessionUpdatedNotifications({
+          session: updated,
+          previousStartAt: existing.startAt,
+          learnerIds,
+          teacherId: updated.teacherId,
+        });
       }
+    } catch (notificationError) {
+      logger.error({ err: notificationError, sessionId: id }, "session update notifications failed");
     }
 
     const activeParticipants = (updated.participants || []).filter(

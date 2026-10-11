@@ -19,6 +19,10 @@ import {
   completeIdempotentRequest,
   abandonIdempotentRequest,
 } from "../../../services/idempotencyService.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -434,6 +438,36 @@ router.post("/admin/sessions", requireAuth, requireAdmin, async (req, res) => {
       creditOverrideAllowed: !isTraining && allowCreditOverride,
       creditOverrideReason: !isTraining && allowCreditOverride ? overrideReason : null,
     });
+
+    if (!isTraining && allowCreditOverride) {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+        title: "Session created without available credits",
+        body: `Session #${session.id} used an admin credit override: ${overrideReason}.`,
+        severity: "warning",
+        adminPath: `/admin?section=sessions&sessionId=${session.id}`,
+        data: { sessionId: session.id, learnerIds: finalLearnerIds, reason: overrideReason, actorId: req.user.id },
+        dedupeKey: `credit-override:${session.id}`,
+        dedupeWindowMs: null,
+        excludeAdminIds: [req.user.id],
+      });
+    }
+
+    const depletedLearnerIds = creditResults
+      .filter((result) => result.consumed && result.remaining === 0)
+      .map((result) => result.learnerId);
+    if (depletedLearnerIds.length) {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+        title: "Learner credits reached zero",
+        body: `${depletedLearnerIds.length} learner account(s) used their final credit while booking session #${session.id}.`,
+        severity: "warning",
+        adminPath: `/admin?section=sessions&sessionId=${session.id}`,
+        data: { sessionId: session.id, learnerIds: depletedLearnerIds },
+        dedupeKey: `credits-zero:${session.id}:${depletedLearnerIds.sort((a, b) => a - b).join("-")}`,
+        dedupeWindowMs: null,
+      });
+    }
 
     try {
       await sendBookingNotifications({

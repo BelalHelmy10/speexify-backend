@@ -18,6 +18,10 @@ import {
   broadcastNewTicket,
 } from "../../services/supportWebSocket.js";
 import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../services/adminAlertsService.js";
+import {
   SUPPORT_UPLOAD_DIR,
   SUPPORT_TICKETS_DEFAULT_LIMIT,
   SUPPORT_TICKETS_MAX_LIMIT,
@@ -113,6 +117,18 @@ router.post("/tickets", requireAuth, async (req, res) => {
     });
 
     broadcastNewTicket(ticket);
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.SUPPORT_TICKET,
+      title: `${priority === "URGENT" ? "Urgent " : ""}support ticket opened`,
+      body: `${ticket.user?.name || ticket.user?.email || "A learner"}: ${ticket.subject || ticket.category}.`,
+      severity: priority === "URGENT" ? "critical" : priority === "HIGH" ? "warning" : "info",
+      adminPath: `/admin/support?ticket=${ticket.id}`,
+      data: { ticketId: ticket.id, userId, priority, category },
+      dedupeKey: `support-ticket:${ticket.id}`,
+      dedupeWindowMs: null,
+      email: ["URGENT", "HIGH"].includes(priority) ? "critical" : "none",
+      mandatory: priority === "URGENT",
+    });
     logger.info({ ticketId: ticket.id, userId }, "Support ticket created");
     return res.json({ ok: true, ticket });
   } catch (e) {
@@ -323,6 +339,20 @@ router.post("/tickets/:id/messages", requireAuth, async (req, res) => {
     });
 
     broadcastNewMessage(ticketId, message, updatedTicket);
+    if (!isAdmin) {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.SUPPORT_REPLY,
+        title: ticket.status === "RESOLVED" ? "Resolved support ticket reopened" : "New customer support reply",
+        body: `${updatedTicket.user?.name || updatedTicket.user?.email || "A learner"} replied to ticket #${ticketId}.`,
+        severity: ticket.status === "RESOLVED" ? "warning" : "info",
+        adminPath: `/admin/support?ticket=${ticketId}`,
+        data: { ticketId, messageId: message.id, userId: updatedTicket.userId },
+        dedupeKey: `support-reply:${message.id}`,
+        dedupeWindowMs: null,
+        email: ticket.status === "RESOLVED" ? "critical" : "none",
+        targetAdminIds: updatedTicket.assignedTo?.id ? [updatedTicket.assignedTo.id] : null,
+      });
+    }
     logger.info({ ticketId, messageId: message.id }, "Message added");
     return res.json({ ok: true, message });
   } catch (e) {
@@ -384,10 +414,24 @@ router.post(
         where: { id: ticketId },
         include: {
           user: { select: { id: true, name: true, email: true } },
+          assignedTo: { select: { id: true, name: true, email: true } },
         },
       });
 
       broadcastNewMessage(ticketId, message, updatedTicket);
+      if (!isAdmin) {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.SUPPORT_REPLY,
+          title: "Customer added a support attachment",
+          body: `${updatedTicket?.user?.name || updatedTicket?.user?.email || "A learner"} uploaded ${req.file.originalname} to ticket #${ticketId}.`,
+          severity: "info",
+          adminPath: `/admin/support?ticket=${ticketId}`,
+          data: { ticketId, messageId: message.id, userId: updatedTicket?.userId },
+          dedupeKey: `support-reply:${message.id}`,
+          dedupeWindowMs: null,
+          targetAdminIds: updatedTicket?.assignedTo?.id ? [updatedTicket.assignedTo.id] : null,
+        });
+      }
       logger.info(
         { ticketId, fileName: req.file.originalname },
         "Attachment uploaded"
@@ -455,6 +499,20 @@ router.post("/tickets/:id/satisfaction", requireAuth, async (req, res) => {
         satisfactionComment: parsed.data.comment || null,
       },
     });
+
+    if (parsed.data.rating <= 2) {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.SUPPORT_TICKET,
+        title: "Low support satisfaction rating",
+        body: `Ticket #${ticketId} received ${parsed.data.rating}/5${parsed.data.comment ? `: ${parsed.data.comment}` : "."}`,
+        severity: "warning",
+        adminPath: `/admin/support?ticket=${ticketId}`,
+        data: { ticketId, userId: viewerId, rating: parsed.data.rating },
+        dedupeKey: `support-rating:${ticketId}`,
+        dedupeWindowMs: null,
+        email: "critical",
+      });
+    }
 
     return res.json({ ok: true, ticket });
   } catch (e) {

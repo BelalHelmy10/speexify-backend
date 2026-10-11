@@ -5,23 +5,51 @@ import {
   processTeacherEarningSnapshotJob,
 } from "./teacherEarningsService.js";
 import { logger } from "../lib/logger.js";
+import { sendCompletionNotifications } from "./notificationsService.js";
 
 async function completeSessionAndQueueTeacherPayroll(sessionId) {
   const completion = await completeSessionWithTeacherEarningOutbox(sessionId);
-  if (!completion.job) return completion;
+  if (completion.job) {
+    try {
+      const payroll = await processTeacherEarningSnapshotJob(completion.job.id);
+      if (!payroll.ok) {
+        logger.warn(
+          { jobId: completion.job.id, sessionId },
+          "teacher payroll snapshot queued for retry"
+        );
+      }
+    } catch (error) {
+      logger.error(
+        { err: error, jobId: completion.job.id, sessionId },
+        "teacher payroll snapshot processor unavailable"
+      );
+    }
+  }
 
   try {
-    const payroll = await processTeacherEarningSnapshotJob(completion.job.id);
-    if (!payroll.ok) {
-      logger.warn(
-        { jobId: completion.job.id, sessionId },
-        "teacher payroll snapshot queued for retry"
-      );
+    const session = await prisma.session.findUnique({
+      where: { id: Number(sessionId) },
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        startAt: true,
+        endAt: true,
+        teacherId: true,
+        userId: true,
+        participants: { select: { userId: true, status: true } },
+      },
+    });
+    if (session) {
+      const learnerIds = session.participants?.length
+        ? session.participants.filter((participant) => participant.status !== "canceled").map((participant) => participant.userId)
+        : session.userId ? [session.userId] : [];
+      await sendCompletionNotifications({ session, learnerIds, teacherId: session.teacherId });
     }
   } catch (error) {
     logger.error(
-      { err: error, jobId: completion.job.id, sessionId },
-      "teacher payroll snapshot processor unavailable"
+      { err: error, sessionId },
+      "lazy completion notifications failed"
     );
   }
 

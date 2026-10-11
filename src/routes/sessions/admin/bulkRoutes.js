@@ -10,7 +10,14 @@ import {
   logger,
   audit,
 } from "./shared.js";
-import { sendCancellationNotifications } from "../../../services/notificationsService.js";
+import {
+  sendCancellationNotifications,
+  sendTeacherAssignmentNotifications,
+} from "../../../services/notificationsService.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -68,9 +75,18 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
         if (action === "delete") {
           await prisma.session.delete({ where: { id: session.id } });
           await audit(req.user.id, "session_delete", "Session", session.id, { bulk: true });
-          if (session.type === "TRAINING") {
-            try { await sendCancellationNotifications({ session, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId, canceledBy: req.user.id }); }
-            catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training deletion notifications failed"); }
+          try {
+            const learnerIds = session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId);
+            if (!learnerIds.length && session.userId) learnerIds.push(session.userId);
+            await sendCancellationNotifications({
+              session,
+              learnerIds,
+              teacherId: session.teacherId,
+              canceledBy: req.user.id,
+              refunded: false,
+            });
+          } catch (notificationError) {
+            logger.error({ err: notificationError, sessionId: session.id }, "bulk deletion notifications failed");
           }
           affected++;
         } else if (action === "cancel") {
@@ -78,10 +94,35 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
             const cancellation = await cancelBooking(session.id);
             refundedCredits += cancellation.refundResults.filter(r => r.refunded).length;
 
+            const refundFailures = cancellation.refundResults.filter((result) => !result.refunded);
+            if (refundFailures.length) {
+              await notifyAdmins({
+                type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+                title: "Some canceled-session credits were not refunded",
+                body: `Session #${session.id} canceled, but ${refundFailures.length} credit refund(s) need review.`,
+                severity: "critical",
+                adminPath: `/admin?section=sessions&sessionId=${session.id}`,
+                data: { sessionId: session.id, refundFailures },
+                dedupeKey: `credit-refund-failed:${session.id}`,
+                dedupeWindowMs: null,
+                email: "critical",
+                mandatory: true,
+              });
+            }
+
             await audit(req.user.id, "session_cancel", "Session", session.id, { bulk: true });
-            if (session.type === "TRAINING") {
-              try { await sendCancellationNotifications({ session, learnerIds: session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId), teacherId: session.teacherId, canceledBy: req.user.id }); }
-              catch (notificationError) { logger.error({ err: notificationError, sessionId: session.id }, "bulk training cancellation notifications failed"); }
+            try {
+              const learnerIds = session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId);
+              if (!learnerIds.length && session.userId) learnerIds.push(session.userId);
+              await sendCancellationNotifications({
+                session,
+                learnerIds,
+                teacherId: session.teacherId,
+                canceledBy: req.user.id,
+                refunded: cancellation.refundResults.some((result) => result.refunded),
+              });
+            } catch (notificationError) {
+              logger.error({ err: notificationError, sessionId: session.id }, "bulk cancellation notifications failed");
             }
             affected++;
           }
@@ -99,6 +140,11 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
             continue;
           }
 
+          if (Number(session.teacherId) === Number(teacherId)) {
+            affected++;
+            continue;
+          }
+
           await prisma.session.update({
             where: { id: session.id },
             data: { teacherId: Number(teacherId) },
@@ -108,6 +154,19 @@ router.post("/admin/sessions/bulk", requireAuth, requireAdmin, async (req, res) 
             teacherId: Number(teacherId),
             bulk: true,
           });
+          try {
+            const learnerIds = session.participants.filter((p) => p.status !== "canceled").map((p) => p.userId);
+            if (!learnerIds.length && session.userId) learnerIds.push(session.userId);
+            await sendTeacherAssignmentNotifications({
+              session: { ...session, teacherId: Number(teacherId) },
+              learnerIds,
+              previousTeacherId: session.teacherId,
+              teacherId: Number(teacherId),
+              changedBy: req.user.id,
+            });
+          } catch (notificationError) {
+            logger.error({ err: notificationError, sessionId: session.id }, "bulk teacher-assignment notifications failed");
+          }
           affected++;
         }
       } catch (e) {

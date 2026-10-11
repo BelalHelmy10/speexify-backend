@@ -6,6 +6,10 @@ import { enqueueEmail } from "../services/emailService.js";
 import { requireAdmin, requireAuth } from "../middleware/auth-helpers.js";
 import { contactEmailLimiter, contactIpLimiter } from "../middleware/rateLimit.js";
 import { formatZodError } from "../middleware/validateRequest.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -194,6 +198,18 @@ router.post(
     } catch (error) {
       logger.error({ err: error, requestId: request.id }, "Free-session admin email could not be queued");
     }
+
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.LEAD,
+      title: "New free-session request",
+      body: `${request.name} requested a free session for ${goalLabel(request.goal, "en")}.`,
+      severity: "info",
+      adminPath: `/admin/free-sessions?requestId=${request.id}`,
+      data: { freeSessionRequestId: request.id, email: request.email || null },
+      dedupeKey: `free-session-request:${request.id}`,
+      dedupeWindowMs: null,
+      email: "none",
+    });
 
     return res.status(201).json({ ok: true, requestId: request.id, emailQueued });
   }

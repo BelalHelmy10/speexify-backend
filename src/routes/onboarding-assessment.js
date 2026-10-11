@@ -12,6 +12,10 @@ import {
 } from "../services/assessmentReviewService.js";
 import { validatePlacementEvidence } from "../services/placementEvidence.js";
 import { scoreObjectiveAssessment } from "../services/placementScoring.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -646,6 +650,19 @@ router.post("/me/onboarding", requireAuth, async (req, res) => {
       }
     }
 
+    if (statusResult.data === "submitted") {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.INTAKE_SUBMITTED,
+        title: "Learner onboarding submitted",
+        body: `${req.user?.name || req.user?.email || `Learner #${req.viewUserId}`} completed their onboarding form.`,
+        severity: "info",
+        adminPath: `/admin/intake?userId=${req.viewUserId}`,
+        data: { userId: req.viewUserId, onboardingFormId: created.id },
+        dedupeKey: `onboarding-submitted:${created.id}`,
+        dedupeWindowMs: null,
+      });
+    }
+
     return res.status(201).json({ ok: true, form: created });
   } catch (e) {
     logger.error({ err: e }, "POST /api/me/onboarding failed");
@@ -785,6 +802,22 @@ router.post("/me/assessment", requireAuth, async (req, res) => {
       });
       return { submission: created, idempotent: false };
     });
+    if (!result.idempotent) {
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.ASSESSMENT_SUBMITTED,
+        title: "Placement assessment needs review",
+        body: `${req.user?.name || req.user?.email || `Learner #${req.viewUserId}`} submitted an assessment awaiting coach review.`,
+        severity: "warning",
+        adminPath: `/admin/intake?userId=${req.viewUserId}&assessmentId=${result.submission.id}`,
+        data: {
+          userId: req.viewUserId,
+          assessmentId: result.submission.id,
+          score: result.submission.score,
+        },
+        dedupeKey: `assessment-submitted:${result.submission.id}`,
+        dedupeWindowMs: null,
+      });
+    }
     res.status(result.idempotent ? 200 : 201).json({ ok: true, ...result });
   } catch (e) {
     logger.error({ err: e }, "POST /api/me/assessment failed");

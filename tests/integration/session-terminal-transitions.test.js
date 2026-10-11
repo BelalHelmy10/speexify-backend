@@ -12,11 +12,14 @@ const baseSession = {
   status: "completed",
   userId: 10,
   teacherId: 20,
+  startAt: new Date("2026-09-27T10:00:00.000Z"),
+  endAt: new Date("2026-09-27T11:00:00.000Z"),
   participants: [],
 };
 
 async function callAsTeacher(method, path, session, body) {
   const originalUserFindUnique = prisma.user.findUnique;
+  const originalUserFindMany = prisma.user.findMany;
   const originalSessionFindUnique = prisma.session.findUnique;
   const originalSessionFindMany = prisma.session.findMany;
   const originalSessionUpdateMany = prisma.session.updateMany;
@@ -27,7 +30,9 @@ async function callAsTeacher(method, path, session, body) {
     role: "teacher",
     isDisabled: false,
     passwordChangedAt: null,
+    notificationPreferences: { emailSessionChanges: false },
   });
+  prisma.user.findMany = async () => [];
   prisma.session.findUnique = async () => currentSession;
   prisma.session.findMany = async () => [];
   prisma.session.updateMany = async ({ data }) => {
@@ -47,6 +52,7 @@ async function callAsTeacher(method, path, session, body) {
     return await request(app)[method](path).send(body);
   } finally {
     prisma.user.findUnique = originalUserFindUnique;
+    prisma.user.findMany = originalUserFindMany;
     prisma.session.findUnique = originalSessionFindUnique;
     prisma.session.findMany = originalSessionFindMany;
     prisma.session.updateMany = originalSessionUpdateMany;

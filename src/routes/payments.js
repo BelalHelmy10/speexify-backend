@@ -32,6 +32,10 @@ import {
   reconcileOrderFromPaymob,
   reconcileOrderFromPaymobForStatusPoll,
 } from "../services/providerPaymentReconciliation.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../services/adminAlertsService.js";
 
 const paymentDependencies = {prisma, requireAuth, createPaymentIntention, createPendingOrder,
   getOrderById, orderExists, markOrderPendingForRetry,
@@ -390,6 +394,17 @@ router.post("/webhook", async (req, res) => {
         transactionId,
         reason: "missing_order_reference",
       });
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+        title: "Payment webhook is missing its order reference",
+        body: `Paymob transaction ${transactionId || "unknown"} could not be matched to an order.`,
+        severity: "critical",
+        adminPath: "/admin?section=payments",
+        data: { transactionId, reconciliationId: reconciliation?.recordId || null },
+        dedupeKey: `payment-webhook-missing-order:${transactionId || reconciliation?.recordId || "unknown"}`,
+        email: "critical",
+        mandatory: true,
+      });
       return res.status(400).json({ error: "Missing order reference" });
     }
 
@@ -401,6 +416,17 @@ router.post("/webhook", async (req, res) => {
         orderId,
         transactionId,
         error: "order_not_found",
+      });
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+        title: "Paid transaction could not find its order",
+        body: `Order ${orderId} was not found for Paymob transaction ${transactionId || "unknown"}.`,
+        severity: "critical",
+        adminPath: `/admin?section=payments&orderId=${encodeURIComponent(orderId)}`,
+        data: { orderId, transactionId },
+        dedupeKey: `payment-order-not-found:${orderId}:${transactionId || "unknown"}`,
+        email: "critical",
+        mandatory: true,
       });
       return res.status(503).json({ error: "Order not found yet; retry later" });
     }
@@ -421,6 +447,24 @@ router.post("/webhook", async (req, res) => {
         orderId,
         transactionId,
         error: reconciliationError,
+      });
+      await notifyAdmins({
+        type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+        title: "Payment amount does not match the order",
+        body: `Order ${order.id} requires reconciliation before credits can be trusted.`,
+        severity: "critical",
+        adminPath: `/admin?section=payments&orderId=${encodeURIComponent(order.id)}`,
+        data: {
+          orderId: order.id,
+          transactionId,
+          transactionAmountCents: txn.amountCents,
+          orderAmountCents: order.amountCents,
+          transactionCurrency: txn.currency,
+          orderCurrency: order.currency,
+        },
+        dedupeKey: `payment-mismatch:${order.id}:${transactionId || "unknown"}`,
+        email: "critical",
+        mandatory: true,
       });
       return res.status(409).json({ error: "Payment reconciliation mismatch" });
     }
@@ -485,6 +529,26 @@ router.post("/webhook", async (req, res) => {
       transactionId:
         txn?.transactionId == null ? null : String(txn.transactionId),
       error: err?.message || "webhook_processing_error",
+    });
+
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+      title: "Payment processing failed",
+      body: orderId
+        ? `Order ${orderId} could not be reconciled: ${err?.message || "unknown error"}.`
+        : `A Paymob webhook could not be processed: ${err?.message || "unknown error"}.`,
+      severity: "critical",
+      adminPath: orderId
+        ? `/admin?section=payments&orderId=${encodeURIComponent(orderId)}`
+        : "/admin?section=payments",
+      data: {
+        orderId,
+        transactionId: txn?.transactionId || null,
+        reconciliationId: reconciliation?.recordId || null,
+      },
+      dedupeKey: `payment-processing-error:${reconciliation?.recordId || orderId || "unknown"}`,
+      email: "critical",
+      mandatory: true,
     });
 
     // Return non-2xx so provider retries recoverable failures.

@@ -133,6 +133,17 @@ function buildAlertCandidates(snapshot) {
     });
   }
 
+  if ((email.failed || 0) >= 3) {
+    alerts.push({
+      key: "email-delivery-failures",
+      severity: email.failed >= 10 ? "critical" : "warning",
+      title: "Transactional email retries are failing",
+      threshold: "<3 failed delivery attempts",
+      actual: String(email.failed),
+      value: email.failed,
+    });
+  }
+
   if ((email.bounced || 0) > 0 || (email.complained || 0) > 0) {
     alerts.push({
       key: "email-provider-feedback",
@@ -190,6 +201,54 @@ async function sendWebhook(alertPayload) {
   }
 }
 
+function adminDestination(key) {
+  if (String(key).startsWith("payroll-")) return "/admin?section=teacher-earnings";
+  if (String(key).startsWith("payment-")) return "/admin?section=payments";
+  return "/admin";
+}
+
+async function sendAdminNotification(candidate) {
+  if (process.env.NODE_ENV === "test") return;
+  try {
+    const { ADMIN_ALERT_TYPES, notifyAdmins } = await import(
+      "../services/adminAlertsService.js"
+    );
+    const key = String(candidate?.key || "operational-alert");
+    const type = key.startsWith("payroll-")
+      ? ADMIN_ALERT_TYPES.PAYROLL
+      : key.startsWith("payment-")
+        ? ADMIN_ALERT_TYPES.PAYMENT_ATTENTION
+        : ADMIN_ALERT_TYPES.SYSTEM;
+    const details = [
+      candidate?.actual ? `Current: ${candidate.actual}.` : null,
+      candidate?.threshold ? `Expected: ${candidate.threshold}.` : null,
+    ].filter(Boolean).join(" ");
+
+    await notifyAdmins({
+      type,
+      title: candidate?.title || key,
+      body: details || "Speexify operations needs attention.",
+      severity: candidate?.severity || "critical",
+      adminPath: adminDestination(key),
+      data: {
+        operationalAlertKey: key,
+        actual: candidate?.actual ?? null,
+        threshold: candidate?.threshold ?? null,
+        value: candidate?.value ?? null,
+        context: candidate?.context || {},
+      },
+      dedupeKey: `operational:${key}:${String(candidate?.actual || candidate?.value || "active")}`,
+      email: candidate?.severity === "critical" && !key.startsWith("email-")
+        ? "critical"
+        : "none",
+      mandatory: candidate?.severity === "critical",
+    });
+  } catch (err) {
+    // Operational alerts must never destabilize the alert evaluator itself.
+    logger.error({ err, key: candidate?.key }, "[observability] admin notification failed");
+  }
+}
+
 export async function notifyOperationalAlert({
   key,
   severity = "critical",
@@ -215,7 +274,10 @@ export async function notifyOperationalAlert({
   };
 
   logger.error(payload, "[observability] operational alert fired");
-  await sendWebhook(payload);
+  await Promise.all([
+    sendWebhook(payload),
+    sendAdminNotification(payload.alert),
+  ]);
   return true;
 }
 
@@ -237,7 +299,10 @@ async function evaluateAndAlert() {
       };
 
       logger.error(payload, "[observability] alert fired");
-      await sendWebhook(payload);
+      await Promise.all([
+        sendWebhook(payload),
+        sendAdminNotification(candidate),
+      ]);
     }
   } catch (err) {
     logger.error({ err }, "[observability] alert evaluation failed");

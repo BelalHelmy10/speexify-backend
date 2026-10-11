@@ -8,6 +8,9 @@ export const DEFAULT_NOTIFICATION_PREFERENCES = Object.freeze({
   weeklyProgressDigest: true,
   productUpdates: false,
   reminderLeadTime: "24h",
+  adminInAppOperationalAlerts: true,
+  adminEmailCriticalAlerts: true,
+  adminDailyDigest: true,
 });
 
 const REMINDER_TYPES = new Set(["reminder_24h", "reminder_6h", "reminder_1h"]);

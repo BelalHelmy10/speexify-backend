@@ -2,6 +2,10 @@
 // Attendance marking endpoint
 
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
+import {
+    ADMIN_ALERT_TYPES,
+    notifyAdmins,
+} from "../../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -69,6 +73,27 @@ router.post("/sessions/:id/attendance", requireAuth, async (req, res) => {
                 });
             }
         });
+
+        const noShowIds = participants
+            .filter((participant) => participant?.status === "no_show")
+            .map((participant) => Number(participant.userId))
+            .filter(Number.isFinite);
+        if (noShowIds.length) {
+            const learners = await prisma.user.findMany({
+                where: { id: { in: noShowIds } },
+                select: { id: true, name: true, email: true },
+            });
+            await notifyAdmins({
+                type: ADMIN_ALERT_TYPES.SESSION_ATTENTION,
+                title: `${noShowIds.length} learner${noShowIds.length === 1 ? "" : "s"} marked no-show`,
+                body: `${learners.map((learner) => learner.name || learner.email).join(", ") || "Attendance"} for session #${sessionId}.`,
+                severity: "warning",
+                adminPath: `/admin?section=sessions&sessionId=${sessionId}`,
+                data: { sessionId, learnerIds: noShowIds },
+                dedupeKey: `session-no-show:${sessionId}:${noShowIds.sort((a, b) => a - b).join("-")}`,
+                dedupeWindowMs: null,
+            });
+        }
 
         return res.json({ ok: true });
     } catch (e) {

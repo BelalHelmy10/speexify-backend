@@ -8,6 +8,7 @@ import { sessionStoreInfo } from "./src/middleware/session.js";
 import { startObservabilityAlerts } from "./src/observability/alerts.js";
 import { startNotificationDeliveryLoop } from "./src/services/notificationDeliveryLoop.js";
 import { startPendingPaymentReconciliationLoop } from "./src/services/providerPaymentReconciliation.js";
+import { startAdminAlertScheduler } from "./src/services/adminAlertScheduler.js";
 
 logger.info({ sessionStore: sessionStoreInfo }, "[boot] Session store configured");
 
@@ -24,6 +25,7 @@ const stopNotificationDelivery = startNotificationDeliveryLoop({
   workerId: `api-notification-delivery-${process.pid}`,
 });
 const stopPaymentReconciliation = startPendingPaymentReconciliationLoop();
+const stopAdminAlerts = startAdminAlertScheduler();
 
 server.listen(PORT, "0.0.0.0", () => {
   logger.info(
@@ -37,6 +39,7 @@ function shutdown(signal) {
   stopObservabilityAlerts();
   stopNotificationDelivery();
   stopPaymentReconciliation();
+  stopAdminAlerts();
 
   server.close((err) => {
     if (err) {

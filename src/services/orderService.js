@@ -2,6 +2,141 @@ import { fulfillmentTerms } from "./packageEntitlements.js";
 // src/services/orderService.js
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { createNotification } from "./notificationsService.js";
+import { enqueueEmail } from "./emailService.js";
+import {
+    ADMIN_ALERT_TYPES,
+    notifyAdmins,
+} from "./adminAlertsService.js";
+
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[char]);
+}
+
+function formatMoney(amountCents, currency) {
+    const amount = Number(amountCents || 0) / 100;
+    try {
+        return new Intl.NumberFormat("en", {
+            style: "currency",
+            currency: String(currency || "EGP").toUpperCase(),
+        }).format(amount);
+    } catch {
+        return `${amount.toFixed(2)} ${String(currency || "EGP").toUpperCase()}`;
+    }
+}
+
+function frontendBaseUrl() {
+    return String(process.env.FRONTEND_URL || "https://speexify.com").replace(/\/$/, "");
+}
+
+async function sendPaidOrderNotifications(result) {
+    const order = result?.order;
+    if (!order?.id || !order.userId) return;
+
+    let user = null;
+    let pkg = null;
+    try {
+        [user, pkg] = await Promise.all([
+            prisma.user.findUnique({
+                where: { id: order.userId },
+                select: { id: true, name: true, email: true, language: true },
+            }),
+            prisma.package.findUnique({
+                where: { id: order.packageId },
+                select: { id: true, title: true },
+            }),
+        ]);
+    } catch (error) {
+        logger.error({ err: error, orderId: order.id }, "payment receipt recipient lookup failed");
+    }
+
+    const packageTitle = result.userPackage?.title || pkg?.title || "Speexify package";
+    const amount = formatMoney(order.amountCents, order.currency);
+
+    if (user) {
+        try {
+            const [existingNotification, existingDelivery] = await Promise.all([
+                prisma.notification.findFirst({
+                    where: {
+                        userId: order.userId,
+                        type: "payment_receipt",
+                        data: { path: ["orderId"], equals: order.id },
+                    },
+                    select: { id: true },
+                }),
+                prisma.notificationDelivery.findFirst({
+                    where: {
+                        userId: order.userId,
+                        eventType: `payment_receipt:${order.id}`,
+                    },
+                    select: { id: true },
+                }),
+            ]);
+            let notification = existingNotification;
+            if (!notification) {
+                notification = await createNotification({
+                    userId: user.id,
+                    type: "payment_receipt",
+                    title: "Payment received",
+                    body: `${packageTitle} is active with ${result.userPackage?.sessionsTotal || 0} session credit(s).`,
+                    data: {
+                        orderId: order.id,
+                        packageId: order.packageId,
+                        userPackageId: result.userPackage?.id || null,
+                        amountCents: order.amountCents,
+                        currency: order.currency,
+                    },
+                    skipPreferenceCheck: true,
+                    skipDedup: true,
+                });
+            }
+            if (!existingDelivery && user.email) {
+                await enqueueEmail(
+                    user.email,
+                    `Payment received · ${packageTitle}`,
+                    `<div style="font-family:Arial,sans-serif;max-width:620px;line-height:1.6;color:#172033"><h2>Payment received</h2><p>Hello ${escapeHtml(user.name || "there")},</p><p>Your payment of <strong>${escapeHtml(amount)}</strong> was confirmed.</p><p><strong>${escapeHtml(packageTitle)}</strong> is now active with ${Number(result.userPackage?.sessionsTotal || 0)} session credit(s).</p><p><a href="${escapeHtml(`${frontendBaseUrl()}/dashboard`)}">View your package</a></p></div>`,
+                    {
+                        userId: user.id,
+                        notificationId: notification?.id || null,
+                        eventType: `payment_receipt:${order.id}`,
+                        locale: user.language || "en",
+                    }
+                );
+            }
+        } catch (error) {
+            logger.error({ err: error, orderId: order.id }, "learner payment receipt delivery failed");
+        }
+    }
+
+    try {
+        await notifyAdmins({
+            type: ADMIN_ALERT_TYPES.PAYMENT_SUCCEEDED,
+            title: "Payment confirmed and credits granted",
+            body: `${user?.name || user?.email || `Learner #${order.userId}`} purchased ${packageTitle} for ${amount}.`,
+            severity: "success",
+            adminPath: `/admin?section=payments&orderId=${encodeURIComponent(order.id)}`,
+            data: {
+                orderId: order.id,
+                userId: order.userId,
+                packageId: order.packageId,
+                userPackageId: result.userPackage?.id || null,
+            },
+            dedupeKey: `payment-paid:${order.id}`,
+            dedupeWindowMs: null,
+            email: "none",
+        });
+    } catch (error) {
+        logger.error({ err: error, orderId: order.id }, "admin paid-order alert failed");
+    }
+}
+
+/*
+ * Keep the implementation below this point focused on order state. Receipt
+ * delivery is deliberately isolated above so a transient notification failure
+ * can never turn a successfully fulfilled payment into a failed webhook.
+ */
 
 /**
  * Create a pending order when user initiates payment
@@ -148,6 +283,7 @@ export async function markOrderPaid(orderId, paymobTxnId) {
             { orderId, paymobTxnId, alreadyGranted: result.alreadyGranted },
             "Order marked as paid"
         );
+        await sendPaidOrderNotifications(result);
         return result;
     } catch (error) {
         logger.error({ error, orderId }, "Failed to mark order as paid");
@@ -188,6 +324,19 @@ export async function markOrderFailed(orderId, reason) {
         }
 
         logger.info({ orderId, reason }, "Order marked as failed");
+
+        if (updated.count > 0) {
+            await notifyAdmins({
+                type: ADMIN_ALERT_TYPES.PAYMENT_ATTENTION,
+                title: "Payment failed",
+                body: `Order ${orderId} failed (${reason || "provider declined"}).`,
+                severity: "warning",
+                adminPath: `/admin?section=payments&orderId=${encodeURIComponent(orderId)}`,
+                data: { orderId, userId: order.userId, packageId: order.packageId, reason },
+                dedupeKey: `payment-failed:${orderId}:${order.updatedAt?.toISOString?.() || "latest"}`,
+                email: "critical",
+            });
+        }
 
         return { order, skipped: false };
     } catch (error) {

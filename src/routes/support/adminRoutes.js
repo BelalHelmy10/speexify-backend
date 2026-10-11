@@ -10,6 +10,10 @@ import {
   broadcastTicketStatusChange,
 } from "../../services/supportWebSocket.js";
 import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../services/adminAlertsService.js";
+import {
   SUPPORT_TICKETS_DEFAULT_LIMIT,
   SUPPORT_TICKETS_MAX_LIMIT,
   SUPPORT_TICKETS_MAX_OFFSET,
@@ -496,6 +500,19 @@ router.patch(
       });
 
       broadcastTicketStatusChange(ticketId, ticket.status, ticket);
+      if (priority === "URGENT") {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.SUPPORT_TICKET,
+          title: "Support ticket marked urgent",
+          body: `Ticket #${ticketId} for ${ticket.user?.name || ticket.user?.email || "a learner"} now needs urgent attention.`,
+          severity: "critical",
+          adminPath: `/admin/support?ticket=${ticketId}`,
+          data: { ticketId, userId: ticket.userId, priority },
+          dedupeKey: `support-urgent:${ticketId}:${ticket.slaDueAt?.toISOString?.() || "latest"}`,
+          email: "critical",
+          mandatory: true,
+        });
+      }
       logger.info({ ticketId, priority }, "Ticket priority updated");
 
       return res.json({ ok: true, ticket });
@@ -592,6 +609,19 @@ router.patch(
       });
 
       broadcastTicketStatusChange(ticketId, ticket.status, ticket);
+      if (parsed.data.assignedToId && parsed.data.assignedToId !== Number(req.user.id)) {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.SUPPORT_TICKET,
+          title: "Support ticket assigned to you",
+          body: `Ticket #${ticketId} for ${ticket.user?.name || ticket.user?.email || "a learner"} was assigned to you.`,
+          severity: ticket.priority === "URGENT" ? "critical" : "info",
+          adminPath: `/admin/support?ticket=${ticketId}`,
+          data: { ticketId, userId: ticket.userId, priority: ticket.priority },
+          dedupeKey: `support-assigned:${ticketId}:${parsed.data.assignedToId}`,
+          targetAdminIds: [parsed.data.assignedToId],
+          email: ticket.priority === "URGENT" ? "critical" : "none",
+        });
+      }
       logger.info(
         { ticketId, assignedToId: parsed.data.assignedToId },
         "Ticket assigned"

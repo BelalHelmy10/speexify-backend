@@ -25,6 +25,10 @@ import {
   completeIdempotentRequest,
   abandonIdempotentRequest,
 } from "../../../services/idempotencyService.js";
+import {
+  ADMIN_ALERT_TYPES,
+  notifyAdmins,
+} from "../../../services/adminAlertsService.js";
 
 const router = Router();
 
@@ -216,7 +220,7 @@ router.post(
           if (current.type !== "TRAINING" && !allowNoCredit) {
             const debit = await consumeOneCreditWithClient(tx, uid, sessionId);
             if (!debit.ok) throw Object.assign(new Error("Learner has no credits"), { statusCode: 422 });
-            results.push({ learnerId: uid, consumed: true, packId: debit.packId });
+            results.push({ learnerId: uid, consumed: true, packId: debit.packId, remaining: debit.remaining });
           }
           await tx.sessionParticipant.upsert({
             where: { sessionId_userId: { sessionId, userId: uid } },
@@ -235,6 +239,36 @@ router.post(
         addedUserIds: toAdd,
         creditResults,
       });
+
+      if (allowNoCredit && session.type !== "TRAINING") {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+          title: "Learner added without available credit",
+          body: `${toAdd.length} learner(s) were added to session #${sessionId} using a credit override.`,
+          severity: "warning",
+          adminPath: `/admin?section=sessions&sessionId=${sessionId}`,
+          data: { sessionId, learnerIds: toAdd, actorId: req.user.id },
+          dedupeKey: `credit-override-participants:${sessionId}:${toAdd.sort((a, b) => a - b).join("-")}`,
+          dedupeWindowMs: null,
+          excludeAdminIds: [req.user.id],
+        });
+      }
+
+      const depletedLearnerIds = creditResults
+        .filter((result) => result.consumed && result.remaining === 0)
+        .map((result) => result.learnerId);
+      if (depletedLearnerIds.length) {
+        await notifyAdmins({
+          type: ADMIN_ALERT_TYPES.CREDIT_ATTENTION,
+          title: "Learner credits reached zero",
+          body: `${depletedLearnerIds.length} learner account(s) used their final credit when joining session #${sessionId}.`,
+          severity: "warning",
+          adminPath: `/admin?section=sessions&sessionId=${sessionId}`,
+          data: { sessionId, learnerIds: depletedLearnerIds },
+          dedupeKey: `credits-zero:${sessionId}:${depletedLearnerIds.sort((a, b) => a - b).join("-")}`,
+          dedupeWindowMs: null,
+        });
+      }
 
       try {
         await sendBookingNotifications({

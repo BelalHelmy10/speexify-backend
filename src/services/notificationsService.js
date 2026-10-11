@@ -19,6 +19,44 @@ import { publishNotificationEvent } from "./notificationStreamHub.js";
 
 const REMINDER_TYPES = new Set(["reminder_24h", "reminder_6h", "reminder_1h"]);
 
+async function notifyAdminSessionEvent({
+  type,
+  title,
+  body,
+  session,
+  severity = "info",
+  dedupeKey,
+  email = "none",
+  excludeAdminIds = [],
+  extraData = {},
+}) {
+  try {
+    // Dynamic import avoids a static cycle: admin alerts use this module's
+    // createNotification primitive for durable bell delivery.
+    const { ADMIN_ALERT_TYPES, notifyAdmins } = await import("./adminAlertsService.js");
+    await notifyAdmins({
+      type: ADMIN_ALERT_TYPES[type] || ADMIN_ALERT_TYPES.SESSION_ACTIVITY,
+      title,
+      body,
+      severity,
+      adminPath: `/admin?section=sessions&sessionId=${session.id}`,
+      data: {
+        sessionId: session.id,
+        sessionType: session.type,
+        startAt: session.startAt,
+        teacherId: session.teacherId || null,
+        ...extraData,
+      },
+      dedupeKey,
+      dedupeWindowMs: null,
+      email,
+      excludeAdminIds,
+    });
+  } catch (error) {
+    logger.error({ err: error, sessionId: session?.id }, "admin session alert failed");
+  }
+}
+
 function escapeNotificationHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -175,6 +213,15 @@ export async function sendBookingNotifications({
       await createNotification({ userId: organizer.id, type: "new_booking", title: "Training scheduled", body: `You scheduled unpaid training "${sessionTitle}" with ${people.length} participant(s).`, data: { sessionId: session.id, startAt: session.startAt, endAt: session.endAt, sessionType: session.type } });
       await sendTrainingEmail(organizer, session, "Training scheduled", `You scheduled unpaid training with ${people.length} participant(s):`);
     }
+    await notifyAdminSessionEvent({
+      type: "SESSION_ACTIVITY",
+      title: "Training session scheduled",
+      body: `“${sessionTitle}” was scheduled with ${people.length} participant(s).`,
+      session,
+      dedupeKey: `session-booked:${session.id}`,
+      excludeAdminIds: session.trainingAdminId ? [session.trainingAdminId] : [],
+      extraData: { learnerIds: participantIds, bookedBy },
+    });
     return;
   }
 
@@ -306,6 +353,15 @@ export async function sendBookingNotifications({
     { sessionId: session.id, learnerIds, teacherId },
     "Booking notifications sent"
   );
+  await notifyAdminSessionEvent({
+    type: teacher ? "SESSION_ACTIVITY" : "SESSION_ATTENTION",
+    title: teacher ? "Session booked" : "Session booked without a teacher",
+    body: `“${sessionTitle}” was booked for ${learners.length} learner(s)${teacher ? ` with ${teacher.name || teacher.email}` : " and needs a teacher"}.`,
+    session,
+    severity: teacher ? "info" : "warning",
+    dedupeKey: `session-booked:${session.id}`,
+    extraData: { learnerIds, bookedBy, needsTeacher: !teacher },
+  });
 }
 
 /**
@@ -347,6 +403,15 @@ export async function sendSessionUpdatedNotifications({
         await sendTrainingEmail(organizer, session, "Training time updated", "Your teacher training has a new time:");
       }
     }
+    await notifyAdminSessionEvent({
+      type: "SESSION_ACTIVITY",
+      title: "Training session rescheduled",
+      body: `“${sessionTitle}” has a new scheduled time.`,
+      session,
+      dedupeKey: `session-updated:${session.id}:${new Date(session.startAt).toISOString()}`,
+      excludeAdminIds: session.trainingAdminId ? [session.trainingAdminId] : [],
+      extraData: { previousStartAt, learnerIds },
+    });
     return;
   }
 
@@ -432,6 +497,130 @@ export async function sendSessionUpdatedNotifications({
     { sessionId: session.id, learnerIds, teacherId, previousStartAt, startAt: session.startAt },
     "Session update notifications queued"
   );
+  await notifyAdminSessionEvent({
+    type: "SESSION_ACTIVITY",
+    title: "Session rescheduled",
+    body: `“${sessionTitle}” has a new scheduled time.`,
+    session,
+    dedupeKey: `session-updated:${session.id}:${new Date(session.startAt).toISOString()}`,
+    extraData: { previousStartAt, learnerIds },
+  });
+}
+
+/**
+ * Tell every affected person when an administrator changes the assigned
+ * teacher without pretending that the session itself was newly booked.
+ */
+export async function sendTeacherAssignmentNotifications({
+  session,
+  learnerIds = [],
+  previousTeacherId = null,
+  teacherId = null,
+  changedBy = null,
+}) {
+  const sessionTitle = session.title || "Session";
+  const userIds = [...new Set([
+    ...(learnerIds || []).map(Number).filter(Number.isFinite),
+    ...(previousTeacherId ? [Number(previousTeacherId)] : []),
+    ...(teacherId ? [Number(teacherId)] : []),
+  ])];
+  const people = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, email: true, name: true, role: true, timezone: true, language: true },
+  });
+  const peopleById = new Map(people.map((person) => [person.id, person]));
+  const nextTeacher = peopleById.get(Number(teacherId));
+  const previousTeacher = peopleById.get(Number(previousTeacherId));
+  const audienceIds = [...new Set((learnerIds || [])
+    .map(Number)
+    .filter((id) => Number.isFinite(id)
+      && id !== Number(previousTeacherId)
+      && id !== Number(teacherId)))];
+  const learnerNames = audienceIds
+    .map((id) => peopleById.get(Number(id)))
+    .filter(Boolean)
+    .map((learner) => learner.name || learner.email)
+    .join(", ");
+  const assignmentLabel = nextTeacher?.name || nextTeacher?.email || "a teacher";
+
+  // Persist the administrative event independently of downstream recipient
+  // delivery so a bad address or user-specific notification failure cannot
+  // hide the reassignment from the rest of the admin team.
+  await notifyAdminSessionEvent({
+    type: teacherId ? "SESSION_ACTIVITY" : "SESSION_ATTENTION",
+    title: teacherId ? "Session teacher changed" : "Session teacher removed",
+    body: teacherId
+      ? `“${sessionTitle}” is now assigned to ${assignmentLabel}.`
+      : `“${sessionTitle}” no longer has an assigned teacher.`,
+    session,
+    severity: teacherId ? "info" : "warning",
+    dedupeKey: `session-teacher:${session.id}:${teacherId || "unassigned"}`,
+    excludeAdminIds: changedBy ? [changedBy] : [],
+    extraData: { learnerIds, previousTeacherId, teacherId, changedBy, needsTeacher: !teacherId },
+  });
+
+  await Promise.all(audienceIds.map(async (learnerId) => {
+    const learner = peopleById.get(Number(learnerId));
+    if (!learner) return;
+    await createNotification({
+      userId: learner.id,
+      type: "session_updated",
+      title: "Session teacher updated",
+      body: `“${sessionTitle}” is now assigned to ${assignmentLabel}.`,
+      data: {
+        sessionId: session.id,
+        startAt: session.startAt,
+        endAt: session.endAt,
+        joinUrl: session.joinUrl,
+        previousTeacherId,
+        teacherId,
+      },
+    });
+  }));
+
+  if (previousTeacher && previousTeacher.id !== nextTeacher?.id) {
+    await createNotification({
+      userId: previousTeacher.id,
+      type: "session_updated",
+      title: "Session reassigned",
+      body: `You are no longer assigned to “${sessionTitle}”.`,
+      data: { sessionId: session.id, startAt: session.startAt, teacherId },
+    });
+  }
+
+  if (nextTeacher && nextTeacher.id !== previousTeacher?.id) {
+    await createNotification({
+      userId: nextTeacher.id,
+      type: "new_booking",
+      title: "Session assigned to you",
+      body: `You are now assigned to “${sessionTitle}”${learnerNames ? ` with ${learnerNames}` : ""}.`,
+      data: {
+        sessionId: session.id,
+        startAt: session.startAt,
+        endAt: session.endAt,
+        joinUrl: session.joinUrl,
+        learnerIds,
+      },
+    });
+    const locale = normalizeEmailLocale(nextTeacher.language);
+    const when = formatEmailDate(session.startAt, nextTeacher.timezone, locale);
+    const content = bookingTeacherEmail({
+      name: nextTeacher.name,
+      sessionTitle,
+      learnerNames,
+      learnerCount: audienceIds.length,
+      when,
+      joinUrl: session.joinUrl,
+      locale,
+    });
+    await enqueueEmail(nextTeacher.email, content.subject, content.html, {
+      userId: nextTeacher.id,
+      eventType: "session_teacher_assigned",
+      sessionId: session.id,
+      locale,
+    });
+  }
+
 }
 
 /**
@@ -481,6 +670,17 @@ export async function sendCancellationNotifications({
         if (canceledBy !== organizer.id) await sendTrainingEmail(organizer, session, "Teacher training canceled", "Your teacher training was canceled:");
       }
     }
+    await notifyAdminSessionEvent({
+      type: "SESSION_ATTENTION",
+      title: scope === "participant" ? "Training participant canceled" : "Training session canceled",
+      body: `“${sessionTitle}” was canceled${scope === "participant" ? " for one participant" : ""}.`,
+      session,
+      severity: "warning",
+      dedupeKey: `session-canceled:${session.id}:${scope}:${scope === "participant" ? learnerIds.join("-") : "all"}`,
+      email: canceler?.role === "admin" ? "none" : "critical",
+      excludeAdminIds: session.trainingAdminId ? [session.trainingAdminId] : [],
+      extraData: { canceledBy, scope, refunded, learnerIds },
+    });
     return;
   }
 
@@ -592,6 +792,16 @@ export async function sendCancellationNotifications({
     { sessionId: session.id, learnerIds, teacherId, scope },
     "Cancellation notifications sent"
   );
+  await notifyAdminSessionEvent({
+    type: "SESSION_ATTENTION",
+    title: scope === "participant" ? "Learner canceled a session seat" : "Session canceled",
+    body: `“${sessionTitle}” was canceled${refunded ? " and credits were refunded" : ""}.`,
+    session,
+    severity: "warning",
+    dedupeKey: `session-canceled:${session.id}:${scope}:${scope === "participant" ? learnerIds.join("-") : "all"}`,
+    email: cancelerRole === "admin" ? "none" : "critical",
+    extraData: { canceledBy, cancelerRole, scope, refunded, learnerIds },
+  });
 }
 
 /**
@@ -624,6 +834,15 @@ export async function sendCompletionNotifications({
     { sessionId: session.id, learnerIds },
     "Completion notifications sent"
   );
+  await notifyAdminSessionEvent({
+    type: "SESSION_ACTIVITY",
+    title: "Session completed",
+    body: `“${sessionTitle}” was completed; teacher feedback is now expected.`,
+    session,
+    severity: "success",
+    dedupeKey: `session-completed:${session.id}`,
+    extraData: { learnerIds, teacherId, needsFeedback: true },
+  });
 }
 
 /**
