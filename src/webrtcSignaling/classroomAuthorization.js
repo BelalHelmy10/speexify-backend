@@ -1,6 +1,7 @@
 // src/webrtcSignaling/classroomAuthorization.js
 
 import { prisma } from "../lib/prisma.js";
+import { CLASSROOM_LOBBY_STATUS } from "../services/classroomStateService.js";
 import { CONFIG } from "./config.js";
 
 function parseClassroomSessionId(roomId) {
@@ -68,12 +69,6 @@ function isClassroomEnded(session) {
   return session.status === "canceled";
 }
 
-function getLobbyState(session) {
-  const state = session?.classroomState;
-  const lobby = state?.lobby;
-  return lobby && typeof lobby === "object" && !Array.isArray(lobby) ? lobby : {};
-}
-
 export function createClassroomJoinAuthorizer({
   prismaClient = prisma,
   authEnabled = CONFIG.AUTH_ENABLED,
@@ -93,7 +88,7 @@ export function createClassroomJoinAuthorizer({
       return { allowed: false, reason: "missing_authenticated_user" };
     }
 
-    const [user, session] = await prismaClient.$transaction([
+    const [user, session, lobbyEntry] = await prismaClient.$transaction([
       prismaClient.user.findUnique({
         where: { id: numericUserId },
         select: {
@@ -119,6 +114,17 @@ export function createClassroomJoinAuthorizer({
           },
         },
       }),
+      prismaClient.classroomLobbyEntry.findUnique({
+        where: {
+          sessionId_userId: {
+            sessionId,
+            userId: numericUserId,
+          },
+        },
+        select: {
+          status: true,
+        },
+      }),
     ]);
 
     const membership = getClassroomMembership({ user, session, userId: numericUserId });
@@ -140,10 +146,7 @@ export function createClassroomJoinAuthorizer({
     }
 
     const lobbyEnabled = session?.classroomState?.moderation?.lobbyEnabled !== false;
-    const lobby = getLobbyState(session);
-    const admitted = Array.isArray(lobby.admitted)
-      ? lobby.admitted.some((id) => Number(id) === numericUserId)
-      : false;
+    const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
 
     if (lobbyEnabled && membership.isLearner && !membership.isTeacher && !membership.isAdmin && !admitted) {
       return { allowed: false, reason: "classroom_admission_required" };

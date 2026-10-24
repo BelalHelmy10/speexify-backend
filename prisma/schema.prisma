@@ -91,6 +91,7 @@ model User {
   classroomMessages    ClassroomMessage[] @relation("ClassroomMessageSender")
   classroomMessagesReceived ClassroomMessage[] @relation("ClassroomMessageRecipient")
   classroomAnnotations ClassroomAnnotation[]
+  classroomLobbyEntries ClassroomLobbyEntry[]
 
   // ✨ Support ticket assignment (admin can assign tickets to staff)
   assignedSupportTickets SupportTicket[] @relation("AssignedSupportTickets")
@@ -452,6 +453,7 @@ model Session {
   classroomMessages    ClassroomMessage[]
   classroomAnnotations ClassroomAnnotation[]
   classroomMaterials   ClassroomMaterial[]
+  classroomLobbyEntries ClassroomLobbyEntry[]
   recordings           ClassRecording[]
 
   createdAt                       DateTime      @default(now())
@@ -467,6 +469,7 @@ model Session {
   teacherFeedbackFutureSteps      String?
   teacherFeedbackMessageToLearner String?
   classroomState                  Json?
+  classroomStateVersion           Int           @default(0)
 
   feedback SessionFeedback?
 
@@ -485,6 +488,32 @@ model Session {
   @@index([status, startAt], map: "Session_status_startAt_idx")
   @@index([teacherId, status, startAt], map: "Session_teacherId_status_startAt_idx")
   @@index([userId, status, startAt], map: "Session_userId_status_startAt_idx")
+}
+
+enum ClassroomLobbyStatus {
+  WAITING
+  ADMITTED
+  DENIED
+}
+
+model ClassroomLobbyEntry {
+  sessionId Int
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status      ClassroomLobbyStatus @default(WAITING)
+  displayName String?
+  email       String?
+  joinedAt    DateTime             @default(now())
+  decidedAt   DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@id([sessionId, userId])
+  @@index([sessionId, status, joinedAt])
+  @@index([userId])
 }
 
 // EGP teacher earnings are stored in piastres (the smallest EGP unit).

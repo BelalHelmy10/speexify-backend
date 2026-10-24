@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createClassroomJoinAuthorizer } from "../../src/webrtcSignaling/classroomAuthorization.js";
 
-function createFakePrisma({ user = null, session = null } = {}) {
+function createFakePrisma({ user = null, session = null, lobbyEntry = null } = {}) {
   return {
     $transaction: async (queries) => Promise.all(queries),
     user: {
@@ -10,6 +10,9 @@ function createFakePrisma({ user = null, session = null } = {}) {
     },
     session: {
       findUnique: async () => session,
+    },
+    classroomLobbyEntry: {
+      findUnique: async () => lobbyEntry,
     },
   };
 }
@@ -46,8 +49,9 @@ test("classroom join authorizer allows teachers, legacy learners, participants, 
       user: { id: 30, role: "learner", isDisabled: false },
       session: createSession({
         participants: [{ userId: 30, status: "booked" }],
-        classroomState: { lobby: { admitted: [30] } },
+        classroomState: { moderation: { lobbyEnabled: true } },
       }),
+      lobbyEntry: { status: "ADMITTED" },
       userId: 30,
     },
     {

@@ -7,6 +7,17 @@ import {
     parseSessionResources,
     sanitizeReviewResourceSnapshot,
 } from "../../services/sessionReviewService.js";
+import {
+    CLASSROOM_LOBBY_STATUS,
+    admitAllWaitingLobbyEntries,
+    decideLobbyEntry,
+    findLobbyEntry,
+    getWaitingLobbyPosition,
+    listWaitingLobbyEntries,
+    requestLobbyAdmission,
+    toWaitingLearner,
+    updateClassroomStateAtomic,
+} from "../../services/classroomStateService.js";
 
 const router = Router();
 
@@ -54,6 +65,12 @@ function getClassroomAccess(req, session) {
     const isAdmin = req.user?.role === "admin";
 
     return { isLearner, isTeacher, isAdmin };
+}
+
+function isActiveSessionLearner(session, userId) {
+    return session.userId === userId || (session.participants || []).some(
+        (participant) => participant.userId === userId && participant.status !== "canceled"
+    );
 }
 
 function sanitizeLayoutPatch(layout) {
@@ -173,6 +190,62 @@ function sanitizeClassroomClientErrorReport(input) {
     };
 }
 
+const CLASSROOM_CLIENT_EVENT_NAMES = new Set([
+    "join_requested",
+    "prejoin_media_failed",
+    "jitsi_initializing",
+    "join_delayed",
+    "conference_joined",
+    "connection_failed",
+    "camera_error",
+    "microphone_error",
+]);
+
+function sanitizeClassroomClientEvent(input) {
+    const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const rawDetails = source.details && typeof source.details === "object" && !Array.isArray(source.details)
+        ? source.details
+        : {};
+    const viewport = source.viewport && typeof source.viewport === "object" && !Array.isArray(source.viewport)
+        ? source.viewport
+        : {};
+    const event = safeString(source.event, 80);
+
+    return {
+        event: CLASSROOM_CLIENT_EVENT_NAMES.has(event) ? event : "unknown",
+        details: {
+            reason: safeString(rawDetails.reason, 120),
+            name: safeString(rawDetails.name, 160),
+            type: safeString(rawDetails.type, 160),
+            message: safeString(rawDetails.message, 1000),
+            elapsedMs: Number.isFinite(Number(rawDetails.elapsedMs))
+                ? Math.max(0, Math.min(300000, Math.round(Number(rawDetails.elapsedMs))))
+                : null,
+            retryAttempt: Number.isFinite(Number(rawDetails.retryAttempt))
+                ? Math.max(0, Math.min(20, Math.round(Number(rawDetails.retryAttempt))))
+                : null,
+            audioMuted: typeof rawDetails.audioMuted === "boolean" ? rawDetails.audioMuted : null,
+            videoMuted: typeof rawDetails.videoMuted === "boolean" ? rawDetails.videoMuted : null,
+            networkState: safeString(rawDetails.networkState, 40),
+            networkReachable: typeof rawDetails.networkReachable === "boolean"
+                ? rawDetails.networkReachable
+                : null,
+        },
+        userAgent: safeString(source.userAgent, 1000),
+        viewport: {
+            width: Number.isFinite(Number(viewport.width)) ? Math.max(0, Math.min(10000, Math.round(Number(viewport.width)))) : null,
+            height: Number.isFinite(Number(viewport.height)) ? Math.max(0, Math.min(10000, Math.round(Number(viewport.height)))) : null,
+            devicePixelRatio: Number.isFinite(Number(viewport.devicePixelRatio))
+                ? Math.max(0, Math.min(10, Number(viewport.devicePixelRatio)))
+                : null,
+        },
+        online: typeof source.online === "boolean" ? source.online : null,
+        visibility: safeString(source.visibility, 40),
+        occurredAt: safeString(source.occurredAt, 80),
+        receivedAt: new Date().toISOString(),
+    };
+}
+
 function sanitizeClassroomStatePatch(input) {
     const source =
         input?.state && typeof input.state === "object" && !Array.isArray(input.state)
@@ -233,42 +306,7 @@ function mergeClassroomState(existingState, patch) {
             ...patch.moderation,
         };
     }
-    if (patch.lobby) {
-        next.lobby = {
-            ...(existing.lobby && typeof existing.lobby === "object"
-                ? existing.lobby
-                : {}),
-            ...patch.lobby,
-        };
-    }
-
     return next;
-}
-
-function normalizeLobbyIds(value) {
-    if (!Array.isArray(value)) return [];
-    return [...new Set(value.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
-}
-
-function getDurableLobby(state) {
-    const lobby = state?.lobby && typeof state.lobby === "object" && !Array.isArray(state.lobby)
-        ? state.lobby
-        : {};
-    const waiting = Array.isArray(lobby.waiting)
-        ? lobby.waiting.filter((entry) => entry && Number.isSafeInteger(Number(entry.id)))
-        : [];
-    return {
-        ...lobby,
-        waiting,
-        admitted: normalizeLobbyIds(lobby.admitted),
-        denied: normalizeLobbyIds(lobby.denied),
-    };
-}
-
-function sortWaiting(waiting) {
-    return [...waiting].sort(
-        (a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime()
-    );
 }
 
 const MAX_ANNOTATION_BYTES = 1024 * 1024;
@@ -381,6 +419,7 @@ async function findClassroomSession(sessionId) {
             userId: true,
             teacherId: true,
             classroomState: true,
+            classroomStateVersion: true,
             participants: {
                 select: {
                     userId: true,
@@ -429,6 +468,7 @@ router.get("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
 
         return res.json({
             state: getStoredClassroomState(session.classroomState),
+            version: session.classroomStateVersion || 0,
         });
     } catch (err) {
         logger.error({ err }, "GET /sessions/:id/classroom-state failed");
@@ -461,22 +501,30 @@ router.patch("/sessions/:id/classroom-state", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "No valid classroom state fields provided" });
         }
 
-        const nextState = mergeClassroomState(session.classroomState, patch);
-        const updated = await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
-            select: {
-                id: true,
-                classroomState: true,
-            },
+        const updated = await updateClassroomStateAtomic({
+            prismaClient: prisma,
+            sessionId,
+            buildNextState: (currentState) => mergeClassroomState(currentState, patch),
         });
+
+        if (!updated) {
+            return res.status(404).json({ error: "Session not found" });
+        }
 
         return res.json({
             ok: true,
-            state: getStoredClassroomState(updated.classroomState),
+            state: getStoredClassroomState(updated.state),
+            version: updated.version,
         });
     } catch (err) {
         logger.error({ err }, "PATCH /sessions/:id/classroom-state failed");
+        if (err?.code === "CLASSROOM_STATE_CONTENTION") {
+            res.set("Retry-After", "1");
+            return res.status(503).json({
+                error: "Classroom state is busy. Please retry.",
+                code: err.code,
+            });
+        }
         return res.status(500).json({ error: "Failed to save classroom state" });
     }
 });
@@ -498,7 +546,10 @@ router.get("/sessions/:id/annotations", requireAuth, async (req, res) => {
         const viewerId = Number(req.viewUserId || req.user?.id);
         const state = getStoredClassroomState(context.session.classroomState);
         const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
-        const admitted = getDurableLobby(state).admitted.includes(viewerId);
+        const lobbyEntry = lobbyEnabled
+            ? await findLobbyEntry(prisma, sessionId, viewerId)
+            : null;
+        const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
         if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
             return res.status(403).json({ error: "Waiting for classroom admission" });
         }
@@ -546,7 +597,11 @@ router.put("/sessions/:id/annotations", requireAuth, async (req, res) => {
 
         const state = getStoredClassroomState(context.session.classroomState);
         const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
-        const admitted = getDurableLobby(state).admitted.includes(Number(req.viewUserId || req.user?.id));
+        const lobbyViewerId = Number(req.viewUserId || req.user?.id);
+        const lobbyEntry = lobbyEnabled
+            ? await findLobbyEntry(prisma, sessionId, lobbyViewerId)
+            : null;
+        const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
         if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
             return res.status(403).json({ error: "Waiting for classroom admission" });
         }
@@ -602,6 +657,47 @@ router.post("/sessions/:id/classroom-error", requireAuth, async (req, res) => {
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/classroom-error failed");
         return res.status(500).json({ error: "Failed to report classroom error" });
+    }
+});
+
+// --------------------------------------------------------------------------
+// POST /api/sessions/:id/classroom-event - Trace the real client join path
+// --------------------------------------------------------------------------
+router.post("/sessions/:id/classroom-event", requireAuth, async (req, res) => {
+    try {
+        const sessionId = parseSessionIdParam(req.params.id);
+        if (!sessionId) {
+            return res.status(400).json({ error: "Invalid session id" });
+        }
+
+        const session = await findClassroomSession(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        const { isLearner, isTeacher, isAdmin } = getClassroomAccess(req, session);
+        if (!(isLearner || isTeacher || isAdmin)) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const report = sanitizeClassroomClientEvent(req.body || {});
+        const logContext = {
+            sessionId,
+            userId: req.user?.id,
+            viewUserId: req.viewUserId,
+            report,
+        };
+
+        if (["connection_failed", "join_delayed", "prejoin_media_failed", "camera_error", "microphone_error"].includes(report.event)) {
+            logger.warn(logContext, "Classroom client connection event");
+        } else {
+            logger.info(logContext, "Classroom client connection event");
+        }
+
+        return res.json({ ok: true });
+    } catch (err) {
+        logger.error({ err }, "POST /sessions/:id/classroom-event failed");
+        return res.status(500).json({ error: "Failed to report classroom event" });
     }
 });
 
@@ -1517,9 +1613,8 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             return res.json({ ok: true, status: "admitted", lobbyEnabled: true });
         }
 
-        const durableLobby = getDurableLobby(classroomState);
-        const admittedList = durableLobby.admitted;
-        if (admittedList.includes(viewerId)) {
+        const existingLobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
+        if (existingLobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
             return res.json({ ok: true, status: "admitted" });
         }
 
@@ -1530,27 +1625,23 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             })
             : null;
 
-        const waiting = durableLobby.waiting.filter((entry) => Number(entry.id) !== viewerId);
-        waiting.push({
-            id: viewerId,
-            name: sender?.name || req.body?.name || "Learner",
+        const lobbyEntry = await requestLobbyAdmission(prisma, {
+            sessionId,
+            userId: viewerId,
+            displayName: sender?.name || req.body?.name || "Learner",
             email: sender?.email || null,
-            joinedAt: new Date().toISOString(),
         });
 
-        const denied = durableLobby.denied.filter((id) => id !== viewerId);
-        const nextState = mergeClassroomState(classroomState, {
-            lobby: { waiting, denied },
-        });
-        await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
-        });
+        if (lobbyEntry.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
+            return res.json({ ok: true, status: "admitted" });
+        }
+
+        const position = await getWaitingLobbyPosition(prisma, lobbyEntry);
 
         return res.json({
             ok: true,
             status: "waiting",
-            position: sortWaiting(waiting).findIndex((entry) => Number(entry.id) === viewerId) + 1,
+            position,
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/join failed");
@@ -1575,7 +1666,6 @@ router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
                 teacherId: true,
                 status: true,
                 endAt: true,
-                classroomState: true,
             },
         });
 
@@ -1594,10 +1684,10 @@ router.get("/sessions/:id/lobby", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "Only teachers can view the lobby" });
         }
 
-        const lobbyState = getDurableLobby(getStoredClassroomState(session.classroomState));
+        const waitingEntries = await listWaitingLobbyEntries(prisma, sessionId);
         return res.json({
             ok: true,
-            waiting: sortWaiting(lobbyState.waiting),
+            waiting: waitingEntries.map(toWaitingLearner),
         });
     } catch (err) {
         logger.error({ err }, "GET /sessions/:id/lobby failed");
@@ -1619,10 +1709,13 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
             where: { id: sessionId },
             select: {
                 id: true,
+                userId: true,
                 teacherId: true,
                 status: true,
                 endAt: true,
-                classroomState: true,
+                participants: {
+                    select: { userId: true, status: true },
+                },
             },
         });
 
@@ -1646,28 +1739,21 @@ router.post("/sessions/:id/lobby/admit", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "learnerId is required" });
         }
 
-        const existing = getStoredClassroomState(session.classroomState);
-        const lobby = getDurableLobby(existing);
-        const admitted = [...lobby.admitted];
-        if (!admitted.includes(learnerId)) {
-            admitted.push(learnerId);
+        if (!isActiveSessionLearner(session, learnerId)) {
+            return res.status(400).json({ error: "Learner is not an active session participant" });
         }
-        const waiting = lobby.waiting.filter((entry) => Number(entry.id) !== learnerId);
-        const denied = lobby.denied.filter((id) => id !== learnerId);
 
-        const nextState = mergeClassroomState(existing, {
-            lobby: { ...lobby, waiting, admitted, denied },
+        await decideLobbyEntry(prisma, {
+            sessionId,
+            userId: learnerId,
+            status: CLASSROOM_LOBBY_STATUS.ADMITTED,
         });
-
-        await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
-        });
+        const waiting = await listWaitingLobbyEntries(prisma, sessionId);
 
         return res.json({
             ok: true,
             admitted: learnerId,
-            waiting: sortWaiting(waiting),
+            waiting: waiting.map(toWaitingLearner),
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/admit failed");
@@ -1689,10 +1775,13 @@ router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
             where: { id: sessionId },
             select: {
                 id: true,
+                userId: true,
                 teacherId: true,
                 status: true,
                 endAt: true,
-                classroomState: true,
+                participants: {
+                    select: { userId: true, status: true },
+                },
             },
         });
 
@@ -1716,24 +1805,21 @@ router.post("/sessions/:id/lobby/deny", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "learnerId is required" });
         }
 
-        const existing = getStoredClassroomState(session.classroomState);
-        const lobby = getDurableLobby(existing);
-        const waiting = lobby.waiting.filter((entry) => Number(entry.id) !== learnerId);
-        const denied = lobby.denied.includes(learnerId)
-            ? lobby.denied
-            : [...lobby.denied, learnerId];
-        const nextState = mergeClassroomState(existing, {
-            lobby: { ...lobby, waiting, denied },
+        if (!isActiveSessionLearner(session, learnerId)) {
+            return res.status(400).json({ error: "Learner is not an active session participant" });
+        }
+
+        await decideLobbyEntry(prisma, {
+            sessionId,
+            userId: learnerId,
+            status: CLASSROOM_LOBBY_STATUS.DENIED,
         });
-        await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
-        });
+        const waiting = await listWaitingLobbyEntries(prisma, sessionId);
 
         return res.json({
             ok: true,
             denied: learnerId,
-            waiting: sortWaiting(waiting),
+            waiting: waiting.map(toWaitingLearner),
         });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/deny failed");
@@ -1758,7 +1844,6 @@ router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
                 teacherId: true,
                 status: true,
                 endAt: true,
-                classroomState: true,
             },
         });
 
@@ -1777,22 +1862,8 @@ router.post("/sessions/:id/lobby/admit-all", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "Only teachers can admit learners" });
         }
 
-        const existing = getStoredClassroomState(session.classroomState);
-        const lobby = getDurableLobby(existing);
-        const waitingList = sortWaiting(lobby.waiting);
-        const learnerIds = waitingList.map((l) => l.id);
-        const admitted = [...lobby.admitted];
-        for (const id of learnerIds) {
-            if (!admitted.includes(id)) admitted.push(id);
-        }
-        const nextState = mergeClassroomState(existing, {
-            lobby: { ...lobby, waiting: [], admitted },
-        });
-
-        await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
-        });
+        const admittedEntries = await admitAllWaitingLobbyEntries(prisma, sessionId);
+        const learnerIds = admittedEntries.map((entry) => entry.userId);
 
         return res.json({
             ok: true,
@@ -1843,23 +1914,31 @@ router.post("/sessions/:id/lobby/toggle", requireAuth, async (req, res) => {
         }
 
         const enabled = req.body?.enabled !== false;
-        const existing = getStoredClassroomState(session.classroomState);
-        const moderation = existing.moderation || {};
-
-        const nextState = {
-            ...existing,
-            moderation: { ...moderation, lobbyEnabled: enabled },
-            updatedAt: new Date().toISOString(),
-        };
-
-        await prisma.session.update({
-            where: { id: sessionId },
-            data: { classroomState: nextState },
+        const updated = await updateClassroomStateAtomic({
+            prismaClient: prisma,
+            sessionId,
+            buildNextState: (currentState) => mergeClassroomState(currentState, {
+                moderation: {
+                    lobbyEnabled: enabled,
+                    updatedAt: new Date().toISOString(),
+                },
+            }),
         });
 
-        return res.json({ ok: true, lobbyEnabled: enabled });
+        if (!updated) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+
+        return res.json({ ok: true, lobbyEnabled: enabled, version: updated.version });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/toggle failed");
+        if (err?.code === "CLASSROOM_STATE_CONTENTION") {
+            res.set("Retry-After", "1");
+            return res.status(503).json({
+                error: "Classroom state is busy. Please retry.",
+                code: err.code,
+            });
+        }
         return res.status(500).json({ error: "Failed to toggle lobby" });
     }
 });
@@ -1926,22 +2005,18 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
             return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
         }
 
-        // Check if already admitted
-        const lobby = getDurableLobby(classroomState);
-        if (lobby.admitted.includes(viewerId)) {
+        const lobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
+        if (lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
             return res.json({ ok: true, status: "admitted" });
         }
 
-        if (lobby.denied.includes(viewerId)) {
+        if (lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.DENIED) {
             return res.json({ ok: true, status: "denied" });
         }
 
-        // Check if in the durable waiting room
-        const position = sortWaiting(lobby.waiting).findIndex(
-            (entry) => Number(entry.id) === viewerId
-        );
-        if (position >= 0) {
-            return res.json({ ok: true, status: "waiting", position: position + 1 });
+        if (lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.WAITING) {
+            const position = await getWaitingLobbyPosition(prisma, lobbyEntry);
+            return res.json({ ok: true, status: "waiting", position });
         }
 
         // Not in lobby yet (needs to join)
