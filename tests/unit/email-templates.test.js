@@ -18,8 +18,20 @@ test("email dates use the Cairo fallback when a user timezone is missing or inva
   const expected = formatEmailDate("2026-09-27T12:00:00.000Z", "Africa/Cairo", "en");
 
   assert.match(expected, /03:00 PM/);
+  assert.match(expected, /\[Africa\/Cairo, UTC\+03:00\]/);
   assert.equal(formatEmailDate("2026-09-27T12:00:00.000Z", null, "en"), expected);
   assert.equal(formatEmailDate("2026-09-27T12:00:00.000Z", "Not/A_Timezone", "en"), expected);
+});
+
+test("email dates state the recipient timezone and offset instead of looking like UTC", () => {
+  assert.match(
+    formatEmailDate("2026-10-24T14:00:00.000Z", "Africa/Cairo", "en"),
+    /05:00 PM \[Africa\/Cairo, UTC\+03:00\]/
+  );
+  assert.match(
+    formatEmailDate("2026-10-24T14:00:00.000Z", "Asia/Hong_Kong", "en"),
+    /10:00 PM \[Asia\/Hong_Kong, UTC\+08:00\]/
+  );
 });
 
 test("Arabic transactional email is RTL and uses localized copy", () => {

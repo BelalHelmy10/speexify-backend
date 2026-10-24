@@ -120,6 +120,23 @@ function resolveEmailTimeZone(timeZone) {
   }
 }
 
+function formatEmailTimeZoneOffset(date, timeZone) {
+  const value = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  })
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+
+  if (!value || value === "GMT") return "UTC+00:00";
+
+  const match = value.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/);
+  if (!match) return value.replace(/^GMT/, "UTC");
+
+  const [, sign, hours, minutes = "00"] = match;
+  return `UTC${sign}${hours.padStart(2, "0")}:${minutes}`;
+}
+
 export function normalizeEmailLocale(value) {
   return String(value || "").toLowerCase().startsWith("ar") ? "ar" : "en";
 }
@@ -145,15 +162,24 @@ function safeHref(value) {
 
 export function formatEmailDate(date, timeZone, locale) {
   try {
-    return new Intl.DateTimeFormat(normalizeEmailLocale(locale) === "ar" ? "ar-EG" : "en-US", {
-      timeZone: resolveEmailTimeZone(timeZone),
+    const instant = new Date(date);
+    const resolvedTimeZone = resolveEmailTimeZone(timeZone);
+    const formatted = new Intl.DateTimeFormat(normalizeEmailLocale(locale) === "ar" ? "ar-EG" : "en-US", {
+      timeZone: resolvedTimeZone,
       weekday: "short",
       year: "numeric",
       month: "short",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    }).format(new Date(date));
+    }).format(instant);
+    const offset = formatEmailTimeZoneOffset(instant, resolvedTimeZone);
+
+    // Email clients and provider dashboards commonly display transport
+    // timestamps in UTC. Keep the session time unambiguous in the message
+    // body by stating both the recipient's IANA zone and its offset at the
+    // scheduled instant (which also handles daylight-saving changes).
+    return `${formatted} [${resolvedTimeZone}, ${offset}]`;
   } catch {
     return new Date(date).toISOString();
   }
