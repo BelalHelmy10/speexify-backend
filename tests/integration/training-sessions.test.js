@@ -92,6 +92,9 @@ test("admin training booking includes multiple teachers and learners without cre
     assert.equal(notifications[0].title, "Training scheduled");
     assert.deepEqual(deliveries.map((item) => item.userId), [7, 8, 10, 11, 99]);
     assert.match(deliveries[0].subject, /training/i);
+    assert.match(notifications.find((item) => item.userId === 7)?.body || "", /unpaid training/i);
+    assert.doesNotMatch(notifications.find((item) => item.userId === 10)?.body || "", /unpaid/i);
+    assert.doesNotMatch(deliveries.find((item) => item.userId === 10)?.bodyHtml || "", /unpaid/i);
 
     const learnerOnly = await request(app).post("/admin/sessions").send({ ...payload, teacherIds: [], learnerIds: [10] });
     assert.equal(learnerOnly.statusCode, 201, JSON.stringify(learnerOnly.body));
