@@ -103,6 +103,18 @@ export const WS_AUTH_TOKEN_SECRET = readSecretEnv(
 );
 requireProductionSecret("WS_AUTH_TOKEN_SECRET", WS_AUTH_TOKEN_SECRET);
 
+// Jitsi (meet.speexify.com) token authentication. When JITSI_APP_SECRET is
+// set, the backend issues short-lived per-room JWTs and derives unguessable
+// room names; the Jitsi deployment must then run with ENABLE_AUTH=1,
+// AUTH_TYPE=jwt and ENABLE_GUESTS=0 using the same JITSI_APP_ID/secret.
+export const JITSI_DOMAIN = (process.env.JITSI_DOMAIN || "meet.speexify.com").trim();
+export const JITSI_APP_ID = (process.env.JITSI_APP_ID || "speexify").trim();
+export const JITSI_APP_SECRET = readSecretEnv("JITSI_APP_SECRET");
+if (JITSI_APP_SECRET) {
+  requireProductionSecret("JITSI_APP_SECRET", JITSI_APP_SECRET);
+}
+export const JITSI_TOKEN_TTL_SECONDS = parsePositiveIntEnv("JITSI_TOKEN_TTL_SECONDS", 2 * 60 * 60);
+
 // OAuth audience is intentionally server-only. Never fall back to a public
 // frontend variable in the backend, because a release must verify against the
 // exact client registered in the Google Cloud project.

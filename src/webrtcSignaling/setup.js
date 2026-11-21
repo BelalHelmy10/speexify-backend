@@ -17,6 +17,7 @@ import { createRoomManager } from "./roomManager.js";
 import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
+import { filterClassroomEvents } from "./classroomEventPolicy.js";
 import { consumeRateLimit } from "../services/rateLimitService.js";
 import { prisma } from "../lib/prisma.js";
 import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
@@ -314,6 +315,7 @@ function setupWebRtcSignaling(httpServer) {
             return;
           }
 
+          let authorizationRole = null;
           if (typeof authorizeJoin === "function") {
             const meta = getMeta(ws);
             const authorization = await authorizeJoin({
@@ -348,6 +350,14 @@ function setupWebRtcSignaling(httpServer) {
               }
               return;
             }
+            authorizationRole = authorization.role || null;
+          }
+
+          if (channelName === "Classroom") {
+            const meta = getMeta(ws);
+            // Auth-disabled (local dev) joins have no authenticated role.
+            meta.classroomRole =
+              authorizationRole ?? (CONFIG.AUTH_ENABLED ? "learner" : "teacher");
           }
 
           await roomManager.join(ws, roomId);
@@ -392,19 +402,42 @@ function setupWebRtcSignaling(httpServer) {
               }
             }
 
-            if (publicEvents.length !== classroomEvents.length) {
-              if (!publicEvents.length) return;
+            if (!publicEvents.length) return;
 
-              const publicData = publicEvents.length === 1
-                ? publicEvents[0]
-                : { type: "BATCH", events: publicEvents };
-              roomManager.broadcast(ws, {
-                type: MSG_TYPES.SIGNAL,
-                signalType: msg.signalType,
-                data: publicData,
-              });
-              return;
-            }
+            const senderMeta = getMeta(ws);
+            const allowedEvents = await filterClassroomEvents(publicEvents, {
+              sessionId: parsePositiveInteger(roomId),
+              sender: {
+                userId: parsePositiveInteger(senderMeta.userId),
+                role: senderMeta.classroomRole || "learner",
+              },
+              prismaClient: prisma,
+              onDrop: (event, reason, err) => {
+                logger.warn(
+                  {
+                    roomId,
+                    userId: senderMeta.userId,
+                    role: senderMeta.classroomRole,
+                    eventType: event?.type,
+                    reason,
+                    err,
+                  },
+                  `[${channelName}] Dropped classroom event`
+                );
+              },
+            });
+
+            if (!allowedEvents.length) return;
+
+            roomManager.broadcast(ws, {
+              type: MSG_TYPES.SIGNAL,
+              signalType: msg.signalType,
+              data:
+                allowedEvents.length === 1
+                  ? allowedEvents[0]
+                  : { type: "BATCH", events: allowedEvents },
+            });
+            return;
           }
 
           roomManager.broadcast(ws, {

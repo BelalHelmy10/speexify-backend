@@ -52,6 +52,13 @@ function getClassroomMembership({ user, session, userId }) {
   };
 }
 
+export function getClassroomRole(membership) {
+  if (!membership?.isAllowed) return null;
+  if (membership.isTeacher) return "teacher";
+  if (membership.isAdmin) return "admin";
+  return "learner";
+}
+
 function isClassroomLocked(session) {
   const state = session?.classroomState;
   return Boolean(
@@ -157,8 +164,11 @@ export function createClassroomJoinAuthorizer({
       reason: "authorized",
       sessionId,
       userId: numericUserId,
+      role: getClassroomRole(membership),
     };
   };
 }
+
+export { getClassroomMembership };
 
 export const authorizeClassroomJoin = createClassroomJoinAuthorizer();
