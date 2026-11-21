@@ -1,7 +1,7 @@
 // src/webrtcSignaling/classroomAuthorization.js
 
 import { prisma } from "../lib/prisma.js";
-import { CLASSROOM_LOBBY_STATUS } from "../services/classroomStateService.js";
+import { isLearnerLobbyBlocked } from "../services/classroomStateService.js";
 import { CONFIG } from "./config.js";
 
 function parseClassroomSessionId(roomId) {
@@ -153,9 +153,13 @@ export function createClassroomJoinAuthorizer({
     }
 
     const lobbyEnabled = session?.classroomState?.moderation?.lobbyEnabled !== false;
-    const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
 
-    if (lobbyEnabled && membership.isLearner && !membership.isTeacher && !membership.isAdmin && !admitted) {
+    if (
+      membership.isLearner &&
+      !membership.isTeacher &&
+      !membership.isAdmin &&
+      isLearnerLobbyBlocked({ lobbyEnabled, status: lobbyEntry?.status })
+    ) {
       return { allowed: false, reason: "classroom_admission_required" };
     }
 

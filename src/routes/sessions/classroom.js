@@ -13,6 +13,7 @@ import {
     decideLobbyEntry,
     findLobbyEntry,
     getWaitingLobbyPosition,
+    isLearnerLobbyBlocked,
     listWaitingLobbyEntries,
     requestLobbyAdmission,
     toWaitingLearner,
@@ -546,11 +547,11 @@ router.get("/sessions/:id/annotations", requireAuth, async (req, res) => {
         const viewerId = Number(req.viewUserId || req.user?.id);
         const state = getStoredClassroomState(context.session.classroomState);
         const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
-        const lobbyEntry = lobbyEnabled
-            ? await findLobbyEntry(prisma, sessionId, viewerId)
-            : null;
-        const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
-        if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
+        const lobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
+        if (
+            context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin &&
+            isLearnerLobbyBlocked({ lobbyEnabled, status: lobbyEntry?.status })
+        ) {
             return res.status(403).json({ error: "Waiting for classroom admission" });
         }
         const ownerIds = [viewerId];
@@ -598,11 +599,11 @@ router.put("/sessions/:id/annotations", requireAuth, async (req, res) => {
         const state = getStoredClassroomState(context.session.classroomState);
         const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
         const lobbyViewerId = Number(req.viewUserId || req.user?.id);
-        const lobbyEntry = lobbyEnabled
-            ? await findLobbyEntry(prisma, sessionId, lobbyViewerId)
-            : null;
-        const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
-        if (context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin && lobbyEnabled && !admitted) {
+        const lobbyEntry = await findLobbyEntry(prisma, sessionId, lobbyViewerId);
+        if (
+            context.access.isLearner && !context.access.isTeacher && !context.access.isAdmin &&
+            isLearnerLobbyBlocked({ lobbyEnabled, status: lobbyEntry?.status })
+        ) {
             return res.status(403).json({ error: "Waiting for classroom admission" });
         }
 
@@ -1595,7 +1596,15 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
         // Check if lobby is enabled (enabled by default for all session types)
         const lobbyEnabled = classroomState?.moderation?.lobbyEnabled !== false;
 
-        if (!lobbyEnabled) {
+        // A learner the teacher removed must ask again even when the lobby is
+        // off; everyone else is admitted directly.
+        const priorEntry = !lobbyEnabled && !isTeacher
+            ? await findLobbyEntry(prisma, sessionId, viewerId)
+            : null;
+        const mustAskAgain = Boolean(priorEntry) &&
+            isLearnerLobbyBlocked({ lobbyEnabled: false, status: priorEntry.status });
+
+        if (!lobbyEnabled && !mustAskAgain) {
             // No lobby needed — directly admitted
             return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
         }
@@ -1929,6 +1938,11 @@ router.post("/sessions/:id/lobby/toggle", requireAuth, async (req, res) => {
             return res.status(404).json({ error: "Session not found" });
         }
 
+        // Turning the lobby off opens the door: anyone still waiting is in.
+        if (!enabled) {
+            await admitAllWaitingLobbyEntries(prisma, sessionId);
+        }
+
         return res.json({ ok: true, lobbyEnabled: enabled, version: updated.version });
     } catch (err) {
         logger.error({ err }, "POST /sessions/:id/lobby/toggle failed");
@@ -2000,12 +2014,17 @@ router.get("/sessions/:id/lobby/status", requireAuth, async (req, res) => {
 
         const classroomState = getStoredClassroomState(session.classroomState);
 
-        // Check if lobby is even enabled
-        if (classroomState?.moderation?.lobbyEnabled === false) {
+        const lobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
+
+        // Lobby off: admitted unless the teacher removed this learner. A
+        // removed learner goes through the waiting room again, so report the
+        // lobby as active for them.
+        if (
+            classroomState?.moderation?.lobbyEnabled === false &&
+            !isLearnerLobbyBlocked({ lobbyEnabled: false, status: lobbyEntry?.status })
+        ) {
             return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
         }
-
-        const lobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
         if (lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
             return res.json({ ok: true, status: "admitted" });
         }

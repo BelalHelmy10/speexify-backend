@@ -180,3 +180,35 @@ test("classroom join authorizer rejects invalid room ids, missing users, and dis
     false
   );
 });
+
+test("a learner the teacher removed stays out even when the lobby is off", async () => {
+  const learner = { id: 10, role: "learner", isDisabled: false };
+  for (const status of ["DENIED", "WAITING"]) {
+    const authorize = createClassroomJoinAuthorizer({
+      prismaClient: createFakePrisma({ user: learner, session: createSession(), lobbyEntry: { status } }),
+      authEnabled: true,
+    });
+    const result = await authorize({ roomId: "42", userId: "10" });
+    assert.equal(result.allowed, false, status);
+  }
+
+  const readmitted = createClassroomJoinAuthorizer({
+    prismaClient: createFakePrisma({ user: learner, session: createSession(), lobbyEntry: { status: "ADMITTED" } }),
+    authEnabled: true,
+  });
+  assert.equal((await readmitted({ roomId: "42", userId: "10" })).allowed, true);
+});
+
+test("a removed teacher-side entry never blocks the teacher", async () => {
+  const authorize = createClassroomJoinAuthorizer({
+    prismaClient: createFakePrisma({
+      user: { id: 20, role: "teacher", isDisabled: false },
+      session: createSession(),
+      lobbyEntry: { status: "DENIED" },
+    }),
+    authEnabled: true,
+  });
+  const result = await authorize({ roomId: "42", userId: "20" });
+  assert.equal(result.allowed, true);
+  assert.equal(result.role, "teacher");
+});

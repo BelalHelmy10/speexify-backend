@@ -190,6 +190,36 @@ function createRoomManager(options) {
     }
   }
 
+  function disconnectUserInRoom(roomId, userId, { code = 4003, reason = "Removed" } = {}) {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const targetUserId = String(userId || "");
+    if (!targetUserId) return;
+
+    for (const peer of Array.from(room)) {
+      const peerMeta = getMeta(peer);
+      if (peerMeta.userId == null || String(peerMeta.userId) !== targetUserId) continue;
+      void leave(peer);
+      try {
+        peer.close(code, reason);
+      } catch (err) {
+        logger.warn({ err }, `[${name}] Failed to close removed peer`);
+      }
+    }
+  }
+
+  function disconnectUser(ws, userId, options) {
+    const roomId = getMeta(ws)[roomIdKey];
+    if (!roomId) return;
+    disconnectUserInRoom(roomId, userId, options);
+    publish({
+      eventType: "disconnect-user",
+      roomId,
+      targetUserId: String(userId || ""),
+      senderConnectionId: getConnectionId(ws),
+    });
+  }
+
   function sendToUser(ws, userId, message) {
     const roomId = getMeta(ws)[roomIdKey];
     if (!roomId) return;
@@ -217,6 +247,8 @@ function createRoomManager(options) {
       broadcastRoom(event.roomId, event.message);
     } else if (event.eventType === "private-message") {
       sendToUserInRoom(event.roomId, event.targetUserId, event.message);
+    } else if (event.eventType === "disconnect-user") {
+      disconnectUserInRoom(event.roomId, event.targetUserId);
     } else if (event.eventType === "peer-joined" && notifyOnJoin) {
       broadcastRoom(event.roomId, { type: MSG_TYPES.PEER_JOINED, roomId: event.roomId });
     } else if (event.eventType === "peer-left" && notifyOnLeave) {
@@ -245,6 +277,8 @@ function createRoomManager(options) {
     broadcastRoom,
     sendToUser,
     sendToUserInRoom,
+    disconnectUser,
+    disconnectUserInRoom,
     handleRemoteEvent,
     getRoom,
     getRoomId,

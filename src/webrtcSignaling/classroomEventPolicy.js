@@ -30,7 +30,17 @@ export const TEACHER_ONLY_CLASSROOM_EVENTS = new Set([
   "LOBBY_DENIED",
   "LOBBY_ADMIT_ALL",
   "SESSION_NOTES_UPDATE",
+  "MODERATION_MUTE",
+  "MODERATION_REMOVE",
+  "VIDEO_PARTICIPANT_REQUEST",
 ]);
+
+const MODERATION_MEDIA = new Set(["audio", "video"]);
+
+function parsePositiveId(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
 
 export const SENDER_STAMP_KEY = "_from";
 
@@ -56,6 +66,29 @@ export function stampClassroomEvent(event, sender) {
 
   const stamped = { ...event };
   stamped[SENDER_STAMP_KEY] = { userId: sender?.userId ?? null, role };
+
+  if (event.type === "MODERATION_MUTE") {
+    if (!MODERATION_MEDIA.has(event.media)) return null;
+    const target = event.targetUserId === "all" ? "all" : parsePositiveId(event.targetUserId);
+    if (!target) return null;
+    stamped.targetUserId = target;
+  }
+
+  if (event.type === "MODERATION_REMOVE") {
+    const target = parsePositiveId(event.targetUserId);
+    if (!target) return null;
+    stamped.targetUserId = target;
+  }
+
+  // Links a Jitsi participant id to the authenticated classroom user, so the
+  // teacher's moderation controls act on the right person.
+  if (event.type === "VIDEO_PARTICIPANT") {
+    const participantId = typeof event.participantId === "string" ? event.participantId.trim() : "";
+    if (!participantId || participantId.length > 64) return null;
+    stamped.participantId = participantId;
+    stamped.userId = sender?.userId ?? null;
+    stamped.role = role;
+  }
 
   // Typing indicators carry self-described identity; overwrite it.
   if (event.type === "CHAT_TYPING") {
@@ -178,4 +211,18 @@ export async function filterClassroomEvents(events, { sessionId, sender, prismaC
     allowed.push(resolved);
   }
   return allowed;
+}
+
+/**
+ * A removal is only delivered once the REST lobby/deny call has persisted it,
+ * so a removal cannot be faked or race ahead of the lobby state.
+ */
+export async function isRemovalPersisted(event, { sessionId, prismaClient }) {
+  const targetUserId = parsePositiveId(event?.targetUserId);
+  if (!sessionId || !targetUserId) return false;
+  const entry = await prismaClient.classroomLobbyEntry.findUnique({
+    where: { sessionId_userId: { sessionId, userId: targetUserId } },
+    select: { status: true },
+  });
+  return entry?.status === "DENIED";
 }

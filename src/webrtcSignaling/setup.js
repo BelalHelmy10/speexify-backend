@@ -17,7 +17,7 @@ import { createRoomManager } from "./roomManager.js";
 import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
-import { filterClassroomEvents } from "./classroomEventPolicy.js";
+import { filterClassroomEvents, isRemovalPersisted } from "./classroomEventPolicy.js";
 import { consumeRateLimit } from "../services/rateLimitService.js";
 import { prisma } from "../lib/prisma.js";
 import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
@@ -26,6 +26,10 @@ import {
   releaseConnection,
   touchConnection,
 } from "../services/distributedState.js";
+
+// Give the removed learner's client a moment to receive the removal notice
+// before its sockets are closed.
+const REMOVAL_DISCONNECT_DELAY_MS = 500;
 
 function setupWebRtcSignaling(httpServer) {
   const wssPrep = new WebSocketServer({
@@ -427,15 +431,48 @@ function setupWebRtcSignaling(httpServer) {
               },
             });
 
-            if (!allowedEvents.length) return;
+            // Removals go only to the removed learner, then their sockets are
+            // closed. The REST lobby/deny call must already have persisted it.
+            const broadcastEvents = [];
+            for (const event of allowedEvents) {
+              if (event.type !== "MODERATION_REMOVE") {
+                broadcastEvents.push(event);
+                continue;
+              }
+              const classroomSessionId = parsePositiveInteger(roomId);
+              let persisted = false;
+              try {
+                persisted = await isRemovalPersisted(event, {
+                  sessionId: classroomSessionId,
+                  prismaClient: prisma,
+                });
+              } catch (err) {
+                logger.warn({ err, roomId }, `[${channelName}] Removal lookup failed`);
+              }
+              if (!persisted) {
+                safeSend(ws, { type: MSG_TYPES.ERROR, code: "removal_not_persisted" });
+                continue;
+              }
+              roomManager.sendToUser(ws, event.targetUserId, {
+                type: MSG_TYPES.SIGNAL,
+                signalType: msg.signalType,
+                data: event,
+              });
+              const targetUserId = event.targetUserId;
+              setTimeout(() => {
+                roomManager.disconnectUser(ws, targetUserId);
+              }, REMOVAL_DISCONNECT_DELAY_MS);
+            }
+
+            if (!broadcastEvents.length) return;
 
             roomManager.broadcast(ws, {
               type: MSG_TYPES.SIGNAL,
               signalType: msg.signalType,
               data:
-                allowedEvents.length === 1
-                  ? allowedEvents[0]
-                  : { type: "BATCH", events: allowedEvents },
+                broadcastEvents.length === 1
+                  ? broadcastEvents[0]
+                  : { type: "BATCH", events: broadcastEvents },
             });
             return;
           }

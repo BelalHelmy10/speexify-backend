@@ -7,6 +7,17 @@ export const CLASSROOM_LOBBY_STATUS = Object.freeze({
   DENIED: "DENIED",
 });
 
+/**
+ * Whether a learner (not teacher/admin) must stay out of the live classroom.
+ * With the lobby on, only ADMITTED learners are in. With it off, everyone is
+ * in except learners the teacher removed (DENIED) and removed learners who
+ * asked to come back and are WAITING for the teacher again.
+ */
+export function isLearnerLobbyBlocked({ lobbyEnabled, status }) {
+  if (lobbyEnabled) return status !== CLASSROOM_LOBBY_STATUS.ADMITTED;
+  return status === CLASSROOM_LOBBY_STATUS.DENIED || status === CLASSROOM_LOBBY_STATUS.WAITING;
+}
+
 function isUniqueConstraintError(error) {
   return error?.code === "P2002";
 }

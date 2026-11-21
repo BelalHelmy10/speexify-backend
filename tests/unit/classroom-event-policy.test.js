@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   SENDER_STAMP_KEY,
   filterClassroomEvents,
+  isRemovalPersisted,
   stampClassroomEvent,
 } from "../../src/webrtcSignaling/classroomEventPolicy.js";
 
@@ -90,4 +91,32 @@ test("ordinary learner events pass through stamped", async () => {
   );
   assert.equal(out.length, 2);
   assert.ok(out.every((e) => e[SENDER_STAMP_KEY].userId === 7));
+});
+
+test("moderation events are teacher-only and validated", () => {
+  assert.equal(stampClassroomEvent({ type: "MODERATION_MUTE", media: "audio", targetUserId: "all" }, learner), null);
+  assert.equal(stampClassroomEvent({ type: "MODERATION_REMOVE", targetUserId: 7 }, learner), null);
+  assert.equal(stampClassroomEvent({ type: "MODERATION_MUTE", media: "screen", targetUserId: 7 }, teacher), null);
+  assert.equal(stampClassroomEvent({ type: "MODERATION_MUTE", media: "audio", targetUserId: "x" }, teacher), null);
+  assert.equal(stampClassroomEvent({ type: "MODERATION_MUTE", media: "video", targetUserId: "7" }, teacher).targetUserId, 7);
+  assert.equal(stampClassroomEvent({ type: "MODERATION_MUTE", media: "audio", targetUserId: "all" }, teacher).targetUserId, "all");
+  assert.equal(stampClassroomEvent({ type: "MODERATION_REMOVE", targetUserId: 0 }, teacher), null);
+});
+
+test("video participant identity comes from the authenticated sender", () => {
+  const out = stampClassroomEvent({ type: "VIDEO_PARTICIPANT", participantId: "abc123", userId: 3, role: "teacher" }, learner);
+  assert.equal(out.userId, 7);
+  assert.equal(out.role, "learner");
+  assert.equal(stampClassroomEvent({ type: "VIDEO_PARTICIPANT", participantId: "" }, learner), null);
+  assert.equal(stampClassroomEvent({ type: "VIDEO_PARTICIPANT", participantId: "x".repeat(65) }, learner), null);
+});
+
+test("removal is delivered only once the lobby denial is persisted", async () => {
+  const prismaFor = (status) => ({
+    classroomLobbyEntry: { findUnique: async () => (status ? { status } : null) },
+  });
+  const event = { type: "MODERATION_REMOVE", targetUserId: 7 };
+  assert.equal(await isRemovalPersisted(event, { sessionId: 9, prismaClient: prismaFor("DENIED") }), true);
+  assert.equal(await isRemovalPersisted(event, { sessionId: 9, prismaClient: prismaFor("ADMITTED") }), false);
+  assert.equal(await isRemovalPersisted(event, { sessionId: 9, prismaClient: prismaFor(null) }), false);
 });
