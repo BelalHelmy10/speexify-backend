@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { ALLOWED_ORIGINS, CALENDAR_FEED_SECRET, isProd } from "../config/env.js";
+import { CALENDAR_FEED_SECRET, isProd } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
 
@@ -15,11 +15,10 @@ function signFeedId(feedId) {
 }
 
 function calendarUrl(req, token) {
-  const defaultOrigin = isProd
-    ? ALLOWED_ORIGINS.find((value) => value.startsWith("https://")) ||
-      process.env.RENDER_EXTERNAL_URL || "https://speexify.com"
-    : `${req.protocol}://${req.get("host")}`;
-  const origin = process.env.FRONTEND_URL?.trim() || defaultOrigin;
+  const origin =
+    process.env.CALENDAR_FEED_PUBLIC_ORIGIN?.trim() ||
+    process.env.RENDER_EXTERNAL_URL?.trim() ||
+    (isProd ? "https://www.speexify.com" : `${req.protocol}://${req.get("host")}`);
   const url = new URL("/api/calendar.ics", origin);
   url.searchParams.set("token", token);
   return url.href;

@@ -63,6 +63,32 @@ function feedPath(url) {
   return pathname + search;
 }
 
+test("subscriptions use the public API origin even when the frontend URL is outdated", async (t) => {
+  const { client } = await createCalendarApp(t);
+  const env = {
+    FRONTEND_URL: "https://old-frontend.example.test",
+    RENDER_EXTERNAL_URL: "https://calendar-api.example.test",
+    CALENDAR_FEED_PUBLIC_ORIGIN: "",
+  };
+  for (const [name, value] of Object.entries(env)) {
+    const previous = process.env[name];
+    process.env[name] = value;
+    t.after(() => {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    });
+  }
+
+  const render = await client.get(exportPath).set("test-user", "1").expect(200);
+  assert.equal(new URL(render.body.httpsUrl).origin, env.RENDER_EXTERNAL_URL);
+  assert.equal(new URL(render.body.webcalUrl).host, "calendar-api.example.test");
+
+  process.env.CALENDAR_FEED_PUBLIC_ORIGIN = "https://calendar.example.test";
+  const custom = await client.get(exportPath).set("test-user", "1").expect(200);
+  assert.equal(new URL(custom.body.httpsUrl).origin, process.env.CALENDAR_FEED_PUBLIC_ORIGIN);
+  assert.equal(feedPath(custom.body.httpsUrl), feedPath(render.body.httpsUrl));
+});
+
 test("a private subscription keeps its URL and updates when the same URL is fetched again", async (t) => {
   const { client } = await createCalendarApp(t);
   const session = {

@@ -291,6 +291,8 @@ GOOGLE_CLIENT_ID – Server-only Google OAuth audience. It is required in produc
 
 CALENDAR_FEED_SECRET – Signs private calendar subscription links and falls back to `SESSION_SECRET`. Keep this value stable across deployments. Changing the effective secret requires subscribers to add their calendar with the new link. Users can revoke their feed in Settings. Links issued before calendar subscriptions keep their original expiration dates.
 
+CALENDAR_FEED_PUBLIC_ORIGIN – Optional public origin that serves `/api/calendar.ics`. On Render it defaults to the backend service's public URL. Other production deployments default to `https://www.speexify.com` and can override it with their own HTTPS origin.
+
 REDIS_URL – Redis connection string. Required in production and in the default E2E suite for sessions, shared WebSocket rooms, connection limits, and rate limits.
 
 SESSION_REDIS_STRICT – Makes Redis session startup fail instead of falling back to memory. It defaults to enabled in production; keep it enabled outside local development too.
