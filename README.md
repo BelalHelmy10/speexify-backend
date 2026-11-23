@@ -289,7 +289,7 @@ UPLOAD_MALWARE_SCAN_COMMAND – Executable used to scan every avatar, support at
 
 GOOGLE_CLIENT_ID – Server-only Google OAuth audience. It is required in production and must match the OAuth client whose authorized JavaScript origins include the deployed frontend.
 
-CALENDAR_FEED_TTL_DAYS – Lifetime of newly generated opaque calendar links, clamped to 1–90 days. Calendar tokens are hashed in the database and can be revoked from Settings.
+CALENDAR_FEED_SECRET – Signs private calendar subscription links and falls back to `SESSION_SECRET`. Keep this value stable across deployments. Changing the effective secret requires subscribers to add their calendar with the new link. Users can revoke their feed in Settings. Links issued before calendar subscriptions keep their original expiration dates.
 
 REDIS_URL – Redis connection string. Required in production and in the default E2E suite for sessions, shared WebSocket rooms, connection limits, and rate limits.
 

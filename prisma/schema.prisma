@@ -84,6 +84,7 @@ model User {
   notifications          Notification[]
   notificationDeliveries NotificationDelivery[]
   calendarFeedTokens    CalendarFeedToken[]
+  calendarSubscription  CalendarSubscription?
 
   // Support tickets + messages
   supportTickets       SupportTicket[]
@@ -270,6 +271,13 @@ model CalendarFeedToken {
 
   @@index([userId, revokedAt])
   @@index([expiresAt])
+}
+
+model CalendarSubscription {
+  userId Int    @id
+  feedId String @unique
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -115,13 +115,15 @@ if (JITSI_APP_SECRET) {
 }
 export const JITSI_TOKEN_TTL_SECONDS = parsePositiveIntEnv("JITSI_TOKEN_TTL_SECONDS", 2 * 60 * 60);
 
-// OAuth audience is intentionally server-only. Never fall back to a public
-// frontend variable in the backend, because a release must verify against the
-// exact client registered in the Google Cloud project.
 export const CALENDAR_FEED_SECRET = readSecretEnv(
   "CALENDAR_FEED_SECRET",
   SESSION_SECRET
 );
+requireProductionSecret("CALENDAR_FEED_SECRET", CALENDAR_FEED_SECRET);
+
+// OAuth audience is intentionally server-only. Never fall back to a public
+// frontend variable in the backend, because a release must verify against the
+// exact client registered in the Google Cloud project.
 export const GOOGLE_CLIENT_ID = readSecretEnv("GOOGLE_CLIENT_ID");
 if (isProd && !GOOGLE_CLIENT_ID) {
   throw new Error("GOOGLE_CLIENT_ID must be set in production");
