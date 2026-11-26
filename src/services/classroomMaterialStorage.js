@@ -80,15 +80,36 @@ export async function deleteMaterial(sessionId, storedFilename) {
   } else await fs.rm(path.join(localRoot, filename), { force: true });
 }
 
+// A stored material never changes for a given id, so a stable validator lets
+// the browser keep its copy: every reopen/late join revalidates (the
+// membership check still runs) and gets a 304 instead of re-downloading the
+// PDF over the learner's connection, which competed with the video call.
+export const MATERIAL_CACHE_CONTROL = "private, no-cache";
+
+export function materialEtag(material) {
+  return `"m-${material.id}-${material.size ?? 0}"`;
+}
+
+function matchesEtag(req, etag) {
+  const header = req.headers["if-none-match"];
+  if (!header) return false;
+  return String(header).split(",").map((value) => value.trim().replace(/^W\//, "")).includes(etag);
+}
+
 export async function sendMaterial(req, res, material) {
+  const etag = materialEtag(material);
+  if (matchesEtag(req, etag)) {
+    res.set({ ETag: etag, "Cache-Control": MATERIAL_CACHE_CONTROL });
+    return res.status(304).end();
+  }
   if (material.filename.startsWith("cloudinary:")) return sendCloudinaryMaterial(req, res, material);
   const remote = material.filename.startsWith("s3:");
   const filename = remote ? material.filename.slice(3) : material.filename;
   const key = objectKey(material.sessionId, filename);
   res.set({ "Content-Type": "application/pdf", "Content-Disposition": "inline",
-    "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+    "Cache-Control": MATERIAL_CACHE_CONTROL, ETag: etag, "X-Content-Type-Options": "nosniff" });
   if (!remote) {
-    return res.sendFile(path.join(localRoot, filename), (error) => {
+    return res.sendFile(path.join(localRoot, filename), { etag: false, lastModified: false, cacheControl: false }, (error) => {
       if (error && !res.headersSent) res.status(error.statusCode || 404).json({ error: "PDF not found" });
     });
   }

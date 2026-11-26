@@ -88,7 +88,18 @@ test("only the teacher can upload a PDF and only classroom members can read it",
     assert.equal(partial.statusCode, 206);
     assert.equal(partial.headers["accept-ranges"], "bytes");
     assert.deepEqual(partial.body, Buffer.from("%PDF-"));
-    assert.equal(partial.headers["cache-control"], "private, no-store");
+    assert.equal(partial.headers["cache-control"], "private, no-cache");
+    assert.match(partial.headers.etag, /^"m-/);
+
+    // Reopening revalidates (membership is still checked) and is not re-sent.
+    const revalidated = await request(app)
+      .get(`/sessions/42/materials/${storedMaterial.id}/file`)
+      .set("x-test-user", "10").set("If-None-Match", partial.headers.etag);
+    assert.equal(revalidated.statusCode, 304);
+    const outsiderRevalidation = await request(app)
+      .get(`/sessions/42/materials/${storedMaterial.id}/file`)
+      .set("x-test-user", "30").set("If-None-Match", partial.headers.etag);
+    assert.notEqual(outsiderRevalidation.statusCode, 304);
 
     const invalidRange = await request(app)
       .get(`/sessions/42/materials/${storedMaterial.id}/file`)

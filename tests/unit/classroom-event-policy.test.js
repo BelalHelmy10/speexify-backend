@@ -120,3 +120,24 @@ test("removal is delivered only once the lobby denial is persisted", async () =>
   assert.equal(await isRemovalPersisted(event, { sessionId: 9, prismaClient: prismaFor("ADMITTED") }), false);
   assert.equal(await isRemovalPersisted(event, { sessionId: 9, prismaClient: prismaFor(null) }), false);
 });
+
+test("screen-share and join/leave notices describe only their real sender", () => {
+  const share = stampClassroomEvent(
+    { type: "SCREEN_SHARE", on: true, sharerId: "999", sharerName: "Teacher" },
+    { userId: 11, role: "learner" }
+  );
+  assert.equal(share.sharerId, "11");
+
+  const notice = stampClassroomEvent(
+    { type: "CHAT_SYSTEM", kind: "join", role: "teacher", name: "x".repeat(400) },
+    { userId: 11, role: "learner" }
+  );
+  assert.equal(notice.role, "learner");
+  assert.equal(notice.name.length, 120);
+
+  const teacherNotice = stampClassroomEvent(
+    { type: "CHAT_SYSTEM", kind: "join", role: "learner", name: "Mona" },
+    { userId: 2, role: "teacher" }
+  );
+  assert.equal(teacherNotice.role, "teacher");
+});

@@ -112,7 +112,8 @@ export async function sendCloudinaryMaterial(req, res, material) {
     }
     res.status(response.status).set({
       "Content-Type": "application/pdf", "Content-Disposition": "inline",
-      "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff",
+      ETag: `"m-${material.id}-${material.size ?? 0}"`,
     });
     for (const name of ["Content-Length", "Content-Range", "Accept-Ranges"]) {
       const value = response.headers.get(name);

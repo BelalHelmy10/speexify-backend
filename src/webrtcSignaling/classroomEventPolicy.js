@@ -90,6 +90,16 @@ export function stampClassroomEvent(event, sender) {
     stamped.role = role;
   }
 
+  // Screen-share status (older clients still broadcast it) and join/leave
+  // notices are about the sender; never let a client describe someone else.
+  if (event.type === "SCREEN_SHARE") {
+    stamped.sharerId = sender?.userId == null ? "" : String(sender.userId);
+  }
+  if (event.type === "CHAT_SYSTEM") {
+    stamped.role = isPrivilegedClassroomRole(role) ? "teacher" : "learner";
+    stamped.name = typeof event.name === "string" ? event.name.slice(0, 120) : "Participant";
+  }
+
   // Typing indicators carry self-described identity; overwrite it.
   if (event.type === "CHAT_TYPING") {
     stamped.senderId = sender?.userId ?? null;

@@ -18,7 +18,7 @@ import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
 import { filterClassroomEvents, isRemovalPersisted } from "./classroomEventPolicy.js";
-import { consumeRateLimit } from "../services/rateLimitService.js";
+import { createLocalRateLimiter, createSerialQueue } from "./messageFlow.js";
 import { prisma } from "../lib/prisma.js";
 import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
 import {
@@ -276,19 +276,14 @@ function setupWebRtcSignaling(httpServer) {
     return async (ws, raw) => {
       const meta = getMeta(ws);
       if (CONFIG.RATE_LIMIT_ENABLED) {
-        const rateLimit = await consumeRateLimit({
-          key: `websocket:${channelName}:${meta.userId || meta.ip || "unknown"}`,
-          limit: CONFIG.RATE_LIMIT_MAX_MESSAGES,
-          windowMs: CONFIG.RATE_LIMIT_WINDOW_MS,
-        });
-        if (rateLimit.unavailable) {
-          safeSend(ws, {
-            type: MSG_TYPES.ERROR,
-            message: "Shared rate limiting is temporarily unavailable",
+        // Per-socket, in-process limiter: no network round-trip per message.
+        if (!meta.messageRateLimiter) {
+          meta.messageRateLimiter = createLocalRateLimiter({
+            limit: CONFIG.RATE_LIMIT_MAX_MESSAGES,
+            windowMs: CONFIG.RATE_LIMIT_WINDOW_MS,
           });
-          return;
         }
-        if (!rateLimit.allowed) {
+        if (!meta.messageRateLimiter.consume()) {
           safeSend(ws, { type: MSG_TYPES.ERROR, message: "Rate limit exceeded" });
           return;
         }
@@ -516,15 +511,24 @@ function setupWebRtcSignaling(httpServer) {
         });
       }
 
+      // Handle this socket's messages strictly in order: the join is
+      // authorised asynchronously, and events sent right after it must not
+      // overtake it (they were rejected as "Not in a room").
+      const messageQueue = createSerialQueue({
+        onError: (err) => {
+          logger.error({ err, ip }, `[${channelName}] Message handler failed`);
+          safeSend(ws, { type: MSG_TYPES.ERROR, message: "Server error" });
+        },
+      });
+
       ws.on("message", (raw) => {
         if (raw.length > CONFIG.MAX_MESSAGE_SIZE_BYTES) {
           safeSend(ws, { type: MSG_TYPES.ERROR, message: "Message too large" });
           return;
         }
-        Promise.resolve(messageHandler(ws, raw)).catch((err) => {
-          logger.error({ err, ip }, `[${channelName}] Message handler failed`);
-          safeSend(ws, { type: MSG_TYPES.ERROR, message: "Server error" });
-        });
+        if (!messageQueue.run(() => messageHandler(ws, raw))) {
+          safeSend(ws, { type: MSG_TYPES.ERROR, message: "Rate limit exceeded" });
+        }
       });
 
       ws.on("close", () => {
