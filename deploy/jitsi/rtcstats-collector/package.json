@@ -1,0 +1,9 @@
+{
+  "name": "speexify-rtcstats-collector",
+  "private": true,
+  "type": "module",
+  "description": "Collects Jitsi rtcstats from Speexify classroom calls and writes per-participant quality summaries.",
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}

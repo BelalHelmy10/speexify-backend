@@ -228,6 +228,11 @@ function sanitizeClassroomClientEvent(input) {
             audioMuted: typeof rawDetails.audioMuted === "boolean" ? rawDetails.audioMuted : null,
             videoMuted: typeof rawDetails.videoMuted === "boolean" ? rawDetails.videoMuted : null,
             networkState: safeString(rawDetails.networkState, 40),
+            // Jitsi endpoint id: links this classroom user to the video
+            // quality collector's per-participant summaries (endpointId).
+            participantId: /^[A-Za-z0-9-]{1,64}$/.test(String(rawDetails.participantId || ""))
+                ? String(rawDetails.participantId)
+                : null,
             networkReachable: typeof rawDetails.networkReachable === "boolean"
                 ? rawDetails.networkReachable
                 : null,

@@ -36,7 +36,7 @@ test("classroom connection telemetry accepts members and rejects outsiders", asy
   try {
     const payload = {
       event: "conference_joined",
-      details: { elapsedMs: 1250, retryAttempt: 0 },
+      details: { elapsedMs: 1250, retryAttempt: 0, participantId: "b6aae412" },
       userAgent: "Test Browser",
       viewport: { width: 390, height: 844, devicePixelRatio: 3 },
       online: true,
