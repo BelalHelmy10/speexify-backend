@@ -27,6 +27,7 @@ import { validateRequest } from "../middleware/validateRequest.js";
 import { isValidPhone, normalizePhone } from "../lib/phone.js";
 import { MARKETING_PHONE_CONSENT_VERSION } from "../lib/marketingConsent.js";
 import { notifyNewRegistration } from "../services/registrationNotifications.js";
+import { TrialDetailsSchema, notifyFreeSessionRequest } from "../services/freeSessionRequests.js";
 
 const router = Router();
 
@@ -55,6 +56,11 @@ const RegisterCompleteBodySchema = z.object({
     message: "Enter a valid phone number with 8 to 15 digits",
   }),
   marketingPhoneConsent: z.boolean().optional().default(false),
+});
+
+const CompleteTrialRegistrationBodySchema = RegisterCompleteBodySchema.extend({
+  name: z.string().trim().min(2).max(120),
+  trial: TrialDetailsSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -123,7 +129,7 @@ const googleUserSelect = {
 };
 
 // ---- Codes + hashing ----
-const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
+const genCode = () => String(crypto.randomInt(100_000, 1_000_000));
 const hashCode = (raw) =>
   crypto.createHash("sha256").update(String(raw)).digest("hex");
 
@@ -688,7 +694,7 @@ router.post("/register/start", emailCodeLimiter, validateRequest({ body: EmailOn
 
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      return res.status(409).json({ error: "Email is already registered" });
+      return res.status(409).json({ code: "EMAIL_ALREADY_REGISTERED", error: "Email is already registered" });
     }
 
     const prev = await prisma.verificationCode.findUnique({ where: { email } });
@@ -759,7 +765,7 @@ router.post("/register/start", emailCodeLimiter, validateRequest({ body: EmailOn
   }
 });
 
-router.post("/register/complete", emailCodeLimiter, validateRequest({ body: RegisterCompleteBodySchema }), async (req, res) => {
+async function completeRegistration(req, res) {
   try {
     const email = String(req.body?.email || "")
       .toLowerCase()
@@ -769,6 +775,7 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
     const name = String(req.body?.name || "");
     const phone = normalizePhone(req.body?.phone);
     const marketingPhoneConsent = Boolean(req.body?.marketingPhoneConsent);
+    const { trial } = req.body;
 
     if (!/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ error: "Valid email is required" });
@@ -780,87 +787,97 @@ router.post("/register/complete", emailCodeLimiter, validateRequest({ body: Regi
 
     const passwordError = validatePasswordStrength(password, "Password");
     if (passwordError) {
-      return res.status(400).json({ error: passwordError });
+      return res.status(400).json({ code: "INVALID_PASSWORD", error: passwordError });
     }
 
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) {
-      return res.status(409).json({ error: "Email is already registered" });
+      return res.status(409).json({ code: "EMAIL_ALREADY_REGISTERED", error: "Email is already registered" });
     }
 
     const v = await prisma.verificationCode.findUnique({ where: { email } });
     if (!v) {
       return res
         .status(400)
-        .json({ error: "No verification code found for this email" });
+        .json({ code: "VERIFICATION_EXPIRED", error: "No verification code found for this email" });
     }
 
     if (new Date() > v.expiresAt) {
-      await prisma.verificationCode.delete({ where: { email } });
-      return res.status(400).json({ error: "Verification code has expired" });
+      return res.status(400).json({ code: "VERIFICATION_EXPIRED", error: "Verification code has expired" });
     }
 
     if (v.attempts >= 5) {
-      await prisma.verificationCode.delete({ where: { email } });
       return res
         .status(429)
-        .json({ error: "Too many attempts. Request a new code." });
+        .json({ code: "VERIFICATION_ATTEMPTS_EXHAUSTED", error: "Too many attempts. Request a new code." });
     }
 
+    const currentCode = { email, codeHash: v.codeHash, expiresAt: v.expiresAt };
     const isMatch = v.codeHash === hashCode(code);
     if (!isMatch) {
-      await prisma.verificationCode.update({
-        where: { email },
+      await prisma.verificationCode.updateMany({
+        where: { ...currentCode, attempts: { lt: 5 } },
         data: { attempts: { increment: 1 } },
       });
-      return res.status(400).json({ error: "Invalid verification code" });
+      return res.status(400).json({ code: "INVALID_VERIFICATION_CODE", error: "Invalid verification code" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: {
-        email,
-        name: name || null,
-        phone,
-        hashedPassword,
-        role: "learner",
-        ...(marketingPhoneConsent
-          ? {
-              marketingPhoneConsentAt: new Date(),
-              marketingPhoneConsentSource: "registration",
-              marketingPhoneConsentVersion: MARKETING_PHONE_CONSENT_VERSION,
-            }
-          : {}),
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        avatarUrl: true,
-        role: true,
-        timezone: true,
-        language: true,
-        phone: true,
-        marketingPhoneConsentAt: true,
-        marketingPhoneConsentSource: true,
-        marketingPhoneConsentVersion: true,
-        marketingPhoneOptOutAt: true,
-        isDisabled: true,
-        createdAt: true,
-      },
+    const registration = await prisma.$transaction(async (tx) => {
+      const consumed = await tx.verificationCode.deleteMany({
+        where: { ...currentCode, expiresAt: { equals: v.expiresAt, gt: new Date() }, attempts: { lt: 5 } },
+      });
+      if (!consumed.count) return null;
+
+      const user = await tx.user.create({
+        data: {
+          email,
+          name: name || null,
+          phone,
+          hashedPassword,
+          role: "learner",
+          ...(trial ? { language: trial.locale } : {}),
+          ...(marketingPhoneConsent
+            ? {
+                marketingPhoneConsentAt: new Date(),
+                marketingPhoneConsentSource: "registration",
+                marketingPhoneConsentVersion: MARKETING_PHONE_CONSENT_VERSION,
+              }
+            : {}),
+        },
+        select: googleUserSelect,
+      });
+
+      const request = trial
+        ? await tx.freeSessionRequest.create({ data: { ...trial, userId: user.id, name, phone, email } })
+        : null;
+      return { user, request };
     });
 
-    await prisma.verificationCode.delete({ where: { email } });
+    if (!registration) {
+      return res.status(400).json({ code: "VERIFICATION_EXPIRED", error: "Request a new verification code" });
+    }
 
-    await notifyNewRegistration({ user, source: "email" });
-
+    const { user, request } = registration;
     establishLoginSession(req, user);
+    await Promise.all([
+      notifyNewRegistration({ user, source: "email" }),
+      request && notifyFreeSessionRequest(request),
+    ]);
 
-    return res.json({ ok: true, user });
+    return res.json({ ok: true, user, ...(request ? { requestId: request.id } : {}) });
   } catch (err) {
+    if (err.code === "P2002") {
+      return res.status(409).json({ code: "EMAIL_ALREADY_REGISTERED", error: "Email is already registered" });
+    }
     logger.error({ err }, "register/complete error");
     return res.status(500).json({ error: "Failed to complete registration" });
   }
-});
+}
+
+router.post("/register/complete", emailCodeLimiter,
+  validateRequest({ body: RegisterCompleteBodySchema }), completeRegistration);
+router.post("/register/complete-trial", emailCodeLimiter,
+  validateRequest({ body: CompleteTrialRegistrationBodySchema }), completeRegistration);
 
 export default router;

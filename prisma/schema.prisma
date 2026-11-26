@@ -67,6 +67,7 @@ model User {
   reviewedAssessments       AssessmentSubmission[] @relation("AssessmentReviewReviewer")
   audits                    Audit[]                @relation("Audit_actor")
   onboardingForms           OnboardingForm[]
+  freeSessionRequest        FreeSessionRequest?
   teachingSessions          Session[]              @relation("SessionTeacher")
   organizedTrainingSessions Session[]              @relation("TrainingOrganizer")
 
@@ -956,11 +957,11 @@ model OnboardingForm {
   @@index([userId, createdAt])
 }
 
-// Public first-session requests from the marketing site. These are intentionally
-// separate from authenticated onboarding so a visitor can book without creating
-// an account first.
+// First-session requests. Older requests may predate account-linked booking.
 model FreeSessionRequest {
   id                Int      @id @default(autoincrement())
+  userId            Int?     @unique
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   name              String
   phone             String
   email             String?
