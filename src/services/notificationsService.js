@@ -10,6 +10,9 @@ import {
   emailCopy,
   feedbackEmail,
   formatEmailDate,
+  homeworkAssignedEmail,
+  homeworkReviewedEmail,
+  homeworkSubmittedEmail,
   normalizeEmailLocale,
   sessionUpdatedLearnerEmail,
   sessionUpdatedTeacherEmail,
@@ -939,4 +942,127 @@ export async function sendFeedbackNotifications({
     { sessionId: session.id, learnerIds, teacherId },
     "Feedback notifications sent"
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Homework
+// Each sender creates the in-app notification and queues the email. A
+// failure for one recipient is logged and never blocks the request.
+// ─────────────────────────────────────────────────────────────────────────
+
+async function deliverHomeworkNotice({ recipient, type, title, body, data, email, eventType }) {
+  try {
+    await createNotification({ userId: recipient.id, type, title, body, data });
+  } catch (e) {
+    logger.error({ err: e, userId: recipient.id, type }, "[notifications] homework in-app notice failed");
+  }
+  if (!recipient.email) return;
+  try {
+    await enqueueEmail(recipient.email, email.subject, email.html, {
+      userId: recipient.id,
+      eventType,
+      locale: normalizeEmailLocale(recipient.language),
+    });
+  } catch (e) {
+    logger.error({ err: e, userId: recipient.id, type }, "[notifications] homework email failed");
+  }
+}
+
+/** Learner(s) get a notice that new homework is waiting. */
+export async function sendHomeworkAssignedNotifications({ assignments, teacherId }) {
+  if (!assignments?.length) return;
+  const [teacher, learners] = await Promise.all([
+    prisma.user.findUnique({ where: { id: teacherId }, select: { name: true } }),
+    prisma.user.findMany({
+      where: { id: { in: assignments.map((a) => a.learnerId) } },
+      select: { id: true, name: true, email: true, timezone: true, language: true },
+    }),
+  ]);
+  const teacherName = teacher?.name || "Your teacher";
+  await Promise.all(
+    assignments.map(async (assignment) => {
+      const learner = learners.find((l) => l.id === assignment.learnerId);
+      if (!learner) return;
+      const locale = normalizeEmailLocale(learner.language);
+      const dueLabel = assignment.dueAt ? formatEmailDate(assignment.dueAt, learner.timezone, locale) : null;
+      await deliverHomeworkNotice({
+        recipient: learner,
+        type: "homework_assigned",
+        title: "New homework",
+        body: `${teacherName} assigned you "${assignment.title}".`,
+        data: { homeworkId: assignment.id, sessionId: assignment.sessionId },
+        eventType: "homework_assigned",
+        email: homeworkAssignedEmail({
+          name: learner.name,
+          teacherName,
+          title: assignment.title,
+          dueLabel,
+          note: assignment.note,
+          assignmentId: assignment.id,
+          locale,
+        }),
+      });
+    })
+  );
+  logger.info({ count: assignments.length, teacherId }, "Homework assigned notifications sent");
+}
+
+/** The teacher gets a notice when a learner submits. */
+export async function sendHomeworkSubmittedNotification({ assignment }) {
+  if (!assignment?.teacherId) return;
+  const [teacher, learner] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: assignment.teacherId },
+      select: { id: true, name: true, email: true, language: true },
+    }),
+    prisma.user.findUnique({ where: { id: assignment.learnerId }, select: { name: true, email: true } }),
+  ]);
+  if (!teacher) return;
+  const learnerName = learner?.name || learner?.email || "Your learner";
+  await deliverHomeworkNotice({
+    recipient: teacher,
+    type: "homework_submitted",
+    title: "Homework submitted",
+    body: `${learnerName} submitted "${assignment.title}".`,
+    data: { homeworkId: assignment.id, sessionId: assignment.sessionId },
+    eventType: "homework_submitted",
+    email: homeworkSubmittedEmail({
+      name: teacher.name,
+      learnerName,
+      title: assignment.title,
+      assignmentId: assignment.id,
+      locale: teacher.language,
+    }),
+  });
+}
+
+/** The learner gets a notice when the teacher finishes reviewing. */
+export async function sendHomeworkReviewedNotification({ assignment, overall }) {
+  const [teacher, learner] = await Promise.all([
+    assignment.teacherId
+      ? prisma.user.findUnique({ where: { id: assignment.teacherId }, select: { name: true } })
+      : null,
+    prisma.user.findUnique({
+      where: { id: assignment.learnerId },
+      select: { id: true, name: true, email: true, language: true },
+    }),
+  ]);
+  if (!learner) return;
+  const teacherName = teacher?.name || "Your teacher";
+  await deliverHomeworkNotice({
+    recipient: learner,
+    type: "homework_reviewed",
+    title: "Homework reviewed",
+    body: `${teacherName} reviewed "${assignment.title}".`,
+    data: { homeworkId: assignment.id, sessionId: assignment.sessionId },
+    eventType: "homework_reviewed",
+    email: homeworkReviewedEmail({
+      name: learner.name,
+      teacherName,
+      title: assignment.title,
+      overall,
+      assignmentId: assignment.id,
+      locale: learner.language,
+    }),
+  });
 }

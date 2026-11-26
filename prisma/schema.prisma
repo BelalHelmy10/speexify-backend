@@ -103,6 +103,10 @@ model User {
   // Learner feedback on sessions
   learnerFeedbacks LearnerSessionFeedback[] @relation("LearnerFeedbacks")
 
+  // Homework: assigned to this learner / given by this teacher
+  homeworkAssignments HomeworkAssignment[] @relation("HomeworkLearner")
+  homeworkGiven       HomeworkAssignment[] @relation("HomeworkTeacher")
+
   // ✨ NEW: User availability for scheduling
   availabilities                   Availability[]
   teacherEarnings                  TeacherEarning[]            @relation("TeacherEarningTeacher")
@@ -486,6 +490,7 @@ model Session {
   resourcesUsed             Json?                      @default("[]")
   resourcesUsedAt           Json?                      @default("{}")
   learnerFeedbacks          LearnerSessionFeedback[]
+  homeworkAssignments       HomeworkAssignment[]
   teacherEarning            TeacherEarning?
   teacherEarningSnapshotJob TeacherEarningSnapshotJob?
 
@@ -771,6 +776,54 @@ model SessionFeedback {
   updatedAt         DateTime @updatedAt
   session           Session  @relation(fields: [sessionId], references: [id])
   teacher           User     @relation(fields: [teacherId], references: [id])
+}
+
+// ─── Homework (interactive, assigned after a session) ───
+// `content` is a snapshot of the homework template at assignment time, so
+// later edits to the template never change homework a learner has started.
+// `answers` is keyed by task id, then by field key (see homeworkService).
+enum HomeworkStatus {
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  REVIEWED
+}
+
+model HomeworkAssignment {
+  id        String   @id @default(cuid())
+  sessionId Int?
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  learnerId Int
+  learner   User     @relation("HomeworkLearner", fields: [learnerId], references: [id], onDelete: Cascade)
+  teacherId Int?
+  teacher   User?    @relation("HomeworkTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
+
+  templateId      String
+  templateVersion Int
+  title           String
+  level           String?
+  content         Json
+  note            String?
+  dueAt           DateTime?
+
+  status          HomeworkStatus @default(ASSIGNED)
+  answers         Json           @default("{}")
+  answersVersion  Int            @default(0)
+  completedTasks  Int            @default(0)
+  taskCount       Int
+  lastActivityAt  DateTime?
+  submittedAt     DateTime?
+  autoScore       Json?
+  teacherComments Json           @default("{}")
+  reviewedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, learnerId, templateId])
+  @@index([learnerId, status, dueAt])
+  @@index([teacherId, status, dueAt])
+  @@index([sessionId])
 }
 
 // ─── Learner Session Feedback (post-session ratings/surveys) ───

@@ -1,0 +1,345 @@
+{
+  "id": "first-impressions-a1",
+  "version": 1,
+  "topic": "First Impressions",
+  "title": "Nice to Meet You",
+  "level": "A1",
+  "resourceIds": [
+    "resource-speexify-trial-a1-first-impressions-lesson",
+    "resource-speexify-trial-a1-first-impressions-homework"
+  ],
+  "vocab": [
+    {
+      "term": "Hi, I'm…",
+      "example": "Hi, I'm Salma."
+    },
+    {
+      "term": "Nice to meet you.",
+      "example": "Nice to meet you, Emma."
+    },
+    {
+      "term": "Nice to meet you too.",
+      "example": "“Nice to meet you!” “Nice to meet you too.”"
+    },
+    {
+      "term": "I'm from…",
+      "example": "I'm from Mansoura."
+    },
+    {
+      "term": "I live in…",
+      "example": "I live in Cairo now."
+    },
+    {
+      "term": "I'm a / an… (job)",
+      "example": "I'm a pharmacist. I'm an engineer."
+    },
+    {
+      "term": "What do you do?",
+      "example": "“What do you do?” “I'm a teacher.”"
+    },
+    {
+      "term": "How about you?",
+      "example": "I'm from Egypt. How about you?"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Match the questions and answers",
+      "skill": "Vocabulary",
+      "minutes": 5,
+      "instructions": "Match 1–6 with a–f. Write the letter.",
+      "type": "match",
+      "options": [
+        {
+          "key": "a",
+          "label": "I live in Heliopolis."
+        },
+        {
+          "key": "b",
+          "label": "Hi, Ali. I'm Mona."
+        },
+        {
+          "key": "c",
+          "label": "Nice to meet you too."
+        },
+        {
+          "key": "d",
+          "label": "I'm from Port Said."
+        },
+        {
+          "key": "e",
+          "label": "I'm from Cairo."
+        },
+        {
+          "key": "f",
+          "label": "I'm an accountant."
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "Nice to meet you.",
+          "answer": [
+            "c"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "Where are you from?",
+          "answer": [
+            "d",
+            "e"
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "Where do you live?",
+          "answer": [
+            "a"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "What do you do?",
+          "answer": [
+            "f"
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "Hi, I'm Ali.",
+          "answer": [
+            "b"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "I'm from Tanta. How about you?",
+          "answer": [
+            "e",
+            "d"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "title": "Complete Omar's profile",
+      "skill": "Reading and writing",
+      "minutes": 8,
+      "instructions": "Write one word in each gap.",
+      "type": "gaps",
+      "bank": [
+        "am",
+        "from",
+        "live",
+        "an",
+        "work",
+        "like",
+        "meet",
+        "is"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "lead": "",
+          "text": "Hi! I ___ Omar.",
+          "answers": [
+            [
+              "am"
+            ]
+          ]
+        },
+        {
+          "id": "i2",
+          "lead": "",
+          "text": "I'm ___ Luxor, but I ___ in Cairo now.",
+          "answers": [
+            [
+              "from"
+            ],
+            [
+              "live"
+            ]
+          ]
+        },
+        {
+          "id": "i3",
+          "lead": "",
+          "text": "I'm ___ accountant. I ___ in a bank.",
+          "answers": [
+            [
+              "an"
+            ],
+            [
+              "work"
+            ]
+          ]
+        },
+        {
+          "id": "i4",
+          "lead": "",
+          "text": "My wife ___ a teacher.",
+          "answers": [
+            [
+              "is"
+            ]
+          ]
+        },
+        {
+          "id": "i5",
+          "lead": "",
+          "text": "I ___ football and coffee.",
+          "answers": [
+            [
+              "like"
+            ]
+          ]
+        },
+        {
+          "id": "i6",
+          "lead": "",
+          "text": "Nice to ___ you!",
+          "answers": [
+            [
+              "meet"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "title": "Find and fix the mistake",
+      "skill": "Accuracy",
+      "minutes": 8,
+      "instructions": "Each sentence has one mistake. Write the correct sentence.",
+      "type": "rewrite",
+      "lines": 1,
+      "placeholder": "",
+      "models": null,
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "I am from in Cairo.",
+          "answer": [
+            "I'm from Cairo."
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "I'm engineer.",
+          "answer": [
+            "I'm an engineer."
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "Nice meet you.",
+          "answer": [
+            "Nice to meet you."
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "What you do?",
+          "answer": [
+            "What do you do?"
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "I living in Giza.",
+          "answer": [
+            "I live in Giza."
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "Where you are from?",
+          "answer": [
+            "Where are you from?"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "title": "Write about you",
+      "skill": "Writing",
+      "minutes": 10,
+      "instructions": "Write 6 sentences about you. Use the frame to help you.",
+      "type": "writing",
+      "minWords": 25,
+      "maxWords": 70,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "1 · Hello",
+          "hint": "Hi, I'm …"
+        },
+        {
+          "id": "p2",
+          "label": "2 · From",
+          "hint": "I'm from …"
+        },
+        {
+          "id": "p3",
+          "label": "3 · Home",
+          "hint": "I live in …"
+        },
+        {
+          "id": "p4",
+          "label": "4 · Job",
+          "hint": "I'm a / an … OR I'm a student."
+        },
+        {
+          "id": "p5",
+          "label": "5 · Work or study",
+          "hint": "I work / study at …"
+        },
+        {
+          "id": "p6",
+          "label": "6 · Free time",
+          "hint": "I like …"
+        }
+      ],
+      "checklist": []
+    },
+    {
+      "id": "t5",
+      "title": "Record your introduction",
+      "skill": "Speaking",
+      "minutes": 10,
+      "instructions": "Record a voice note on your phone. Then listen and record it again.",
+      "type": "checklist",
+      "steps": [
+        "Read your sentences from Task 4 out loud three times.",
+        "Now record a 30-second voice note: introduce yourself without reading.",
+        "Listen. Did you say your name, city and job?",
+        "Record it again: slower, clearer, and with a smile.",
+        "Send your best version to your trainer."
+      ],
+      "checklist": [],
+      "reflection": "What will you do differently next time you introduce yourself?"
+    },
+    {
+      "id": "t6",
+      "title": "Real-life mission",
+      "skill": "Use it this week",
+      "minutes": 5,
+      "instructions": "Use your new English with a real person this week.",
+      "type": "checklist",
+      "steps": [
+        "Say “Nice to meet you” to someone new, in person or online.",
+        "Ask someone “What do you do?” and “How about you?”",
+        "Write down one new word you heard.",
+        "Tell your trainer about it in your next session."
+      ],
+      "checklist": [],
+      "reflection": "Who did you talk to, and what new word did you hear?"
+    }
+  ],
+  "minutes": 46
+}

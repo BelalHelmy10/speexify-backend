@@ -1,0 +1,356 @@
+{
+  "id": "first-impressions-b2",
+  "version": 1,
+  "topic": "First Impressions",
+  "title": "Tell Me About Yourself",
+  "level": "B2",
+  "resourceIds": [
+    "resource-speexify-trial-b2-first-impressions-lesson",
+    "resource-speexify-trial-b2-first-impressions-homework"
+  ],
+  "vocab": [
+    {
+      "term": "I'm currently…",
+      "example": "I'm currently working as a financial analyst at a telecom company."
+    },
+    {
+      "term": "I'm in charge of…",
+      "example": "I'm in charge of a team of six engineers."
+    },
+    {
+      "term": "Before that, I…",
+      "example": "Before that, I spent two years in customer service."
+    },
+    {
+      "term": "I led / I managed…",
+      "example": "I led a project that reduced costs by 15%."
+    },
+    {
+      "term": "…, which resulted in…",
+      "example": "We changed the process, which resulted in faster delivery."
+    },
+    {
+      "term": "What attracted me to… is…",
+      "example": "What attracted me to this role is the international team."
+    },
+    {
+      "term": "I'm looking to…",
+      "example": "I'm looking to move into a leadership role."
+    },
+    {
+      "term": "That's a great question.",
+      "example": "That's a great question. Let me give you an example."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Match the phrase to its job",
+      "skill": "Vocabulary",
+      "minutes": 6,
+      "instructions": "What does each phrase do? Match 1–6 with a–f.",
+      "type": "match",
+      "options": [
+        {
+          "key": "a",
+          "label": "shows a result"
+        },
+        {
+          "key": "b",
+          "label": "gives you time to think"
+        },
+        {
+          "key": "c",
+          "label": "explains your interest"
+        },
+        {
+          "key": "d",
+          "label": "describes your current role"
+        },
+        {
+          "key": "e",
+          "label": "introduces earlier experience"
+        },
+        {
+          "key": "f",
+          "label": "describes your goal"
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "I'm currently…",
+          "answer": [
+            "d"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "Before that, I…",
+          "answer": [
+            "e"
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "…, which resulted in…",
+          "answer": [
+            "a"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "What attracted me to… is…",
+          "answer": [
+            "c"
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "I'm looking to…",
+          "answer": [
+            "f"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "That's a great question.",
+          "answer": [
+            "b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "title": "Complete Youssef's answer",
+      "skill": "Useful language",
+      "minutes": 8,
+      "instructions": "Complete the interview answer with one expression in each gap.",
+      "type": "gaps",
+      "bank": [
+        "currently",
+        "in charge of",
+        "Before that",
+        "led",
+        "which resulted in",
+        "What attracted me to",
+        "looking to"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "lead": "",
+          "text": "I'm ___ a marketing specialist at a food company in 6th of October City.",
+          "answers": [
+            [
+              "currently"
+            ]
+          ]
+        },
+        {
+          "id": "i2",
+          "lead": "",
+          "text": "I'm ___ our social media and online campaigns.",
+          "answers": [
+            [
+              "in charge of"
+            ]
+          ]
+        },
+        {
+          "id": "i3",
+          "lead": "",
+          "text": "___ , I worked at an agency, where I ___ a campaign for a large bank,",
+          "answers": [
+            [
+              "Before that"
+            ],
+            [
+              "led"
+            ]
+          ]
+        },
+        {
+          "id": "i4",
+          "lead": "",
+          "text": "___ 40% more app downloads in three months.",
+          "answers": [
+            [
+              "which resulted in"
+            ]
+          ]
+        },
+        {
+          "id": "i5",
+          "lead": "",
+          "text": "Now I'm ___ work on bigger regional brands.",
+          "answers": [
+            [
+              "looking to"
+            ]
+          ]
+        },
+        {
+          "id": "i6",
+          "lead": "",
+          "text": "___ this role is that you work across the whole Middle East.",
+          "answers": [
+            [
+              "What attracted me to"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "title": "Make it more professional",
+      "skill": "Register",
+      "minutes": 10,
+      "instructions": "Rewrite each sentence so it sounds more professional in an interview.",
+      "type": "rewrite",
+      "lines": 2,
+      "placeholder": "",
+      "models": [
+        "I'm in charge of a team of three.",
+        "We introduced a new system, which resulted in faster processing.",
+        "I'm looking to take the next step in my career.",
+        "What attracted me to this company is its scale.",
+        "Before that, I worked at a bank.",
+        "That's a great question. Let me think."
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "I'm the boss of three people.",
+          "answer": null
+        },
+        {
+          "id": "i2",
+          "prompt": "We did a new system and then things got faster.",
+          "answer": null
+        },
+        {
+          "id": "i3",
+          "prompt": "I want a better job.",
+          "answer": null
+        },
+        {
+          "id": "i4",
+          "prompt": "I liked this company because it's big.",
+          "answer": null
+        },
+        {
+          "id": "i5",
+          "prompt": "I worked before in a bank.",
+          "answer": null
+        },
+        {
+          "id": "i6",
+          "prompt": "Hmm… I don't know… let me see…",
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "title": "Write your interview answer",
+      "skill": "Writing",
+      "minutes": 20,
+      "instructions": "Write your own answer to “Tell me about yourself” (120–150 words). Then write your networking version (40–60 words) that ends with a question.",
+      "type": "writing",
+      "minWords": 160,
+      "maxWords": 210,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "Present",
+          "hint": "I'm currently … where I'm in charge of …"
+        },
+        {
+          "id": "p2",
+          "label": "Past",
+          "hint": "Before that, I … I led … which resulted in …"
+        },
+        {
+          "id": "p3",
+          "label": "Future",
+          "hint": "I'm looking to … What attracted me to … is …"
+        },
+        {
+          "id": "p4",
+          "label": "Networking version",
+          "hint": "Shorter, more relaxed, ending with: “How about you?”"
+        }
+      ],
+      "checklist": [
+        "Under 150 words",
+        "At least one number",
+        "5 expressions from the lesson",
+        "No “I'm hard-working”"
+      ]
+    },
+    {
+      "id": "t5",
+      "title": "Prepare for follow-up questions",
+      "skill": "Thinking on your feet",
+      "minutes": 15,
+      "instructions": "Write 3–4 bullet points (not full sentences) for each question. Then answer each one out loud.",
+      "type": "rewrite",
+      "lines": 3,
+      "placeholder": "• point 1\n• point 2\n• point 3",
+      "models": null,
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "What exactly was your role in the project you mentioned?",
+          "answer": null
+        },
+        {
+          "id": "i2",
+          "prompt": "Why are you leaving your current job?",
+          "answer": null
+        },
+        {
+          "id": "i3",
+          "prompt": "What's your biggest weakness?",
+          "answer": null
+        },
+        {
+          "id": "i4",
+          "prompt": "Where do you see yourself in three years?",
+          "answer": null
+        },
+        {
+          "id": "i5",
+          "prompt": "Why should we choose you?",
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "t6",
+      "title": "Record and review",
+      "skill": "Speaking",
+      "minutes": 15,
+      "instructions": "Record your interview answer as a video or voice note. Check it, then record it again.",
+      "type": "checklist",
+      "steps": [
+        "Record your answer from Task 4 without reading it.",
+        "Watch or listen, and check the list below.",
+        "Record a second version that fixes one thing.",
+        "Send your best version to your trainer."
+      ],
+      "checklist": [
+        "Between 50 and 75 seconds",
+        "Clear Present, Past, Future",
+        "One achievement with a number",
+        "Fewer than 3 “umm”s",
+        "A strong last sentence"
+      ],
+      "reflection": "What did you change in your second recording?"
+    }
+  ],
+  "minutes": 74
+}

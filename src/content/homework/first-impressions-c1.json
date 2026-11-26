@@ -1,0 +1,309 @@
+{
+  "id": "first-impressions-c1",
+  "version": 1,
+  "topic": "First Impressions",
+  "title": "Being Remembered",
+  "level": "C1",
+  "resourceIds": [
+    "resource-speexify-trial-c1-first-impressions-lesson",
+    "resource-speexify-trial-c1-first-impressions-homework"
+  ],
+  "vocab": [
+    {
+      "term": "to stick (in your mind)",
+      "example": "Her opening line really stuck with me."
+    },
+    {
+      "term": "to read the room",
+      "example": "He read the room and skipped the jokes."
+    },
+    {
+      "term": "to lead with…",
+      "example": "With executives, lead with the result, not the process."
+    },
+    {
+      "term": "to show rather than tell",
+      "example": "Don't say you're creative. Show rather than tell."
+    },
+    {
+      "term": "self-deprecating",
+      "example": "A little self-deprecating humour makes you more approachable."
+    },
+    {
+      "term": "That's basically what I do: …",
+      "example": "That's basically what I do: I make complex data simple."
+    },
+    {
+      "term": "to pique someone's curiosity",
+      "example": "A good first line piques the listener's curiosity."
+    },
+    {
+      "term": "to be backed by…",
+      "example": "Bold claims need to be backed by real results."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Expressions in context",
+      "skill": "Vocabulary",
+      "minutes": 8,
+      "instructions": "Complete each sentence with the correct form of an expression from the lesson.",
+      "type": "gaps",
+      "bank": [
+        "stick",
+        "read the room",
+        "lead with",
+        "show rather than tell",
+        "self-deprecating",
+        "pique",
+        "be backed by",
+        "that's basically what I do"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "lead": "",
+          "text": "Her talk was short, but one story really ___ with the audience.",
+          "answers": [
+            [
+              "stuck"
+            ]
+          ]
+        },
+        {
+          "id": "i2",
+          "lead": "",
+          "text": "If you'd ___ , you'd have noticed nobody wanted another slide.",
+          "answers": [
+            [
+              "read the room"
+            ]
+          ]
+        },
+        {
+          "id": "i3",
+          "lead": "",
+          "text": "When you pitch to investors, ___ the numbers, not the history.",
+          "answers": [
+            [
+              "lead with"
+            ]
+          ]
+        },
+        {
+          "id": "i4",
+          "lead": "",
+          "text": "His ___ joke about his terrible Arabic made everyone relax.",
+          "answers": [
+            [
+              "self-deprecating"
+            ]
+          ]
+        },
+        {
+          "id": "i5",
+          "lead": "",
+          "text": "The headline was designed to ___ readers' curiosity.",
+          "answers": [
+            [
+              "pique"
+            ]
+          ]
+        },
+        {
+          "id": "i6",
+          "lead": "",
+          "text": "These claims need to ___ data before we publish them.",
+          "answers": [
+            [
+              "be backed by"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "title": "Key word transformation",
+      "skill": "Accuracy",
+      "minutes": 12,
+      "instructions": "Complete the second sentence so it means the same as the first. Use the word in brackets. Use 2–5 words.",
+      "type": "gaps",
+      "bank": [],
+      "items": [
+        {
+          "id": "i1",
+          "lead": "Everyone remembered her introduction. (STUCK)",
+          "text": "Her introduction ___ everyone.",
+          "answers": [
+            [
+              "stuck with"
+            ]
+          ]
+        },
+        {
+          "id": "i2",
+          "lead": "Start with the result when you speak to the CEO. (LEAD)",
+          "text": "When you speak to the CEO, ___ the result.",
+          "answers": [
+            [
+              "lead with"
+            ]
+          ]
+        },
+        {
+          "id": "i3",
+          "lead": "He gave an example instead of describing himself. (RATHER)",
+          "text": "He chose to ___ tell.",
+          "answers": [
+            [
+              "show rather than"
+            ]
+          ]
+        },
+        {
+          "id": "i4",
+          "lead": "The first line made them want to know more. (PIQUED)",
+          "text": "The first line ___ curiosity.",
+          "answers": [
+            [
+              "piqued their",
+              "piqued people's",
+              "piqued our"
+            ]
+          ]
+        },
+        {
+          "id": "i5",
+          "lead": "Their success is supported by ten years of data. (BACKED)",
+          "text": "Their success ___ ten years of data.",
+          "answers": [
+            [
+              "is backed by",
+              "has been backed by"
+            ]
+          ]
+        },
+        {
+          "id": "i6",
+          "lead": "She adapted her tone to the mood of the meeting. (ROOM)",
+          "text": "She ___ and adapted her tone.",
+          "answers": [
+            [
+              "read the room"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "title": "Write three micro-stories",
+      "skill": "Writing",
+      "minutes": 20,
+      "instructions": "Write three micro-stories (60–80 words each). Each one ends with a summary line.",
+      "type": "writing",
+      "minWords": 180,
+      "maxWords": 240,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "1 · Your work",
+          "hint": "A recent moment that shows what you do best"
+        },
+        {
+          "id": "p2",
+          "label": "2 · A challenge",
+          "hint": "A time things went wrong, and what you did"
+        },
+        {
+          "id": "p3",
+          "label": "3 · Outside work",
+          "hint": "Something that shows who you are as a person"
+        }
+      ],
+      "checklist": [
+        "Starts with a specific moment",
+        "Shows rather than tells",
+        "Ends with a summary line",
+        "Under 80 words"
+      ]
+    },
+    {
+      "id": "t4",
+      "title": "One story, three audiences",
+      "skill": "Register",
+      "minutes": 15,
+      "instructions": "Take your best micro-story from Task 3 and rewrite it for each audience.",
+      "type": "writing",
+      "minWords": null,
+      "maxWords": null,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "LinkedIn “About” section",
+          "hint": "The first two lines: the ones people see before “see more”"
+        },
+        {
+          "id": "p2",
+          "label": "A dinner with friends of friends",
+          "hint": "Relaxed, a little self-deprecating"
+        },
+        {
+          "id": "p3",
+          "label": "An interview panel",
+          "hint": "Linked clearly to what the role needs"
+        }
+      ],
+      "checklist": []
+    },
+    {
+      "id": "t5",
+      "title": "Respond to the article",
+      "skill": "Critical writing",
+      "minutes": 20,
+      "instructions": "Write 150–180 words in answer to this question. Give your opinion, one example from your experience, and one counter-argument.",
+      "type": "writing",
+      "minWords": 150,
+      "maxWords": 180,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "The question",
+          "hint": "“Is telling stories about yourself at work authentic, or just a performance?”"
+        }
+      ],
+      "checklist": [
+        "Clear position in the first sentence",
+        "A real example",
+        "A counter-argument",
+        "A concluding sentence",
+        "3 expressions from the lesson"
+      ]
+    },
+    {
+      "id": "t6",
+      "title": "Record your best version",
+      "skill": "Speaking",
+      "minutes": 15,
+      "instructions": "Record a video of your best micro-story. Review it honestly, then record it once more.",
+      "type": "checklist",
+      "steps": [
+        "Record your micro-story, without notes, in under 45 seconds.",
+        "Watch it with the sound off: what does your body language say?",
+        "Watch it with the sound on and check the list below.",
+        "Record your final version and send it to your trainer."
+      ],
+      "checklist": [
+        "First line hooks the listener",
+        "One specific moment",
+        "Natural, not memorised",
+        "Strong summary line",
+        "Under 45 seconds"
+      ],
+      "reflection": "What did your body language say? What did you improve in the final version?"
+    }
+  ],
+  "minutes": 90
+}

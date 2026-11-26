@@ -1,0 +1,367 @@
+{
+  "id": "first-impressions-b1",
+  "version": 1,
+  "topic": "First Impressions",
+  "title": "Small Talk That Flows",
+  "level": "B1",
+  "resourceIds": [
+    "resource-speexify-trial-b1-first-impressions-lesson",
+    "resource-speexify-trial-b1-first-impressions-homework"
+  ],
+  "vocab": [
+    {
+      "term": "How do you know (the host)?",
+      "example": "Great party! How do you know Ahmed?"
+    },
+    {
+      "term": "…, isn't it?",
+      "example": "It's really busy tonight, isn't it?"
+    },
+    {
+      "term": "You mentioned…",
+      "example": "You mentioned you love hiking. Where do you go?"
+    },
+    {
+      "term": "We have that in common!",
+      "example": "You're from Tanta too? We have that in common!"
+    },
+    {
+      "term": "I know what you mean.",
+      "example": "“Mondays are so hard.” “I know what you mean!”"
+    },
+    {
+      "term": "Anyway, …",
+      "example": "Anyway, how was your trip to Sharm?"
+    },
+    {
+      "term": "It was really nice talking to you.",
+      "example": "It was really nice talking to you, Rana."
+    },
+    {
+      "term": "Let's catch up later.",
+      "example": "I have to go, but let's catch up later!"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Match the opener to the place",
+      "skill": "Vocabulary",
+      "minutes": 6,
+      "instructions": "Match each conversation opener (1–6) to the best place (a–f).",
+      "type": "match",
+      "options": [
+        {
+          "key": "a",
+          "label": "A gym"
+        },
+        {
+          "key": "b",
+          "label": "A wedding"
+        },
+        {
+          "key": "c",
+          "label": "The office kitchen"
+        },
+        {
+          "key": "d",
+          "label": "A conference"
+        },
+        {
+          "key": "e",
+          "label": "A supermarket queue"
+        },
+        {
+          "key": "f",
+          "label": "A plane"
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "“Is anyone sitting here? It's a long flight, isn't it?”",
+          "answer": [
+            "f"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "“How do you know the bride?”",
+          "answer": [
+            "b"
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "“Which talk are you going to next?”",
+          "answer": [
+            "d"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "“Is this machine free? How long have you been coming here?”",
+          "answer": [
+            "a"
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "“Is the coffee machine working again? I can't live without it!”",
+          "answer": [
+            "c"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "“This line isn't moving at all, is it?”",
+          "answer": [
+            "e"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "title": "Complete the conversation",
+      "skill": "Useful language",
+      "minutes": 8,
+      "instructions": "Use the expressions from the lesson to complete the conversation.",
+      "type": "gaps",
+      "bank": [
+        "isn't it",
+        "How do you know",
+        "You mentioned",
+        "We have that in common",
+        "I know what you mean",
+        "Anyway",
+        "It was really nice talking to you",
+        "Let's catch up later"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "lead": "",
+          "text": "A: Great music, ___ ?   B: Yes! ___ Hossam?",
+          "answers": [
+            [
+              "isn't it"
+            ],
+            [
+              "How do you know"
+            ]
+          ]
+        },
+        {
+          "id": "i2",
+          "lead": "",
+          "text": "A: We play football together. ___ you work in marketing. Where?",
+          "answers": [
+            [
+              "You mentioned"
+            ]
+          ]
+        },
+        {
+          "id": "i3",
+          "lead": "",
+          "text": "B: At a bank. It's stressful.   A: ___ . I work at a bank too! ___ .",
+          "answers": [
+            [
+              "I know what you mean"
+            ],
+            [
+              "We have that in common"
+            ]
+          ]
+        },
+        {
+          "id": "i4",
+          "lead": "",
+          "text": "B: Really? ___ , did you try the food? It's amazing.",
+          "answers": [
+            [
+              "Anyway"
+            ]
+          ]
+        },
+        {
+          "id": "i5",
+          "lead": "",
+          "text": "A: Not yet! Oh, my friends are leaving. ___ .",
+          "answers": [
+            [
+              "It was really nice talking to you"
+            ]
+          ]
+        },
+        {
+          "id": "i6",
+          "lead": "",
+          "text": "B: You too! ___ .",
+          "answers": [
+            [
+              "Let's catch up later"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "title": "Show you were listening",
+      "skill": "Follow-up questions",
+      "minutes": 10,
+      "instructions": "Someone told you these things earlier. Write a question that starts with “You mentioned…”",
+      "type": "rewrite",
+      "lines": 1,
+      "placeholder": "You mentioned…",
+      "models": [
+        "You mentioned you're moving to Germany. Which city?"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "She said she's moving to Germany next month.",
+          "answer": null
+        },
+        {
+          "id": "i2",
+          "prompt": "He said he's training for a marathon.",
+          "answer": null
+        },
+        {
+          "id": "i3",
+          "prompt": "She said she has twins.",
+          "answer": null
+        },
+        {
+          "id": "i4",
+          "prompt": "He said he works in a start-up.",
+          "answer": null
+        },
+        {
+          "id": "i5",
+          "prompt": "She said she lived in Japan for a year.",
+          "answer": null
+        },
+        {
+          "id": "i6",
+          "prompt": "He said his flight was cancelled yesterday.",
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "title": "Find and fix the mistake",
+      "skill": "Accuracy",
+      "minutes": 8,
+      "instructions": "Each sentence has one mistake. Write the correct sentence.",
+      "type": "rewrite",
+      "lines": 1,
+      "placeholder": "",
+      "models": null,
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "How you know the host?",
+          "answer": [
+            "How do you know the host?"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "It's really hot today, isn't?",
+          "answer": [
+            "It's really hot today, isn't it?"
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "We have this in common!",
+          "answer": [
+            "We have that in common!"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "It was really nice to talking with you.",
+          "answer": [
+            "It was really nice talking to you."
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "Let's catch on later!",
+          "answer": [
+            "Let's catch up later!"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "I know what do you mean.",
+          "answer": [
+            "I know what you mean."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t5",
+      "title": "Write about a conversation",
+      "skill": "Writing",
+      "minutes": 15,
+      "instructions": "Write about a time you talked to a stranger (100–120 words). It can be in Arabic or English in real life, but write it in English. Use the frame.",
+      "type": "writing",
+      "minWords": 100,
+      "maxWords": 120,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "1 · Where and when",
+          "hint": "Last year, I was at … when …"
+        },
+        {
+          "id": "p2",
+          "label": "2 · How it started",
+          "hint": "The other person said / I said …"
+        },
+        {
+          "id": "p3",
+          "label": "3 · What you talked about",
+          "hint": "We talked about … We found out that …"
+        },
+        {
+          "id": "p4",
+          "label": "4 · How it ended",
+          "hint": "In the end, …"
+        },
+        {
+          "id": "p5",
+          "label": "5 · What you learned",
+          "hint": "Now I think that small talk …"
+        }
+      ],
+      "checklist": []
+    },
+    {
+      "id": "t6",
+      "title": "Record and real-life mission",
+      "skill": "Speaking",
+      "minutes": 15,
+      "instructions": "Practise, then use it for real.",
+      "type": "checklist",
+      "steps": [
+        "Record a 1-minute voice note: start a conversation with an imaginary person at a wedding.",
+        "Listen. Did you use a question tag, “You mentioned…” and a good ending?",
+        "Record it again and send your best version to your trainer.",
+        "This week, start one real conversation with someone new. In English if you can!",
+        "Write three sentences: who, where, and what you found in common."
+      ],
+      "checklist": [],
+      "reflection": "Who did you talk to, where, and what did you find in common?"
+    }
+  ],
+  "minutes": 62
+}

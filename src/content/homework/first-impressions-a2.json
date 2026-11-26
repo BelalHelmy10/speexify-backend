@@ -1,0 +1,298 @@
+{
+  "id": "first-impressions-a2",
+  "version": 1,
+  "topic": "First Impressions",
+  "title": "Getting to Know Someone",
+  "level": "A2",
+  "resourceIds": [
+    "resource-speexify-trial-a2-first-impressions-lesson",
+    "resource-speexify-trial-a2-first-impressions-homework"
+  ],
+  "vocab": [
+    {
+      "term": "What do you do for a living?",
+      "example": "So, what do you do for a living?"
+    },
+    {
+      "term": "I work as a / an…",
+      "example": "I work as a sales manager."
+    },
+    {
+      "term": "In my free time, I…",
+      "example": "In my free time, I go running by the Nile."
+    },
+    {
+      "term": "I'm really into…",
+      "example": "I'm really into photography. / I'm really into cooking."
+    },
+    {
+      "term": "Oh, really?",
+      "example": "“I've been to Japan twice.” “Oh, really?”"
+    },
+    {
+      "term": "What kind of…?",
+      "example": "What kind of music do you like?"
+    },
+    {
+      "term": "That sounds interesting.",
+      "example": "“I design apps for hospitals.” “That sounds interesting.”"
+    },
+    {
+      "term": "How long have you…?",
+      "example": "How long have you lived in Cairo?"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Match the questions and answers",
+      "skill": "Vocabulary",
+      "minutes": 5,
+      "instructions": "Match 1–6 with a–f.",
+      "type": "match",
+      "options": [
+        {
+          "key": "a",
+          "label": "About three years."
+        },
+        {
+          "key": "b",
+          "label": "I work as a dentist."
+        },
+        {
+          "key": "c",
+          "label": "Mostly rock and Arabic pop."
+        },
+        {
+          "key": "d",
+          "label": "I go swimming and read."
+        },
+        {
+          "key": "e",
+          "label": "Yes! I really enjoy it."
+        },
+        {
+          "key": "f",
+          "label": "Photography. I take photos of old buildings."
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "What do you do for a living?",
+          "answer": [
+            "b"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "How long have you lived here?",
+          "answer": [
+            "a"
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "What kind of music do you like?",
+          "answer": [
+            "c"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "What are you really into?",
+          "answer": [
+            "f"
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "What do you do in your free time?",
+          "answer": [
+            "d"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "That sounds interesting. Do you like your job?",
+          "answer": [
+            "e"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "title": "Write two follow-up questions",
+      "skill": "Asking questions",
+      "minutes": 12,
+      "instructions": "Read each sentence. Write two questions to keep the conversation going. Use the expressions from the lesson.",
+      "type": "rewrite",
+      "lines": 2,
+      "placeholder": "Question 1…\nQuestion 2…",
+      "models": [
+        "Oh, really? Which team do you support? How long have you played?",
+        "What kind of hospital do you work in? Do you enjoy it?"
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "“I'm really into football.”",
+          "answer": null
+        },
+        {
+          "id": "i2",
+          "prompt": "“I work as a nurse.”",
+          "answer": null
+        },
+        {
+          "id": "i3",
+          "prompt": "“I moved to Alexandria last year.”",
+          "answer": null
+        },
+        {
+          "id": "i4",
+          "prompt": "“In my free time, I bake cakes.”",
+          "answer": null
+        },
+        {
+          "id": "i5",
+          "prompt": "“I'm learning Spanish.”",
+          "answer": null
+        },
+        {
+          "id": "i6",
+          "prompt": "“I visited Turkey in the summer.”",
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "title": "Find and fix the mistake",
+      "skill": "Accuracy",
+      "minutes": 8,
+      "instructions": "Each sentence has one mistake. Write the correct sentence.",
+      "type": "rewrite",
+      "lines": 1,
+      "placeholder": "",
+      "models": null,
+      "items": [
+        {
+          "id": "i1",
+          "prompt": "How long you live here?",
+          "answer": [
+            "How long have you lived here?"
+          ]
+        },
+        {
+          "id": "i2",
+          "prompt": "I work like a doctor in a big hospital.",
+          "answer": [
+            "I work as a doctor in a big hospital."
+          ]
+        },
+        {
+          "id": "i3",
+          "prompt": "What kind music do you like?",
+          "answer": [
+            "What kind of music do you like?"
+          ]
+        },
+        {
+          "id": "i4",
+          "prompt": "I'm really into to play tennis.",
+          "answer": [
+            "I'm really into playing tennis."
+          ]
+        },
+        {
+          "id": "i5",
+          "prompt": "What do you do for living?",
+          "answer": [
+            "What do you do for a living?"
+          ]
+        },
+        {
+          "id": "i6",
+          "prompt": "That's sound interesting!",
+          "answer": [
+            "That sounds interesting!"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "title": "Write a message",
+      "skill": "Writing",
+      "minutes": 15,
+      "instructions": "Last night you met someone new at a party. Write them a WhatsApp message (50–70 words). Use the frame.",
+      "type": "writing",
+      "minWords": 50,
+      "maxWords": 70,
+      "parts": [
+        {
+          "id": "p1",
+          "label": "1 · Say hello",
+          "hint": "Hi Sara! It was really nice to meet you last night."
+        },
+        {
+          "id": "p2",
+          "label": "2 · Remember something they said",
+          "hint": "You said you're really into … That sounds …"
+        },
+        {
+          "id": "p3",
+          "label": "3 · Ask a question",
+          "hint": "How long have you …? / What kind of …?"
+        },
+        {
+          "id": "p4",
+          "label": "4 · Share something about you",
+          "hint": "I'm …"
+        },
+        {
+          "id": "p5",
+          "label": "5 · Suggest meeting again",
+          "hint": "Would you like to … next week?"
+        }
+      ],
+      "checklist": []
+    },
+    {
+      "id": "t5",
+      "title": "Record yourself",
+      "skill": "Speaking",
+      "minutes": 10,
+      "instructions": "Record a 1-minute voice note. Listen, then record a better version.",
+      "type": "checklist",
+      "steps": [
+        "Talk about your job, your free time and one thing you're really into.",
+        "End with a question for the listener: “How about you? What are you into?”",
+        "Listen. Did you use at least 4 expressions from the lesson?",
+        "Record it again. Speak a little slower and add one more detail.",
+        "Send your best version to your trainer."
+      ],
+      "checklist": [],
+      "reflection": "Which expressions did you use? What will you improve?"
+    },
+    {
+      "id": "t6",
+      "title": "Real-life mission",
+      "skill": "Use it this week",
+      "minutes": 10,
+      "instructions": "Try the three-question rule in a real conversation this week.",
+      "type": "checklist",
+      "steps": [
+        "Choose a person: a colleague, a friend, or someone in an online group.",
+        "Ask one question, then two follow-up questions about the same topic.",
+        "Write down one interesting thing you learned about them.",
+        "Tell your trainer about it in your next session."
+      ],
+      "checklist": [],
+      "reflection": "Who did you talk to, and what interesting thing did you learn about them?"
+    }
+  ],
+  "minutes": 60
+}

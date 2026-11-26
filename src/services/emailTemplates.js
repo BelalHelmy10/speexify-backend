@@ -40,6 +40,20 @@ const COPY = {
     viewDashboard: "View in Dashboard",
     feedbackNote: "Log in and go to your past sessions to view the full feedback.",
     feedbackTip: "💡 Reviewing feedback helps you track your progress and prepare for future sessions.",
+    homeworkAssignedSubject: (teacher) => `Speexify: new homework from ${teacher} 📝`,
+    homeworkAssignedTitle: "📝 You have new homework",
+    homeworkAssignedIntro: (teacher, title) => `${teacher} assigned you “${title}”. You can do it on the platform, and it saves as you go.`,
+    homeworkDue: (date) => `Due: ${date}`,
+    homeworkOpen: "Open my homework",
+    homeworkAssignedNote: "You can stop at any time and continue later from your phone or computer.",
+    homeworkSubmittedSubject: (learner) => `Speexify: ${learner} submitted homework ✅`,
+    homeworkSubmittedTitle: "✅ Homework submitted",
+    homeworkSubmittedIntro: (learner, title) => `${learner} submitted “${title}”. It is ready for your review.`,
+    homeworkReview: "Review homework",
+    homeworkReviewedSubject: (teacher) => `Speexify: ${teacher} reviewed your homework 💬`,
+    homeworkReviewedTitle: "💬 Your homework has been reviewed",
+    homeworkReviewedIntro: (teacher, title) => `${teacher} reviewed “${title}” and left you comments.`,
+    homeworkSeeComments: "See the comments",
     reminderTitle: { "24h": "Session reminder (tomorrow)", "6h": "Session reminder (today)", "1h": "Session starting soon!" },
     reminderSubject: (title) => `Speexify — ${title}`,
     reminderLearnerIntro: (time) => `Your session is coming up in ${time}!`,
@@ -93,6 +107,20 @@ const COPY = {
     viewDashboard: "عرضها في لوحة التحكم",
     feedbackNote: "سجّل الدخول وافتح جلساتك السابقة لعرض الملاحظات كاملة.",
     feedbackTip: "💡 مراجعة الملاحظات تساعدك على متابعة تقدمك والاستعداد للحصص القادمة.",
+    homeworkAssignedSubject: (teacher) => `Speexify: واجب جديد من ${teacher} 📝`,
+    homeworkAssignedTitle: "📝 لديك واجب جديد",
+    homeworkAssignedIntro: (teacher, title) => `أرسل لك ${teacher} واجب “${title}”. يمكنك حله على المنصة، ويُحفظ تلقائيًا أثناء الحل.`,
+    homeworkDue: (date) => `آخر موعد للتسليم: ${date}`,
+    homeworkOpen: "افتح الواجب",
+    homeworkAssignedNote: "يمكنك التوقف في أي وقت وإكمال الحل لاحقًا من هاتفك أو حاسوبك.",
+    homeworkSubmittedSubject: (learner) => `Speexify: سلّم ${learner} الواجب ✅`,
+    homeworkSubmittedTitle: "✅ تم تسليم الواجب",
+    homeworkSubmittedIntro: (learner, title) => `سلّم ${learner} واجب “${title}”، وهو جاهز لمراجعتك.`,
+    homeworkReview: "راجع الواجب",
+    homeworkReviewedSubject: (teacher) => `Speexify: راجع ${teacher} واجبك 💬`,
+    homeworkReviewedTitle: "💬 تمت مراجعة واجبك",
+    homeworkReviewedIntro: (teacher, title) => `راجع ${teacher} واجب “${title}” وترك لك تعليقات.`,
+    homeworkSeeComments: "اطّلع على التعليقات",
     reminderTitle: { "24h": "تذكير بالحصة (غدًا)", "6h": "تذكير بالحصة (اليوم)", "1h": "الحصة ستبدأ قريبًا!" },
     reminderSubject: (title) => `Speexify — ${title}`,
     reminderLearnerIntro: (time) => `موعد حصتك سيبدأ خلال ${time}!`,
@@ -414,6 +442,52 @@ export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview,
       <p><a href="https://app.speexify.com/dashboard" style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">${emailCopy(l, "viewDashboard")}</a></p>
       <p style="color:#64748b;font-size:13px;">${emailCopy(l, "feedbackNote")}</p>
       <p style="color:#64748b;font-size:13px;">${emailCopy(l, "feedbackTip")}</p>
+    `),
+  };
+}
+
+const HOMEWORK_URL = "https://app.speexify.com/dashboard/homework";
+
+function emailButton(href, label) {
+  return `<p><a href="${href}" style="display:inline-block;padding:14px 28px;background:#f25c2e;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">${escapeHtml(label)}</a></p>`;
+}
+
+export function homeworkAssignedEmail({ name, teacherName, title, dueLabel, note, assignmentId, locale }) {
+  const l = normalizeEmailLocale(locale);
+  return {
+    subject: emailCopy(l, "homeworkAssignedSubject", teacherName),
+    html: layout(l, emailCopy(l, "homeworkAssignedTitle"), `
+      <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
+      <p>${escapeHtml(emailCopy(l, "homeworkAssignedIntro", teacherName, title))}</p>
+      ${dueLabel ? `<p><strong>${escapeHtml(emailCopy(l, "homeworkDue", dueLabel))}</strong></p>` : ""}
+      ${note ? `<div style="background:#fdf0eb;border-left:4px solid #f25c2e;border-radius:8px;padding:16px;margin:20px 0;"><p style="font-weight:600;color:#c2431b;">${escapeHtml(emailCopy(l, "messageFrom", teacherName))}</p><p style="font-style:italic;">“${escapeHtml(note)}”</p></div>` : ""}
+      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkOpen"))}
+      <p style="color:#64748b;font-size:13px;">${emailCopy(l, "homeworkAssignedNote")}</p>
+    `),
+  };
+}
+
+export function homeworkSubmittedEmail({ name, learnerName, title, assignmentId, locale }) {
+  const l = normalizeEmailLocale(locale);
+  return {
+    subject: emailCopy(l, "homeworkSubmittedSubject", learnerName),
+    html: layout(l, emailCopy(l, "homeworkSubmittedTitle"), `
+      <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
+      <p>${escapeHtml(emailCopy(l, "homeworkSubmittedIntro", learnerName, title))}</p>
+      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkReview"))}
+    `),
+  };
+}
+
+export function homeworkReviewedEmail({ name, teacherName, title, overall, assignmentId, locale }) {
+  const l = normalizeEmailLocale(locale);
+  return {
+    subject: emailCopy(l, "homeworkReviewedSubject", teacherName),
+    html: layout(l, emailCopy(l, "homeworkReviewedTitle"), `
+      <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
+      <p>${escapeHtml(emailCopy(l, "homeworkReviewedIntro", teacherName, title))}</p>
+      ${overall ? `<div style="background:#e7f3f1;border-left:4px solid #0f766e;border-radius:8px;padding:16px;margin:20px 0;"><p style="font-weight:600;color:#0f766e;">${escapeHtml(emailCopy(l, "messageFrom", teacherName))}</p><p style="font-style:italic;">“${escapeHtml(overall)}”</p></div>` : ""}
+      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkSeeComments"))}
     `),
   };
 }
