@@ -914,6 +914,7 @@ export async function sendFeedbackNotifications({
         teacherName,
         sessionTitle,
         messagePreview,
+        sessionId: session.id,
         locale,
       });
 

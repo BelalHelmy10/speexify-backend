@@ -57,6 +57,7 @@ import resendWebhooksRoutes from "./routes/resendWebhooks.js";
 import jibriRecordingsRoutes from "./routes/jibriRecordings.js";
 import freeSessionRoutes from "./routes/free-session.js";
 import homeworkRoutes from "./routes/homework.js";
+import lessonProgressRoutes from "./routes/lessonProgress.js";
 import {
   buildRequestContext,
   runWithRequestContext,
@@ -277,6 +278,7 @@ app.use("/api/discounts", discountRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/pricing", pricingRoutes);
 app.use("/api", homeworkRoutes); // before sessions: owns /sessions/:id/homework
+app.use("/api", lessonProgressRoutes); // before sessions: owns /sessions/:id/lesson-progress
 app.use("/api", sessionsRoutes);
 app.use("/api", packagesRoutes); // FIX: packages route handles /api/packages
 app.use("/api", adminRoutes);

@@ -108,6 +108,9 @@ model User {
   homeworkAssignments HomeworkAssignment[] @relation("HomeworkLearner")
   homeworkGiven       HomeworkAssignment[] @relation("HomeworkTeacher")
 
+  // Lesson recap: when this learner reviewed and practised each lesson
+  lessonProgress LessonProgress[] @relation("LessonProgressLearner")
+
   // ✨ NEW: User availability for scheduling
   availabilities                   Availability[]
   teacherEarnings                  TeacherEarning[]            @relation("TeacherEarningTeacher")
@@ -492,6 +495,7 @@ model Session {
   resourcesUsedAt           Json?                      @default("{}")
   learnerFeedbacks          LearnerSessionFeedback[]
   homeworkAssignments       HomeworkAssignment[]
+  lessonProgress            LessonProgress[]
   teacherEarning            TeacherEarning?
   teacherEarningSnapshotJob TeacherEarningSnapshotJob?
 
@@ -825,6 +829,25 @@ model HomeworkAssignment {
   @@index([learnerId, status, dueAt])
   @@index([teacherId, status, dueAt])
   @@index([sessionId])
+}
+
+// ─── Lesson recap progress ───
+// One row per learner per lesson, recording when they read the teacher's
+// report and when they practised it. Homework progress lives on
+// HomeworkAssignment, so a lesson is done when both rows say so.
+model LessonProgress {
+  id          String    @id @default(cuid())
+  sessionId   Int
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  learnerId   Int
+  learner     User      @relation("LessonProgressLearner", fields: [learnerId], references: [id], onDelete: Cascade)
+  reviewedAt  DateTime?
+  practisedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([sessionId, learnerId])
+  @@index([learnerId, updatedAt])
 }
 
 // ─── Learner Session Feedback (post-session ratings/surveys) ───

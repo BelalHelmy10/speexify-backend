@@ -39,6 +39,8 @@ const COPY = {
     messageFrom: (teacher) => `Message from ${teacher}:`,
     viewDashboard: "View in Dashboard",
     feedbackNote: "Log in and go to your past sessions to view the full feedback.",
+    openLessonRecap: "Open your lesson recap",
+    lessonRecapNote: "Your recap has the corrections from the lesson, practice made from them, and any homework.",
     feedbackTip: "💡 Reviewing feedback helps you track your progress and prepare for future sessions.",
     homeworkAssignedSubject: (teacher) => `Speexify: new homework from ${teacher} 📝`,
     homeworkAssignedTitle: "📝 You have new homework",
@@ -106,6 +108,8 @@ const COPY = {
     messageFrom: (teacher) => `رسالة من ${teacher}:`,
     viewDashboard: "عرضها في لوحة التحكم",
     feedbackNote: "سجّل الدخول وافتح جلساتك السابقة لعرض الملاحظات كاملة.",
+    openLessonRecap: "افتح ملخص الحصة",
+    lessonRecapNote: "ستجد في الملخص تصحيحات الحصة، وتمارين مبنية عليها، والواجب إن وُجد.",
     feedbackTip: "💡 مراجعة الملاحظات تساعدك على متابعة تقدمك والاستعداد للحصص القادمة.",
     homeworkAssignedSubject: (teacher) => `Speexify: واجب جديد من ${teacher} 📝`,
     homeworkAssignedTitle: "📝 لديك واجب جديد",
@@ -431,7 +435,16 @@ export function cancellationTeacherEmail({ name, sessionTitle, learnerNames, whe
   };
 }
 
-export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview, locale }) {
+// The lesson page is where the learner reads the report, practises it and
+// opens the homework, so the email links there.
+export function lessonRecapUrl(sessionId, locale) {
+  const prefix = normalizeEmailLocale(locale) === "ar" ? "/ar" : "";
+  return sessionId
+    ? `https://app.speexify.com${prefix}/dashboard/sessions/${encodeURIComponent(sessionId)}#lesson`
+    : `https://app.speexify.com${prefix}/dashboard`;
+}
+
+export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview, sessionId, locale }) {
   const l = normalizeEmailLocale(locale);
   return {
     subject: emailCopy(l, "feedbackSubject", teacherName),
@@ -439,8 +452,8 @@ export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview,
       <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
       <p>${escapeHtml(emailCopy(l, "feedbackIntro", teacherName, sessionTitle))}</p>
       ${messagePreview ? `<div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:8px;padding:16px;margin:20px 0;"><p style="font-weight:600;color:#166534;">${escapeHtml(emailCopy(l, "messageFrom", teacherName))}</p><p style="font-style:italic;">“${escapeHtml(messagePreview)}”</p></div>` : ""}
-      <p><a href="https://app.speexify.com/dashboard" style="display:inline-block;padding:14px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">${emailCopy(l, "viewDashboard")}</a></p>
-      <p style="color:#64748b;font-size:13px;">${emailCopy(l, "feedbackNote")}</p>
+      ${emailButton(lessonRecapUrl(sessionId, l), emailCopy(l, "openLessonRecap"))}
+      <p style="color:#64748b;font-size:13px;">${emailCopy(l, "lessonRecapNote")}</p>
       <p style="color:#64748b;font-size:13px;">${emailCopy(l, "feedbackTip")}</p>
     `),
   };
