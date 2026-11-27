@@ -56,6 +56,7 @@ import privacyRoutes from "./routes/privacy.js";
 import resendWebhooksRoutes from "./routes/resendWebhooks.js";
 import jibriRecordingsRoutes from "./routes/jibriRecordings.js";
 import freeSessionRoutes from "./routes/free-session.js";
+import trialBookingRoutes from "./routes/trial-bookings.js";
 import homeworkRoutes from "./routes/homework.js";
 import lessonProgressRoutes from "./routes/lessonProgress.js";
 import {
@@ -289,6 +290,7 @@ app.use("/api/support", supportRoutes);
 app.use("/api", availabilityRoutes);
 app.use("/api", calendarRoutes);
 app.use("/api", freeSessionRoutes);
+app.use("/api", trialBookingRoutes);
 app.use("/api", teacherEarningsRoutes);
 app.use("/api/privacy", privacyRoutes);
 

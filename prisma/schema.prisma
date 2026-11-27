@@ -37,6 +37,7 @@ model Package {
 }
 
 model User {
+  trialBookings TrialBooking[] @relation("TrialTrainer")
   id                        Int                    @id @default(autoincrement())
   email                     String                 @unique
   name                      String?
@@ -1064,4 +1065,47 @@ model CreditDebit {
   // A partial unique index in SQL enforces one active debit per session/user
   // while allowing a new debit after the prior one has been reversed.
   @@index([sessionId, userId])
+}
+
+
+model TrialBookingSettings {
+  id           Int @id @default(1)
+  leadHours    Int @default(12)
+  horizonDays  Int @default(14)
+  durationMin  Int @default(30)
+  bufferMin    Int @default(0)
+}
+
+model TrialSlot {
+  id            Int @id @default(autoincrement())
+  startAt       DateTime @unique
+  endAt         DateTime
+  bufferMin     Int @default(0)
+  capacity      Int @default(1)
+  reservedCount Int @default(0)
+  enabled       Boolean @default(true)
+  bookings      TrialBooking[]
+  createdAt     DateTime @default(now())
+  @@index([enabled, startAt])
+}
+
+model TrialBooking {
+  id          String @id @default(uuid())
+  tokenHash   String @unique
+  slotId      Int
+  slot        TrialSlot @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  name        String
+  phone       String
+  activePhone String? @unique
+  locale      String @default("en")
+  timezone    String @default("Africa/Cairo")
+  status      String @default("RESERVED")
+  trainerId   Int?
+  trainer     User? @relation("TrialTrainer", fields: [trainerId], references: [id], onDelete: Restrict)
+  notes       String @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([slotId, status])
+  @@index([trainerId, status])
+  @@index([phone])
 }
