@@ -269,9 +269,11 @@ function setupWebRtcSignaling(httpServer) {
     "SCREEN_RTC_REQUEST",
     "SCREEN_RTC_OFFER",
     "SCREEN_RTC_ANSWER",
+    "SCREEN_RTC_CANDIDATE",
     "SCREEN_RTC_STOP_REQUEST",
   ]);
   const MAX_SDP_LENGTH = 100 * 1024;
+  const MAX_CANDIDATE_LENGTH = 2048;
   const shortId = (value) => (typeof value === "string" && value.length <= 64 ? value : "");
 
   function routeScreenShareSignal(ws, roomManager, data) {
@@ -293,6 +295,17 @@ function setupWebRtcSignaling(httpServer) {
     if (data.type === "SCREEN_RTC_OFFER" || data.type === "SCREEN_RTC_ANSWER") {
       if (typeof data.sdp !== "string" || !data.sdp || data.sdp.length > MAX_SDP_LENGTH) return;
       payload.sdp = data.sdp;
+    }
+    // Network routes found after the offer/answer ("trickle ICE").
+    if (data.type === "SCREEN_RTC_CANDIDATE") {
+      const candidate = data.candidate;
+      if (!candidate || typeof candidate.candidate !== "string" || candidate.candidate.length > MAX_CANDIDATE_LENGTH) return;
+      const lineIndex = Number(candidate.sdpMLineIndex);
+      payload.candidate = {
+        candidate: candidate.candidate,
+        sdpMid: typeof candidate.sdpMid === "string" ? candidate.sdpMid.slice(0, 32) : null,
+        sdpMLineIndex: Number.isInteger(lineIndex) && lineIndex >= 0 && lineIndex < 64 ? lineIndex : null,
+      };
     }
 
     roomManager.sendToUser(ws, recipientId, {
@@ -346,6 +359,17 @@ function setupWebRtcSignaling(httpServer) {
       }
 
       switch (msg.type) {
+        // Clients check their connection is alive: answer right away so a
+        // silently dead socket (network change, sleep) is noticed quickly.
+        case MSG_TYPES.PING: {
+          getMeta(ws).isAlive = true;
+          safeSend(ws, {
+            type: MSG_TYPES.PONG,
+            ts: Number.isFinite(Number(msg.ts)) ? Number(msg.ts) : Date.now(),
+          });
+          return;
+        }
+
         case MSG_TYPES.JOIN: {
           const { roomId } = msg;
           const validation = validateRoomId(roomId);

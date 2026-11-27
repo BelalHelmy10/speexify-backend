@@ -67,7 +67,8 @@ const CONFIG = {
   ROOM_ID_REGEX: /^[a-zA-Z0-9_-]{1,128}$/,
 
   HEARTBEAT_ENABLED: true,
-  HEARTBEAT_INTERVAL_MS: 30000,
+  // Server-side check for sockets that went quiet (protocol-level ping).
+  HEARTBEAT_INTERVAL_MS: 15000,
   HEARTBEAT_TIMEOUT_MS: 10000,
 
   VALID_SIGNAL_TYPES: null,
@@ -84,6 +85,7 @@ const MSG_TYPES = {
   PEER_JOINED: "peer-joined",
   PEER_LEFT: "peer-left",
   ERROR: "error",
+  PING: "ping",
   PONG: "pong",
 };
 

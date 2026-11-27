@@ -9,6 +9,8 @@ import { createClassroomJoinAuthorizer } from "../../webrtcSignaling/classroomAu
 import { buildIceServers } from "../../services/iceServers.js";
 
 const router = Router();
+// Clients fetch again well before TURN credentials expire.
+const REFRESH_AFTER_SECONDS = 30 * 60;
 const authorizeJoin = createClassroomJoinAuthorizer({ authEnabled: true });
 
 export function createIceServersHandler({ authorize = authorizeJoin, build = buildIceServers } = {}) {
@@ -20,7 +22,7 @@ export function createIceServersHandler({ authorize = authorizeJoin, build = bui
       if (!authorization.allowed) {
         return res.status(403).json({ error: "Screen sharing is not available", code: authorization.reason });
       }
-      return res.json({ iceServers: build(authorization.userId) });
+      return res.json({ iceServers: build(authorization.userId), refreshAfterSeconds: REFRESH_AFTER_SECONDS });
     } catch (err) {
       logger.error({ err }, "GET /sessions/:id/screen-share/ice failed");
       return res.status(500).json({ error: "Failed to prepare screen sharing" });

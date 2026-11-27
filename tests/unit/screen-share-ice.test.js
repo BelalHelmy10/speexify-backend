@@ -55,7 +55,7 @@ test("only classroom members get ICE servers", async () => {
   });
   const ok = fakeRes();
   await handler({ params: { id: "42" }, viewUserId: 10, user: { id: 10 } }, ok);
-  assert.deepEqual(ok.body, { iceServers: [{ urls: ["stun:for-10"] }] });
+  assert.deepEqual(ok.body, { iceServers: [{ urls: ["stun:for-10"] }], refreshAfterSeconds: 1800 });
   assert.equal(ok.headers["Cache-Control"], "no-store");
 
   const denied = fakeRes();
