@@ -6,7 +6,8 @@ import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { requireAuth } from "../middleware/auth-helpers.js";
 import { validateRequest } from "../middleware/validateRequest.js";
-import { computeLessonSteps, countPracticeItems } from "../lib/lessonSteps.js";
+import { computeLessonSteps, countPracticeItems, parseReportItems } from "../lib/lessonSteps.js";
+import { normalizeReviewResources } from "../services/sessionReviewService.js";
 
 const router = Router();
 
@@ -14,6 +15,8 @@ const SessionParams = z.object({ id: z.coerce.number().int().positive() });
 const StepBody = z.object({ step: z.enum(["reviewed", "practised"]) }).strict();
 const STEP_FIELD = { reviewed: "reviewedAt", practised: "practisedAt" };
 const CONTINUE_WINDOW_DAYS = 60;
+const HISTORY_LIMIT = 300;
+const LearnerParams = z.object({ learnerId: z.coerce.number().int().positive() });
 
 const isAdmin = (req) => req.user?.role === "admin";
 const isImpersonating = (req) => Boolean(req.session?.asUserId);
@@ -51,7 +54,17 @@ const sessionSelect = {
   teacherFeedbackMessageToLearner: true,
   teacherFeedbackComments: true,
   teacherFeedbackFutureSteps: true,
+  resourcesUsed: true,
+  resourcesUsedAt: true,
 };
+
+// Curriculum materials opened in class, in the order they were opened.
+// Uploads made in the classroom are left out.
+function lessonMaterials(session) {
+  return normalizeReviewResources(session.resourcesUsed, session.resourcesUsedAt || {})
+    .filter((m) => !m.snapshot?.classroomUpload)
+    .map((m) => ({ id: m.id, firstOpenedAt: m.firstOpenedAt }));
+}
 
 function toProgress(row) {
   return { reviewedAt: row?.reviewedAt || null, practisedAt: row?.practisedAt || null };
@@ -111,7 +124,7 @@ router.get(
       };
 
       if (learning && !teaching) {
-        return res.json({ practiceItems, progress: forLearner(req.viewUserId) });
+        return res.json({ practiceItems, materials: lessonMaterials(session), progress: forLearner(req.viewUserId) });
       }
 
       const people = new Map();
@@ -119,6 +132,7 @@ router.get(
       for (const p of session.participants) if (p.user) people.set(p.user.id, p.user);
       res.json({
         practiceItems,
+        materials: lessonMaterials(session),
         learners: learnerIds.map((id) => ({
           id,
           name: people.get(id)?.name || people.get(id)?.email || "Learner",
@@ -239,5 +253,102 @@ router.get("/me/lessons/continue", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to load your lessons" });
   }
 });
+
+// --------------------------------------------------------------------------
+// Lesson history: every finished lesson with the class materials opened in
+// it, its report rows, homework and steps. The site groups these into the
+// curriculum units the materials belong to.
+// --------------------------------------------------------------------------
+const learnerOf = (learnerId) => ({
+  OR: [{ userId: learnerId }, { participants: { some: { userId: learnerId, status: { not: "canceled" } } } }],
+});
+
+async function lessonHistory(learnerId, extraWhere = {}) {
+  const sessions = await prisma.session.findMany({
+    where: { status: "completed", type: { not: "TRAINING" }, ...learnerOf(learnerId), ...extraWhere },
+    orderBy: { startAt: "desc" },
+    take: HISTORY_LIMIT,
+    select: {
+      id: true,
+      title: true,
+      startAt: true,
+      resourcesUsed: true,
+      resourcesUsedAt: true,
+      teacher: { select: { name: true } },
+      feedback: { select: { commentsOnSession: true, futureSteps: true } },
+      teacherFeedbackMessageToLearner: true,
+      teacherFeedbackComments: true,
+      teacherFeedbackFutureSteps: true,
+    },
+  });
+  if (!sessions.length) return [];
+
+  const ids = sessions.map((s) => s.id);
+  const [rows, homework] = await Promise.all([
+    prisma.lessonProgress.findMany({ where: { learnerId, sessionId: { in: ids } } }),
+    prisma.homeworkAssignment.findMany({
+      where: { learnerId, sessionId: { in: ids } },
+      select: { id: true, sessionId: true, title: true, status: true, dueAt: true, completedTasks: true, taskCount: true },
+    }),
+  ]);
+
+  return sessions.map((session) => {
+    const comments = feedbackComments(session);
+    const sessionHomework = homework.filter((a) => a.sessionId === session.id);
+    const feedbackPublished = hasFeedback(session);
+    return {
+      id: session.id,
+      title: session.title,
+      startAt: session.startAt,
+      teacherName: session.teacher?.name || null,
+      hasFeedback: feedbackPublished,
+      materials: lessonMaterials(session),
+      items: parseReportItems(comments),
+      futureSteps: (session.feedback?.futureSteps || session.teacherFeedbackFutureSteps || "").trim() || null,
+      homework: sessionHomework.map(({ sessionId, ...a }) => a),
+      steps: computeLessonSteps({
+        hasFeedback: feedbackPublished,
+        practiceItems: countPracticeItems(comments),
+        progress: rows.find((r) => r.sessionId === session.id) || null,
+        homework: sessionHomework,
+      }),
+    };
+  });
+}
+
+// GET /api/me/lesson-history — the signed-in learner's own lessons.
+router.get("/me/lesson-history", requireAuth, async (req, res) => {
+  try {
+    res.json({ lessons: await lessonHistory(req.viewUserId) });
+  } catch (e) {
+    logger.error({ err: e }, "GET /me/lesson-history error");
+    res.status(500).json({ error: "Failed to load your lessons" });
+  }
+});
+
+// GET /api/learners/:learnerId/lesson-history — for the learner's teacher
+// (only the lessons they taught) or an admin (every lesson).
+router.get(
+  "/learners/:learnerId/lesson-history",
+  requireAuth,
+  validateRequest({ params: LearnerParams }),
+  async (req, res) => {
+    try {
+      const learnerId = req.params.learnerId;
+      const admin = isAdmin(req);
+      if (!admin && req.user?.role !== "teacher") return res.status(403).json({ error: "Forbidden" });
+
+      const lessons = await lessonHistory(learnerId, admin ? {} : { teacherId: req.user.id });
+      if (!admin && !lessons.length) return res.status(403).json({ error: "Forbidden" });
+
+      const learner = await prisma.user.findUnique({ where: { id: learnerId }, select: { id: true, name: true, email: true } });
+      if (!learner) return res.status(404).json({ error: "Learner not found" });
+      res.json({ learner: { id: learner.id, name: learner.name || learner.email || "Learner" }, lessons });
+    } catch (e) {
+      logger.error({ err: e }, "GET /learners/:learnerId/lesson-history error");
+      res.status(500).json({ error: "Failed to load the learner's lessons" });
+    }
+  }
+);
 
 export default router;

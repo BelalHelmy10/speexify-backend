@@ -4,7 +4,7 @@ import express from "express";
 import request from "supertest";
 import router from "../../src/routes/lessonProgress.js";
 import { prisma } from "../../src/lib/prisma.js";
-import { computeLessonSteps, countPracticeItems } from "../../src/lib/lessonSteps.js";
+import { computeLessonSteps, countPracticeItems, parseReportItems } from "../../src/lib/lessonSteps.js";
 import { lessonRecapUrl } from "../../src/services/emailTemplates.js";
 
 // Users: 10 learner, 11 other learner, 20 teacher, 21 other teacher, 30 admin
@@ -129,6 +129,7 @@ test("a learner records review and practice once, and sees their steps", async (
     const start = await request(t.app).get("/sessions/42/lesson-progress").set(t.as(10));
     assert.equal(start.statusCode, 200);
     assert.equal(start.body.practiceItems, 2);
+    assert.deepEqual(start.body.materials, []);
     assert.equal(start.body.progress.steps.next, "review");
 
     const first = await request(t.app).post("/sessions/42/lesson-progress").set(t.as(10)).send({ step: "reviewed" });
@@ -225,4 +226,86 @@ test("continue points at the newest lesson with a step left", async () => {
 test("the feedback email opens the lesson page in the learner's language", () => {
   assert.equal(lessonRecapUrl(42, "en"), "https://app.speexify.com/dashboard/sessions/42#lesson");
   assert.equal(lessonRecapUrl(42, "ar"), "https://app.speexify.com/ar/dashboard/sessions/42#lesson");
+});
+
+test("report rows are cleaned up for the unit page", () => {
+  const items = parseReportItems(
+    report([
+      { id: "a", type: "vocabulary", prompt: " convince ", response: "To make someone believe." },
+      { type: "grammar", prompt: "I *am agree*.", response: "I *agree*.", note: "Agree is a verb." },
+      { type: "unknown", prompt: "dropped" },
+      { type: "note", prompt: "", response: "" },
+      null,
+    ])
+  );
+  assert.deepEqual(items, [
+    { id: "a", type: "vocabulary", prompt: "convince", response: "To make someone believe." },
+    { id: "item-2", type: "grammar", prompt: "I *am agree*.", response: "I *agree*.", note: "Agree is a verb." },
+  ]);
+  assert.deepEqual(parseReportItems("Plain feedback"), []);
+});
+
+function historySessions() {
+  return [
+    makeSession({
+      id: 42,
+      resourcesUsed: [
+        { id: "res-unit4-a", firstOpenedAt: "2026-11-20T10:00:00.000Z" },
+        { id: "upload-1", snapshot: { classroomUpload: true } },
+      ],
+      resourcesUsedAt: {},
+    }),
+    makeSession({ id: 43, teacherId: 21, feedback: null, resourcesUsed: '["res-unit5-a"]', resourcesUsedAt: { "res-unit5-a": "2026-11-25T10:00:00.000Z" } }),
+  ];
+}
+
+test("a learner's lesson history lists materials, report rows, homework and steps", async () => {
+  const t = setup({
+    sessions: historySessions(),
+    homework: [{ id: "hw1", learnerId: 10, sessionId: 42, title: "Opinion writing", status: "SUBMITTED", dueAt: null, completedTasks: 4, taskCount: 4 }],
+  });
+  try {
+    t.rows.set("42:10", { sessionId: 42, learnerId: 10, reviewedAt: new Date(), practisedAt: null });
+    const res = await request(t.app).get("/me/lesson-history").set(t.as(10));
+    assert.equal(res.statusCode, 200);
+    const [first, second] = res.body.lessons;
+    assert.deepEqual(first.materials, [{ id: "res-unit4-a", firstOpenedAt: "2026-11-20T10:00:00.000Z" }]);
+    assert.equal(first.items.length, 3);
+    assert.equal(first.steps.next, "practise");
+    assert.deepEqual(first.homework.map(({ id, title, status }) => ({ id, title, status })), [
+      { id: "hw1", title: "Opinion writing", status: "SUBMITTED" },
+    ]);
+    assert.equal("sessionId" in first.homework[0], false);
+    assert.deepEqual(second.materials, [{ id: "res-unit5-a", firstOpenedAt: "2026-11-25T10:00:00.000Z" }]);
+    assert.equal(second.hasFeedback, false);
+    assert.deepEqual(second.items, []);
+  } finally {
+    t.restore();
+  }
+});
+
+test("teachers see only the lessons they taught a learner; others are refused", async () => {
+  const t = setup({ sessions: historySessions() });
+  const findMany = prisma.session.findMany;
+  prisma.session.findMany = async ({ where }) =>
+    historySessions().filter((s) => where.teacherId === undefined || s.teacherId === where.teacherId);
+  try {
+    const teacher = await request(t.app).get("/learners/10/lesson-history").set(t.as(20));
+    assert.equal(teacher.statusCode, 200);
+    assert.equal(teacher.body.learner.name, "Nour");
+    assert.deepEqual(teacher.body.lessons.map((l) => l.id), [42]);
+
+    const admin = await request(t.app).get("/learners/10/lesson-history").set(t.as(30));
+    assert.deepEqual(admin.body.lessons.map((l) => l.id), [42, 43]);
+
+    const stranger = await request(t.app).get("/learners/10/lesson-history").set(t.as(11));
+    assert.equal(stranger.statusCode, 403);
+
+    prisma.session.findMany = async () => [];
+    const notTheirs = await request(t.app).get("/learners/10/lesson-history").set(t.as(21));
+    assert.equal(notTheirs.statusCode, 403);
+  } finally {
+    prisma.session.findMany = findMany;
+    t.restore();
+  }
 });
