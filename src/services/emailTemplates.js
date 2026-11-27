@@ -435,13 +435,18 @@ export function cancellationTeacherEmail({ name, sessionTitle, learnerNames, whe
   };
 }
 
+// The learner-facing site, as the order emails use it.
+export function siteUrl() {
+  return String(process.env.FRONTEND_URL || "https://speexify.com").replace(/\/+$/, "");
+}
+
 // The lesson page is where the learner reads the report, practises it and
 // opens the homework, so the email links there.
 export function lessonRecapUrl(sessionId, locale) {
   const prefix = normalizeEmailLocale(locale) === "ar" ? "/ar" : "";
   return sessionId
-    ? `https://app.speexify.com${prefix}/dashboard/sessions/${encodeURIComponent(sessionId)}#lesson`
-    : `https://app.speexify.com${prefix}/dashboard`;
+    ? `${siteUrl()}${prefix}/dashboard/sessions/${encodeURIComponent(sessionId)}#lesson`
+    : `${siteUrl()}${prefix}/dashboard`;
 }
 
 export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview, sessionId, locale }) {
@@ -459,7 +464,7 @@ export function feedbackEmail({ name, teacherName, sessionTitle, messagePreview,
   };
 }
 
-const HOMEWORK_URL = "https://app.speexify.com/dashboard/homework";
+const homeworkUrl = () => `${siteUrl()}/dashboard/homework`;
 
 function emailButton(href, label) {
   return `<p><a href="${href}" style="display:inline-block;padding:14px 28px;background:#f25c2e;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;">${escapeHtml(label)}</a></p>`;
@@ -474,7 +479,7 @@ export function homeworkAssignedEmail({ name, teacherName, title, dueLabel, note
       <p>${escapeHtml(emailCopy(l, "homeworkAssignedIntro", teacherName, title))}</p>
       ${dueLabel ? `<p><strong>${escapeHtml(emailCopy(l, "homeworkDue", dueLabel))}</strong></p>` : ""}
       ${note ? `<div style="background:#fdf0eb;border-left:4px solid #f25c2e;border-radius:8px;padding:16px;margin:20px 0;"><p style="font-weight:600;color:#c2431b;">${escapeHtml(emailCopy(l, "messageFrom", teacherName))}</p><p style="font-style:italic;">“${escapeHtml(note)}”</p></div>` : ""}
-      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkOpen"))}
+      ${emailButton(`${homeworkUrl()}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkOpen"))}
       <p style="color:#64748b;font-size:13px;">${emailCopy(l, "homeworkAssignedNote")}</p>
     `),
   };
@@ -487,7 +492,7 @@ export function homeworkSubmittedEmail({ name, learnerName, title, assignmentId,
     html: layout(l, emailCopy(l, "homeworkSubmittedTitle"), `
       <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
       <p>${escapeHtml(emailCopy(l, "homeworkSubmittedIntro", learnerName, title))}</p>
-      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkReview"))}
+      ${emailButton(`${homeworkUrl()}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkReview"))}
     `),
   };
 }
@@ -500,7 +505,7 @@ export function homeworkReviewedEmail({ name, teacherName, title, overall, assig
       <p>${emailCopy(l, "hi")}${name ? ` ${escapeHtml(name)}` : ""},</p>
       <p>${escapeHtml(emailCopy(l, "homeworkReviewedIntro", teacherName, title))}</p>
       ${overall ? `<div style="background:#e7f3f1;border-left:4px solid #0f766e;border-radius:8px;padding:16px;margin:20px 0;"><p style="font-weight:600;color:#0f766e;">${escapeHtml(emailCopy(l, "messageFrom", teacherName))}</p><p style="font-style:italic;">“${escapeHtml(overall)}”</p></div>` : ""}
-      ${emailButton(`${HOMEWORK_URL}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkSeeComments"))}
+      ${emailButton(`${homeworkUrl()}/${encodeURIComponent(assignmentId)}`, emailCopy(l, "homeworkSeeComments"))}
     `),
   };
 }

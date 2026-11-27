@@ -224,8 +224,17 @@ test("continue points at the newest lesson with a step left", async () => {
 });
 
 test("the feedback email opens the lesson page in the learner's language", () => {
-  assert.equal(lessonRecapUrl(42, "en"), "https://app.speexify.com/dashboard/sessions/42#lesson");
-  assert.equal(lessonRecapUrl(42, "ar"), "https://app.speexify.com/ar/dashboard/sessions/42#lesson");
+  const saved = process.env.FRONTEND_URL;
+  try {
+    delete process.env.FRONTEND_URL;
+    assert.equal(lessonRecapUrl(42, "en"), "https://speexify.com/dashboard/sessions/42#lesson");
+    assert.equal(lessonRecapUrl(42, "ar"), "https://speexify.com/ar/dashboard/sessions/42#lesson");
+    process.env.FRONTEND_URL = "https://www.speexify.com/";
+    assert.equal(lessonRecapUrl(42, "en"), "https://www.speexify.com/dashboard/sessions/42#lesson");
+  } finally {
+    if (saved === undefined) delete process.env.FRONTEND_URL;
+    else process.env.FRONTEND_URL = saved;
+  }
 });
 
 test("report rows are cleaned up for the unit page", () => {
