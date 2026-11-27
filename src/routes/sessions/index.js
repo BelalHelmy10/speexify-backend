@@ -16,6 +16,7 @@ import reviewRouter from "./review.js";
 import classroomRouter from "./classroom.js";
 import materialsRouter from "./materials.js";
 import videoAccessRouter from "./videoAccess.js";
+import screenShareRouter from "./screenShare.js";
 import bulkCreateRouter from "./bulk-create.js";
 
 const router = Router();
@@ -34,6 +35,7 @@ router.use(reviewRouter);
 router.use(classroomRouter);
 router.use(materialsRouter);
 router.use(videoAccessRouter);
+router.use(screenShareRouter);
 router.use(crudRouter); // CRUD routes last since they have catch-all patterns like /sessions/:id
 
 export default router;

@@ -17,7 +17,7 @@ import { createRoomManager } from "./roomManager.js";
 import { safeSend } from "./transport.js";
 import { authenticateConnection } from "./auth.js";
 import { authorizeClassroomJoin } from "./classroomAuthorization.js";
-import { filterClassroomEvents, isRemovalPersisted } from "./classroomEventPolicy.js";
+import { filterClassroomEvents, isPrivilegedClassroomRole, isRemovalPersisted } from "./classroomEventPolicy.js";
 import { createLocalRateLimiter, createSerialQueue } from "./messageFlow.js";
 import { prisma } from "../lib/prisma.js";
 import { onRealtimeEvent, publishRealtimeEvent, startRealtimeBus } from "../services/realtimeBus.js";
@@ -262,6 +262,46 @@ function setupWebRtcSignaling(httpServer) {
     });
   }
 
+  // Screen sharing goes browser to browser; these messages set up each
+  // connection, so they go only to the one person they are for (they carry
+  // network addresses). The sender is the authenticated socket user.
+  const SCREEN_RTC_TARGETED = new Set([
+    "SCREEN_RTC_REQUEST",
+    "SCREEN_RTC_OFFER",
+    "SCREEN_RTC_ANSWER",
+    "SCREEN_RTC_STOP_REQUEST",
+  ]);
+  const MAX_SDP_LENGTH = 100 * 1024;
+  const shortId = (value) => (typeof value === "string" && value.length <= 64 ? value : "");
+
+  function routeScreenShareSignal(ws, roomManager, data) {
+    const meta = getMeta(ws);
+    const senderId = parsePositiveInteger(meta.userId);
+    const recipientId = parsePositiveInteger(data?.to);
+    const role = meta.classroomRole || "learner";
+    if (!senderId || !recipientId || recipientId === senderId) return;
+    if (data.type === "SCREEN_RTC_STOP_REQUEST" && !isPrivilegedClassroomRole(role)) return;
+
+    const payload = {
+      type: data.type,
+      shareId: shortId(data.shareId),
+      peer: shortId(data.peer),
+      toPeer: shortId(data.toPeer),
+      to: recipientId,
+      _from: { userId: senderId, role },
+    };
+    if (data.type === "SCREEN_RTC_OFFER" || data.type === "SCREEN_RTC_ANSWER") {
+      if (typeof data.sdp !== "string" || !data.sdp || data.sdp.length > MAX_SDP_LENGTH) return;
+      payload.sdp = data.sdp;
+    }
+
+    roomManager.sendToUser(ws, recipientId, {
+      type: MSG_TYPES.SIGNAL,
+      signalType: "classroom-event",
+      data: payload,
+    });
+  }
+
   wssPrep.on("close", () => {
     if (heartbeatIntervalPrep) clearInterval(heartbeatIntervalPrep);
   });
@@ -396,6 +436,8 @@ function setupWebRtcSignaling(httpServer) {
                 await routePrivateChatMessage(ws, roomManager, event);
               } else if (event?.type === "CHAT_PRIVATE_TYPING") {
                 await routePrivateChatTyping(ws, roomManager, event);
+              } else if (SCREEN_RTC_TARGETED.has(event?.type)) {
+                routeScreenShareSignal(ws, roomManager, event);
               } else {
                 publicEvents.push(event);
               }

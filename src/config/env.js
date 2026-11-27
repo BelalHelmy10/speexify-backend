@@ -115,6 +115,20 @@ if (JITSI_APP_SECRET) {
 }
 export const JITSI_TOKEN_TTL_SECONDS = parsePositiveIntEnv("JITSI_TOKEN_TTL_SECONDS", 2 * 60 * 60);
 
+// Classroom screen sharing goes browser to browser. STUN finds a direct
+// path; a TURN relay (optional) carries it when networks block that.
+// TURN_URLS is a comma-separated list. Either TURN_SECRET (coturn REST
+// auth, short-lived credentials) or TURN_USERNAME + TURN_CREDENTIAL.
+const splitList = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+export const SCREEN_SHARE_STUN_URLS = splitList(
+  process.env.SCREEN_SHARE_STUN_URLS || "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"
+);
+export const TURN_URLS = splitList(process.env.TURN_URLS);
+export const TURN_SECRET = readSecretEnv("TURN_SECRET");
+export const TURN_USERNAME = String(process.env.TURN_USERNAME || "").trim();
+export const TURN_CREDENTIAL = readSecretEnv("TURN_CREDENTIAL");
+export const TURN_CREDENTIAL_TTL_SECONDS = parsePositiveIntEnv("TURN_CREDENTIAL_TTL_SECONDS", 4 * 60 * 60);
+
 export const CALENDAR_FEED_SECRET = readSecretEnv(
   "CALENDAR_FEED_SECRET",
   SESSION_SECRET
