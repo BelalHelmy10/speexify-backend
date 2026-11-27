@@ -212,3 +212,40 @@ test("a removed teacher-side entry never blocks the teacher", async () => {
   assert.equal(result.allowed, true);
   assert.equal(result.role, "teacher");
 });
+
+test("a locked room keeps out late joiners but lets admitted learners reconnect", async () => {
+  const learner = { id: 10, role: "learner", isDisabled: false };
+  const run = (lobbyEntry, lobbyEnabled) =>
+    createClassroomJoinAuthorizer({
+      prismaClient: createFakePrisma({
+        user: learner,
+        session: createSession({ classroomState: { moderation: { lobbyEnabled, locked: true } } }),
+        lobbyEntry,
+      }),
+      authEnabled: true,
+    })({ roomId: "42", userId: "10" });
+
+  for (const lobbyEnabled of [true, false]) {
+    assert.equal((await run({ status: "ADMITTED" }, lobbyEnabled)).allowed, true, `admitted, lobby ${lobbyEnabled}`);
+    assert.equal((await run(null, lobbyEnabled)).reason, "classroom_locked", `late joiner, lobby ${lobbyEnabled}`);
+    assert.equal((await run({ status: "DENIED" }, lobbyEnabled)).reason, "classroom_locked", `removed, lobby ${lobbyEnabled}`);
+  }
+});
+
+test("with the lobby off, a learner's first join is recorded so a later lock lets them back", async () => {
+  const created = [];
+  const prismaClient = createFakePrisma({ user: { id: 10, role: "learner", isDisabled: false }, session: createSession() });
+  prismaClient.classroomLobbyEntry.create = async ({ data }) => created.push(data);
+  const authorize = createClassroomJoinAuthorizer({ prismaClient, authEnabled: true });
+
+  assert.equal((await authorize({ roomId: "42", userId: "10" })).allowed, true);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].status, "ADMITTED");
+  assert.equal(created[0].userId, 10);
+
+  // A failed write never blocks the join.
+  prismaClient.classroomLobbyEntry.create = async () => {
+    throw new Error("Database unavailable");
+  };
+  assert.equal((await authorize({ roomId: "42", userId: "10" })).allowed, true);
+});

@@ -193,6 +193,26 @@ export async function requestLobbyAdmission(prismaClient, {
   throw new ClassroomStateContentionError(sessionId);
 }
 
+// With the lobby off, learners walk straight in. Recording that they were
+// admitted lets them reconnect after the teacher locks the room, while a
+// locked room still keeps out anyone who never joined. An existing entry
+// (for example a learner the teacher removed) is left as it is.
+export async function recordDirectAdmission(prismaClient, { sessionId, userId, now = new Date() }) {
+  try {
+    await prismaClient.classroomLobbyEntry.create({
+      data: {
+        sessionId,
+        userId,
+        status: CLASSROOM_LOBBY_STATUS.ADMITTED,
+        joinedAt: now,
+        decidedAt: now,
+      },
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+  }
+}
+
 export async function decideLobbyEntry(prismaClient, {
   sessionId,
   userId,

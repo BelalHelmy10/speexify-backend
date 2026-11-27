@@ -1,7 +1,11 @@
 // src/webrtcSignaling/classroomAuthorization.js
 
 import { prisma } from "../lib/prisma.js";
-import { isLearnerLobbyBlocked } from "../services/classroomStateService.js";
+import {
+  CLASSROOM_LOBBY_STATUS,
+  isLearnerLobbyBlocked,
+  recordDirectAdmission,
+} from "../services/classroomStateService.js";
 import { CONFIG } from "./config.js";
 
 function parseClassroomSessionId(roomId) {
@@ -143,24 +147,27 @@ export function createClassroomJoinAuthorizer({
       return { allowed: false, reason: "classroom_ended" };
     }
 
-    if (
-      isClassroomLocked(session) &&
-      membership.isLearner &&
-      !membership.isTeacher &&
-      !membership.isAdmin
-    ) {
+    const learnerOnly = membership.isLearner && !membership.isTeacher && !membership.isAdmin;
+    const admitted = lobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED;
+
+    // A lock stops late joins. Learners who were already let in may still
+    // reconnect, for example after their connection drops.
+    if (isClassroomLocked(session) && learnerOnly && !admitted) {
       return { allowed: false, reason: "classroom_locked" };
     }
 
     const lobbyEnabled = session?.classroomState?.moderation?.lobbyEnabled !== false;
 
-    if (
-      membership.isLearner &&
-      !membership.isTeacher &&
-      !membership.isAdmin &&
-      isLearnerLobbyBlocked({ lobbyEnabled, status: lobbyEntry?.status })
-    ) {
+    if (learnerOnly && isLearnerLobbyBlocked({ lobbyEnabled, status: lobbyEntry?.status })) {
       return { allowed: false, reason: "classroom_admission_required" };
+    }
+
+    if (learnerOnly && !lobbyEntry) {
+      try {
+        await recordDirectAdmission(prismaClient, { sessionId, userId: numericUserId });
+      } catch {
+        // Recording only matters if the room is locked later; never block a join on it.
+      }
     }
 
     return {

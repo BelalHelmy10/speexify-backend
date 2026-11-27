@@ -3,6 +3,7 @@
 
 import { Router, prisma, requireAuth, logger } from "./_shared.js";
 import { isSessionReviewAvailable } from "../../services/sessionReviewService.js";
+import { CLASSROOM_LOBBY_STATUS, findLobbyEntry } from "../../services/classroomStateService.js";
 
 const router = Router();
 const SESSIONS_DEFAULT_LIMIT = 100;
@@ -123,12 +124,14 @@ router.get("/sessions/:id", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "Forbidden" });
         }
 
+        // A lock stops late joins; learners already let in can reload the page.
         if (
             req.query.classroomJoin === "1" &&
             isClassroomLocked(session) &&
             isLearner &&
             !isSessionReviewAvailable(session) &&
-            !(isTeacher || isAdmin)
+            !(isTeacher || isAdmin) &&
+            (await findLobbyEntry(prisma, session.id, viewerId))?.status !== CLASSROOM_LOBBY_STATUS.ADMITTED
         ) {
             return res.status(423).json({
                 error: "This classroom is locked. Ask the teacher to let you in.",

@@ -15,6 +15,7 @@ import {
     getWaitingLobbyPosition,
     isLearnerLobbyBlocked,
     listWaitingLobbyEntries,
+    recordDirectAdmission,
     requestLobbyAdmission,
     toWaitingLearner,
     updateClassroomStateAtomic,
@@ -452,6 +453,25 @@ async function requireClassroomAccess(req, res, sessionId) {
     return { session, access };
 }
 
+// Like requireClassroomAccess, but a learner still in the waiting room, or
+// one the teacher removed, is refused: the same rule the classroom socket
+// and the video apply.
+async function requireAdmittedClassroomAccess(req, res, sessionId) {
+    const context = await requireClassroomAccess(req, res, sessionId);
+    if (!context) return null;
+    const { access, session } = context;
+    if (access.isLearner && !access.isTeacher && !access.isAdmin) {
+        const state = getStoredClassroomState(session.classroomState);
+        const lobbyEnabled = state?.moderation?.lobbyEnabled !== false;
+        const entry = await findLobbyEntry(prisma, sessionId, Number(req.viewUserId || req.user?.id));
+        if (isLearnerLobbyBlocked({ lobbyEnabled, status: entry?.status })) {
+            res.status(403).json({ error: "Waiting for classroom admission", code: "classroom_admission_required" });
+            return null;
+        }
+    }
+    return context;
+}
+
 // --------------------------------------------------------------------------
 // GET /api/sessions/:id/classroom-state - Restore persisted live classroom state
 // --------------------------------------------------------------------------
@@ -593,7 +613,9 @@ router.put("/sessions/:id/annotations", requireAuth, async (req, res) => {
         const sessionId = parseSessionIdParam(req.params.id);
         const resourceId = safeString(req.body?.resourceId, 300);
         const payload = sanitizeAnnotationSnapshot(req.body?.payload);
-        const ownerId = Number(req.user?.id);
+        // Same viewer the GET route reads for, so drawings made while an admin
+        // views as a learner are still there after a reload.
+        const ownerId = Number(req.viewUserId || req.user?.id);
         if (!sessionId || !resourceId || !payload || !Number.isSafeInteger(ownerId) || ownerId <= 0) {
             return res.status(400).json({ error: "Valid resourceId and annotation payload are required" });
         }
@@ -717,7 +739,7 @@ router.get("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "Invalid session id" });
         }
 
-        const context = await requireClassroomAccess(req, res, sessionId);
+        const context = await requireAdmittedClassroomAccess(req, res, sessionId);
         if (!context) return null;
 
         const limit = parseChatLimit(req.query.limit);
@@ -757,7 +779,7 @@ router.post("/sessions/:id/chat/messages", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "Invalid session id" });
         }
 
-        const context = await requireClassroomAccess(req, res, sessionId);
+        const context = await requireAdmittedClassroomAccess(req, res, sessionId);
         if (!context) return null;
 
         // Rate-limit: max 5 messages per 10 seconds per user per session
@@ -872,7 +894,7 @@ router.delete("/sessions/:id/chat/messages/:messageId", requireAuth, async (req,
             return res.status(400).json({ error: "Invalid session id" });
         }
 
-        const context = await requireClassroomAccess(req, res, sessionId);
+        const context = await requireAdmittedClassroomAccess(req, res, sessionId);
         if (!context) return null;
 
         const existing = await prisma.classroomMessage.findFirst({
@@ -922,7 +944,7 @@ router.get("/sessions/:id/chat/export", requireAuth, async (req, res) => {
             return res.status(400).json({ error: "Invalid session id" });
         }
 
-        const context = await requireClassroomAccess(req, res, sessionId);
+        const context = await requireAdmittedClassroomAccess(req, res, sessionId);
         if (!context) return null;
 
         const viewerId = Number(req.viewUserId || req.user?.id);
@@ -1598,23 +1620,21 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             return res.status(403).json({ error: "You are not a participant of this session" });
         }
 
-        // Check if lobby is enabled (enabled by default for all session types)
-        const lobbyEnabled = classroomState?.moderation?.lobbyEnabled !== false;
-
-        // A learner the teacher removed must ask again even when the lobby is
-        // off; everyone else is admitted directly.
-        const priorEntry = !lobbyEnabled && !isTeacher
-            ? await findLobbyEntry(prisma, sessionId, viewerId)
-            : null;
-        const mustAskAgain = Boolean(priorEntry) &&
-            isLearnerLobbyBlocked({ lobbyEnabled: false, status: priorEntry.status });
-
-        if (!lobbyEnabled && !mustAskAgain) {
-            // No lobby needed — directly admitted
-            return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
+        // Teachers skip the lobby and the lock.
+        if (isTeacher) {
+            return res.json({ ok: true, status: "admitted", lobbyEnabled: classroomState?.moderation?.lobbyEnabled !== false });
         }
 
-        // Check if classroom is locked
+        // Check if lobby is enabled (enabled by default for all session types)
+        const lobbyEnabled = classroomState?.moderation?.lobbyEnabled !== false;
+        const priorEntry = await findLobbyEntry(prisma, sessionId, viewerId);
+
+        // Learners who were already let in may come back, even after a lock:
+        // the lock only stops late joins.
+        if (priorEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
+            return res.json({ ok: true, status: "admitted", lobbyEnabled });
+        }
+
         if (classroomState?.moderation?.locked) {
             return res.status(403).json({
                 error: "Classroom is locked. Late joins are not allowed.",
@@ -1622,14 +1642,14 @@ router.post("/sessions/:id/lobby/join", requireAuth, async (req, res) => {
             });
         }
 
-        // Teachers skip the lobby
-        if (isTeacher) {
-            return res.json({ ok: true, status: "admitted", lobbyEnabled: true });
-        }
+        // A learner the teacher removed must ask again even when the lobby is
+        // off; everyone else is admitted directly.
+        const mustAskAgain = Boolean(priorEntry) &&
+            isLearnerLobbyBlocked({ lobbyEnabled: false, status: priorEntry.status });
 
-        const existingLobbyEntry = await findLobbyEntry(prisma, sessionId, viewerId);
-        if (existingLobbyEntry?.status === CLASSROOM_LOBBY_STATUS.ADMITTED) {
-            return res.json({ ok: true, status: "admitted" });
+        if (!lobbyEnabled && !mustAskAgain) {
+            await recordDirectAdmission(prisma, { sessionId, userId: viewerId });
+            return res.json({ ok: true, status: "admitted", lobbyEnabled: false });
         }
 
         const sender = Number.isFinite(viewerId)
