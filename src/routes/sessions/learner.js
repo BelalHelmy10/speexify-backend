@@ -16,6 +16,17 @@ const SESSION_LIST_MAX_OFFSET = 5000;
 const SESSIONS_BETWEEN_DEFAULT_LIMIT = 500;
 const SESSIONS_BETWEEN_MAX_LIMIT = 1000;
 
+// Feedback lives in SessionFeedback; older sessions kept it in columns on
+// the session itself. The calendar only needs to know whether it exists.
+export function sessionHasFeedback(session) {
+    if (session?.feedback) return true;
+    return [
+        session?.teacherFeedbackMessageToLearner,
+        session?.teacherFeedbackComments,
+        session?.teacherFeedbackFutureSteps,
+    ].some((value) => typeof value === "string" && value.trim().length > 0);
+}
+
 function parseBoundedInt(value, { fallback, min = 0, max = Number.MAX_SAFE_INTEGER }) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return fallback;
@@ -560,6 +571,9 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
                 type: true,
                 capacity: true,
                 feedback: { select: { id: true } },
+                teacherFeedbackMessageToLearner: true,
+                teacherFeedbackComments: true,
+                teacherFeedbackFutureSteps: true,
                 teacher: { select: { id: true, name: true, email: true } },
                 trainingAdmin: { select: { id: true, name: true, email: true } },
                 participants: {
@@ -572,11 +586,19 @@ router.get("/me/sessions-between", requireAuth, async (req, res) => {
             const activeCount = (s.participants || []).filter(
                 (p) => p.status !== "canceled"
             ).length;
+            // The calendar gets a yes/no, never the feedback text.
+            const {
+                teacherFeedbackMessageToLearner: _message,
+                teacherFeedbackComments: _comments,
+                teacherFeedbackFutureSteps: _futureSteps,
+                ...rest
+            } = s;
 
             return {
-                ...s,
+                ...rest,
                 participantCount: activeCount,
                 teacherFeedback: s.feedback,
+                hasFeedback: sessionHasFeedback(s),
             };
         });
 
